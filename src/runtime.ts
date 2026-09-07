@@ -88,6 +88,7 @@ export class ServiceRuntime {
       } finally { vm.dispose(); runtime.dispose(); }
     } finally {
       db.close();
+      this.room.recordResources(databaseBytes(this.databasePath), this.scratchFiles().reduce((sum, file) => sum + file.bytes, 0));
       for (const log of logs) this.room.recordServiceLog(`guest ${log}`);
     }
   }

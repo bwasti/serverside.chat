@@ -1,5 +1,5 @@
 import type { ServerChannel } from "ssh2";
-import type { Message, Room } from "./room";
+import { ROOM_LIMITS, type Message, type Room } from "./room";
 
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
@@ -16,6 +16,11 @@ const AGENT = `${ESC}38;5;81m`;
 const OWNER = `${ESC}38;5;213m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const GREEN = `${ESC}38;5;82m`;
+const YELLOW = `${ESC}38;5;220m`;
+const RED = `${ESC}38;5;203m`;
+const CYAN = `${ESC}38;5;45m`;
+const MAGENTA = `${ESC}38;5;213m`;
 
 export class TuiSession {
   private width = 80;
@@ -137,12 +142,14 @@ export class TuiSession {
 
   private render(): void {
     if (this.closed) return;
-    this.syncAgentAnimation();
+    this.syncAnimation();
     const sidebarWidth = Math.round(this.sidebarWidth);
-    const hudWidth = this.width >= 100 ? Math.min(48, Math.max(34, Math.floor(this.width * 0.30))) : 0;
+    const hudWidth = this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
     const mainWidth = this.width - sidebarWidth - hudWidth;
     const pageLinks = this.pageLinkRows(mainWidth, Math.max(1, Math.min(5, this.height - 8)));
-    const messageRows = Math.max(3, this.height - 2 - pageLinks.length);
+    const topStatus = this.topStatusRows(mainWidth, this.height);
+    const topRows = [...pageLinks, ...topStatus];
+    const messageRows = Math.max(3, this.height - 2 - topRows.length);
     const contentRows = this.height - 2;
     const messages = this.room.messages.flatMap((message) =>
       this.formatMessage(message, mainWidth).map((text) => ({ text, kind: message.kind, owner: message.author === this.room.owner })),
@@ -160,23 +167,23 @@ export class TuiSession {
       ? `${SIDEBAR_MUTED}${pad(" › ", sidebarWidth)}${RESET}`
       : `${SIDEBAR}${pad(truncate("  wasm chat", sidebarWidth), sidebarWidth)}${RESET}`;
     const paneTone = this.sidebarFocused ? DIM : "";
-    const hudHeader = hudWidth ? `${HUD}${pad("  SERVICE", hudWidth)}${RESET}` : "";
+    const hudHeader = hudWidth ? `${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}` : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
-    const linkHeaders = pageLinks.map((link, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${HEADER}${link}${RESET}${this.hudRow(index, hudWidth, contentRows)}`);
+    const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${HEADER}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const body = visible.map(({ text, kind, owner }, index) => {
       const color = owner ? OWNER : kind === "agent" || kind === "commit" ? AGENT : kind === "system" ? MUTED : CHAT;
-      const columnRow = index + pageLinks.length;
+      const columnRow = index + topRows.length;
       const renderedText = kind === "commit" ? padAnsi(text, mainWidth) : pad(truncate(text, mainWidth), mainWidth);
-      return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth, contentRows)}`;
+      return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
     const inputText = `  ${this.input}`;
     const sidebarFooter = sidebarWidth <= 3
       ? `${SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
       : `${SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`;
-    const hudFooter = hudWidth ? `${HUD_MUTED}${pad("  host scaffold", hudWidth)}${RESET}` : "";
+    const hudFooter = hudWidth ? `${HUD_MUTED}${pad("  linear history · rebase only", hudWidth)}${RESET}` : "";
     const composer = `${sidebarFooter}${paneTone}${COMPOSER}${pad(truncate(inputText, mainWidth), mainWidth)}${RESET}${hudFooter}`;
     const cursorColumn = sidebarWidth + Math.min(mainWidth, Array.from(inputText).length + 1);
-    const screen = [header, ...linkHeaders, ...body, composer].join("\r\n");
+    const screen = [header, ...statusHeaders, ...body, composer].join("\r\n");
     const cursor = this.sidebarFocused ? `${ESC}?25l` : `${ESC}${this.height};${cursorColumn}H${ESC}?25h`;
     this.write(`${ESC}?25l${ESC}H${ESC}2J${screen}${cursor}`);
   }
@@ -192,45 +199,34 @@ export class TuiSession {
     });
   }
 
-  private hudRow(index: number, width: number, rows: number): string {
-    if (!width) return "";
-    const uptimeSeconds = Math.floor((Date.now() - this.room.serviceStartedAt.getTime()) / 1_000);
-    const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
-    const recentRequests = this.room.serviceLogs.slice(-3);
-    const fixed: Array<{ text: string; heading?: boolean; url?: string }> = [
-      { text: "  RUNTIME", heading: true },
-      { text: "  host scaffold" },
-      { text: `  users     ${this.room.members.size}` },
-      { text: `  requests  ${this.room.serviceRequests}` },
-      { text: `  errors    ${this.room.serviceErrors}` },
-      { text: `  avg       ${averageLatency.toFixed(1)}ms` },
-      { text: `  bytes     ${formatBytes(this.room.serviceResponseBytes)}` },
-      { text: `  uptime    ${formatDuration(uptimeSeconds)}` },
-      { text: "" },
-      { text: "  HTTP ACTIVITY", heading: true },
-      ...recentRequests.map((text) => ({ text })),
-      { text: "" },
-      { text: `  AGENT${this.agentIsActive() ? ` ${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]}` : ""}`, heading: true },
-      { text: `  ${this.room.agentState.status}` },
-      { text: `  ${this.room.agentState.detail}` },
-      { text: "" },
-      { text: "  AGENT ACTIVITY", heading: true },
+  private topStatusRows(width: number, height: number): string[] {
+    const active = this.agentIsActive();
+    const spinner = active ? ` ${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]}` : "";
+    const sitePulse = Date.now() - this.room.lastRequestAt < 1_200 ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
+    const agent = `  AGENT${spinner} ${this.room.agentState.status} · ${this.room.agentState.detail}`;
+    const site = `${sitePulse} SITE ${this.room.members.size} people · ${this.room.connectionCount} conn · ${this.room.serviceErrors} errors`;
+    const gap = " ".repeat(Math.max(2, width - agent.length - site.length - 2));
+    const identity = width >= 72 ? [truncate(`${agent}${gap}${site}`, width)] : [truncate(agent, width), truncate(`  ${site}`, width)];
+    const metrics = [
+      usageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatBytes),
+      usageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatBytes),
+      usageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String),
+      usageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatBytes),
     ];
-    const graphLineCount = Math.min(this.room.versionGraph.length, Math.max(0, rows - fixed.length - 2), 7);
-    const versionRows: Array<{ text: string; heading?: boolean; url?: string }> = graphLineCount
-      ? [{ text: "" }, { text: "  VERSION STACKS", heading: true }, ...this.room.versionGraph.slice(0, graphLineCount).map((line) => ({ text: `  ${line.text}`, url: line.url }))]
-      : [];
-    let row = fixed[index];
-    const versionStart = rows - versionRows.length;
-    if (versionRows.length && index >= versionStart) row = versionRows[index - versionStart];
-    else if (row === undefined && index >= fixed.length) {
-      const available = Math.max(0, versionStart - fixed.length);
-      const events = this.room.agentState.events.slice(-available);
-      row = { text: events[index - fixed.length] ?? "" };
-    }
-    row ??= { text: "" };
-    const style = row.heading ? HUD_MUTED : HUD;
-    const label = pad(truncate(row.text, width), width);
+    if (height < 15) return [...identity.slice(0, 1), `  ${metrics.map((metric) => metric.compact).join("  ")}`];
+    const metricRows = width >= 50
+      ? [`  ${metrics[0]!.full}  ${metrics[1]!.full}`, `  ${metrics[2]!.full}  ${metrics[3]!.full}`]
+      : metrics.map((metric) => `  ${metric.full}`);
+    return [...identity, ...metricRows];
+  }
+
+  private hudRow(index: number, width: number): string {
+    if (!width) return "";
+    const row = this.room.versionGraph[index];
+    if (!row) return `${HUD}${" ".repeat(width)}${RESET}`;
+    const tone = row.text.includes("stable") ? GREEN : row.text.includes("head") ? CYAN : row.text.includes(" · ") ? MAGENTA : MUTED;
+    const style = `${HUD}${tone}`;
+    const label = pad(truncate(`  ${row.text}`, width), width);
     const content = row.url ? `\x1b]8;;${row.url}\x1b\\${ESC}4m${label}${ESC}24m\x1b]8;;\x1b\\` : label;
     return `${style}${content}${RESET}`;
   }
@@ -286,10 +282,11 @@ export class TuiSession {
     return this.room.agentState.status === "queued" || this.room.agentState.status === "thinking" || this.room.agentState.status === "working";
   }
 
-  private syncAgentAnimation(): void {
-    if (this.agentIsActive() && !this.animationTimer) {
+  private syncAnimation(): void {
+    const animating = this.agentIsActive() || Date.now() - this.room.lastRequestAt < 1_200;
+    if (animating && !this.animationTimer) {
       this.animationTimer = setInterval(() => this.render(), 100);
-    } else if (!this.agentIsActive() && this.animationTimer) {
+    } else if (!animating && this.animationTimer) {
       clearInterval(this.animationTimer);
       this.animationTimer = undefined;
     }
@@ -327,6 +324,18 @@ function formatBytes(bytes: number): string {
   if (bytes < 1_024) return `${bytes}B`;
   if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)}KiB`;
   return `${(bytes / 1_048_576).toFixed(1)}MiB`;
+}
+
+function usageBar(label: string, used: number, limit: number, format: (value: number) => string): { full: string; compact: string } {
+  const ratio = Math.max(0, Math.min(1, used / limit));
+  const filled = Math.round(ratio * 6);
+  const tone = ratio >= 0.9 ? RED : ratio >= 0.7 ? YELLOW : GREEN;
+  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${HEADER}`;
+  const percent = `${Math.round(ratio * 100)}%`;
+  return {
+    full: `${label} ${bar} ${format(used)}/${format(limit)}`,
+    compact: `${label} ${bar} ${percent}`,
+  };
 }
 
 function compactUrl(value: string): string {

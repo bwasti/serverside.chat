@@ -32,6 +32,25 @@ test("one room broadcasts the same message to concurrent clients", () => {
   expect(shannon).toEqual(alice);
 });
 
+test("connection accounting distinguishes people from concurrent sessions", () => {
+  const room = new Room("mine");
+  expect(room.join("alice")).toBe(true);
+  expect(room.join("alice")).toBe(true);
+  room.setWebConnections(3);
+  expect(room.members.size).toBe(1);
+  expect(room.connectionCount).toBe(5);
+  room.leave("alice");
+  expect(room.members.has("alice")).toBe(true);
+  expect(room.connectionCount).toBe(4);
+});
+
+test("rolling response-byte ceiling is enforced", () => {
+  const room = new Room("mine");
+  expect(room.canSendResponse(64 * 1024 * 1024)).toBe(true);
+  room.recordRequest("GET", "/large", 200, 1, 64 * 1024 * 1024);
+  expect(room.canSendResponse(1)).toBe(false);
+});
+
 test("room bounds messages and input", () => {
   const room = new Room("mine", 2);
   room.chat("alice", "one");

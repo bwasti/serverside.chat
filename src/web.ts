@@ -1,4 +1,4 @@
-import type { Room } from "./room";
+import { ROOM_LIMITS, type Room } from "./room";
 import type { RoomWorkspace } from "./workspace";
 import { ServiceRuntime } from "./runtime";
 
@@ -21,10 +21,11 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       const room = byName.get(name);
       if (!room) return new Response("room not found\n", { status: 404 });
       if (parts.slice(1).join("/") === SOCKET_PATH) {
-        if ((socketCounts.get(name) ?? 0) >= MAX_ROOM_SOCKETS) return new Response("room socket limit reached\n", { status: 503 });
+        if ((socketCounts.get(name) ?? 0) >= MAX_ROOM_SOCKETS || room.connectionCount >= ROOM_LIMITS.connections) return new Response("room socket limit reached\n", { status: 503 });
         if (server.upgrade(request, { data: { room: name, windowStarted: Date.now(), messages: 0 } })) return;
         return new Response("websocket upgrade required\n", { status: 426 });
       }
+      if (!room.tryBeginRequest()) { room.recordRequest(request.method, url.pathname, 503, performance.now() - started, 19); return new Response("room request limit\n", { status: 503 }); }
       const workspace = workspaces.get(name)!;
       // Query metadata belongs to the host. The remaining pathname belongs to
       // the service and will be passed through unchanged by the Wasm gateway.
@@ -33,20 +34,23 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
         const servicePath = `/${parts.slice(1).map(encodeURIComponent).join("/")}${url.search ? `?${[...url.searchParams].filter(([key]) => key !== "__ref" && key !== "__preview").map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&")}` : ""}`.replace(/\?$/, "");
         const result = await runtimes.get(name)!.fetch(request, deploymentRef, servicePath, (payload) => server.publish(`room:${name}`, payload));
         if ((result.headers["content-type"] ?? "").startsWith("text/html")) result.body = injectRealtimeClient(result.body, name);
-        room.recordRequest(request.method, url.pathname, result.status, performance.now() - started, Buffer.byteLength(result.body));
+        const bytes = Buffer.byteLength(result.body);
+        if (!room.canSendResponse(bytes)) { room.recordRequest(request.method, url.pathname, 429, performance.now() - started, 25); return new Response("hourly byte limit reached\n", { status: 429 }); }
+        room.recordRequest(request.method, url.pathname, result.status, performance.now() - started, bytes);
         return new Response(result.body, { status: result.status, headers: { ...result.headers, "cache-control": "no-store" } });
       } catch (error) {
         const message = error instanceof Error ? error.message : "service failed";
         room.recordServiceLog(`runtime error ${message}`);
         room.recordRequest(request.method, url.pathname, 500, performance.now() - started, 23);
         return new Response("service execution failed\n", { status: 500 });
-      }
+      } finally { room.endRequest(); }
     },
     websocket: {
       maxPayloadLength: 16 * 1024,
       idleTimeout: 120,
       open(ws) {
         socketCounts.set(ws.data.room, (socketCounts.get(ws.data.room) ?? 0) + 1);
+        byName.get(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
         ws.subscribe(`room:${ws.data.room}`);
         ws.send(JSON.stringify({ type: "connected", data: { room: ws.data.room } }));
       },
@@ -60,7 +64,7 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
         const payload = JSON.stringify({ type: "client", data });
         ws.publish(`room:${ws.data.room}`, payload);
       },
-      close(ws) { socketCounts.set(ws.data.room, Math.max(0, (socketCounts.get(ws.data.room) ?? 1) - 1)); },
+      close(ws) { socketCounts.set(ws.data.room, Math.max(0, (socketCounts.get(ws.data.room) ?? 1) - 1)); byName.get(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0); },
     },
   });
 }

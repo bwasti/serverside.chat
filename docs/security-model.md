@@ -30,3 +30,5 @@ Before outbound fetch is enabled, the host must enforce HTTPS, permitted ports, 
 ## Current state
 
 QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, and host-owned realtime sockets are implemented. Authentication, signed invitations, roles on HTTP requests, agent credentials, authenticated socket upgrades, and outbound fetch are not. Until those land, the service must remain on a trusted network and outbound internet access stays disabled.
+
+The prototype currently enforces 128 aggregate live SSH/browser connections, 100 WebSockets, 32 concurrent HTTP executions, and 64 MiB of response egress per rolling hour per room. These room-wide limits will become outer ceilings once authenticated per-principal sub-budgets are implemented.

@@ -17,10 +17,13 @@ export interface AgentSnapshot {
   links: Array<{ label: string; url: string }>;
 }
 
+export const ROOM_LIMITS = { connections: 128, concurrentRequests: 32, egressBytesPerHour: 64 * 1024 * 1024, databaseBytes: 5 * 1024 * 1024, filesystemBytes: 5 * 1024 * 1024 } as const;
+
 export class Room {
   readonly name: string;
   readonly messages: Message[] = [];
   readonly members = new Set<string>();
+  private readonly memberConnections = new Map<string, number>();
   private nextId = 1;
   private listeners = new Set<(message: Message) => void>();
   private serviceListeners = new Set<() => void>();
@@ -31,6 +34,12 @@ export class Room {
   serviceTotalLatencyMs = 0;
   readonly serviceLogs: string[] = [];
   readonly versionGraph: Array<{ text: string; url?: string }> = [];
+  webConnections = 0;
+  activeRequests = 0;
+  databaseBytes = 0;
+  filesystemBytes = 0;
+  lastRequestAt = 0;
+  private readonly egressSamples: Array<{ at: number; bytes: number }> = [];
   private agentResponder?: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, requester: string) => Promise<string>;
   private agentQueue = Promise.resolve();
   private passiveTimer?: ReturnType<typeof setTimeout>;
@@ -77,9 +86,31 @@ export class Room {
     if (status >= 400) this.serviceErrors++;
     this.serviceResponseBytes += responseBytes;
     this.serviceTotalLatencyMs += latencyMs;
+    this.lastRequestAt = Date.now();
+    this.egressSamples.push({ at: this.lastRequestAt, bytes: responseBytes });
+    this.pruneEgress();
     const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
     this.serviceLogs.push(`${time} ${status} ${latencyMs.toFixed(1)}ms ${method} ${path}`);
     if (this.serviceLogs.length > 50) this.serviceLogs.shift();
+    this.saveState();
+    for (const listener of this.serviceListeners) listener();
+  }
+
+  get connectionCount(): number { return [...this.memberConnections.values()].reduce((sum, count) => sum + count, 0) + this.webConnections; }
+  get egressBytesLastHour(): number { this.pruneEgress(); return this.egressSamples.reduce((sum, sample) => sum + sample.bytes, 0); }
+
+  canSendResponse(bytes: number): boolean { return this.egressBytesLastHour + Math.max(0, bytes) <= ROOM_LIMITS.egressBytesPerHour; }
+  tryBeginRequest(): boolean {
+    if (this.activeRequests >= ROOM_LIMITS.concurrentRequests) return false;
+    this.activeRequests++;
+    for (const listener of this.serviceListeners) listener();
+    return true;
+  }
+  endRequest(): void { this.activeRequests = Math.max(0, this.activeRequests - 1); for (const listener of this.serviceListeners) listener(); }
+  setWebConnections(count: number): void { this.webConnections = Math.max(0, Math.min(ROOM_LIMITS.connections, count)); for (const listener of this.serviceListeners) listener(); }
+  recordResources(databaseBytes: number, filesystemBytes: number): void {
+    this.databaseBytes = Math.max(0, databaseBytes);
+    this.filesystemBytes = Math.max(0, filesystemBytes);
     this.saveState();
     for (const listener of this.serviceListeners) listener();
   }
@@ -105,13 +136,19 @@ export class Room {
     return output;
   }
 
-  join(username: string): void {
+  join(username: string): boolean {
+    if (this.connectionCount >= ROOM_LIMITS.connections) return false;
+    this.memberConnections.set(username, (this.memberConnections.get(username) ?? 0) + 1);
     this.members.add(username);
     for (const listener of this.serviceListeners) listener();
+    return true;
   }
 
   leave(username: string): void {
-    if (this.members.delete(username)) for (const listener of this.serviceListeners) listener();
+    const remaining = (this.memberConnections.get(username) ?? 1) - 1;
+    if (remaining > 0) this.memberConnections.set(username, remaining);
+    else { this.memberConnections.delete(username); this.members.delete(username); }
+    for (const listener of this.serviceListeners) listener();
   }
 
   chat(username: string, text: string): void {
@@ -216,6 +253,10 @@ export class Room {
       this.serviceErrors = finiteNumber(state.serviceErrors);
       this.serviceResponseBytes = finiteNumber(state.serviceResponseBytes);
       this.serviceTotalLatencyMs = finiteNumber(state.serviceTotalLatencyMs);
+      this.databaseBytes = finiteNumber(state.databaseBytes);
+      this.filesystemBytes = finiteNumber(state.filesystemBytes);
+      if (Array.isArray(state.egressSamples)) for (const raw of state.egressSamples) { const sample = raw as Record<string, unknown>; if (typeof sample?.at === "number" && typeof sample.bytes === "number") this.egressSamples.push({ at: sample.at, bytes: sample.bytes }); }
+      this.pruneEgress();
       if (Array.isArray(state.serviceLogs)) this.serviceLogs.push(...state.serviceLogs.filter((value): value is string => typeof value === "string").slice(-50));
       const agent = state.agentState as Record<string, unknown> | undefined;
       if (agent) {
@@ -236,8 +277,13 @@ export class Room {
     if (!this.statePath) return;
     mkdirSync(dirname(this.statePath), { recursive: true });
     const temporary = `${this.statePath}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, agentState: { events: this.agentState.events, links: this.agentState.links } }, null, 2));
+    writeFileSync(temporary, JSON.stringify({ messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, egressSamples: this.egressSamples, agentState: { events: this.agentState.events, links: this.agentState.links } }, null, 2));
     renameSync(temporary, this.statePath);
+  }
+
+  private pruneEgress(): void {
+    const cutoff = Date.now() - 60 * 60 * 1_000;
+    while (this.egressSamples[0] && this.egressSamples[0].at < cutoff) this.egressSamples.shift();
   }
 }
 

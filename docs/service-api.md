@@ -87,6 +87,9 @@ The browser receives `{ "type": "messages.changed", "data": { "id": 42 } }`. Cli
 - 100 scalar SQL parameters per operation
 - 20 structured guest logs per request
 - 100 live sockets per room, 16 KiB per event, 20 inbound events/second/socket
+- 128 aggregate live browser/SSH connections per room
+- 32 concurrent HTTP executions per room
+- 64 MiB response egress per rolling hour per room
 
 This Bun worker is the executable prototype of the API boundary. Production will run the same contract in QuickJS hosted by embedded Wasmtime and add outer worker-process isolation, Wasmtime store limits, and epoch interruption.
 
