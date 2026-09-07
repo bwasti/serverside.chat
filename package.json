@@ -1,0 +1,19 @@
+{
+  "name": "wasm-chat",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc"
+  },
+  "dependencies": {
+    "quickjs-emscripten": "^0.32.0",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/ssh2": "^1.15.5"
+  }
+}
