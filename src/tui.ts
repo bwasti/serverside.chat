@@ -26,6 +26,8 @@ export class TuiSession {
   private width = 80;
   private height = 24;
   private input = "";
+  private cursorOffset = 0;
+  private preferredCursorColumn?: number;
   private closed = false;
   private unsubscribe: () => void;
   private unsubscribeService: () => void;
@@ -64,51 +66,84 @@ export class TuiSession {
 
   private onData(data: Buffer): void {
     // SSH is a byte stream: a packet may contain one key, many keys, or pasted lines.
-    // Handle navigation, then remove other terminal key escape sequences.
-    const navigated = data.toString("utf8")
-      .replace(/\x1b\[([AB])/g, (_sequence, direction: string) => {
-        if (this.sidebarFocused) this.moveRoom(direction === "A" ? -1 : 1);
-        else this.scrollChat(direction === "A" ? 1 : -1);
-        return "";
-      })
-      .replace(/\x1b\[([56])~/g, (_sequence, direction: string) => {
-        if (!this.sidebarFocused) this.scrollChat(direction === "5" ? 8 : -8);
-        return "";
-      });
-    const value = navigated.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|.)/g, "");
+    // Walk escape and text tokens in order so pasted text and navigation can share a packet.
     let dirty = false;
-    for (const char of value) {
-      if (char === "\x03" || char === "\x04") {
-        this.stream.end();
-        return;
-      }
-      if (char === "\t") {
-        this.sidebarFocused = !this.sidebarFocused;
-        this.animateSidebar();
-        dirty = true;
+    let inputChanged = false;
+    const tokens = data.toString("utf8").match(/\x1b(?:\[[0-?]*[ -/]*[@-~]|O[HF]|[^\x1b])|[^\x1b]+/gs) ?? [];
+    for (const token of tokens) {
+      if (token.startsWith("\x1b")) {
+        const result = this.handleEscape(token);
+        dirty = result.dirty || dirty;
+        inputChanged = result.inputChanged || inputChanged;
         continue;
       }
-      if (this.sidebarFocused) continue;
-      if (char === "\r" || char === "\n") {
-        if (char === "\n" && this.lastWasCarriageReturn) {
-          this.lastWasCarriageReturn = false;
+      for (const char of token) {
+        if (char === "\x03" || (char === "\x04" && !this.input)) {
+          this.stream.end();
+          return;
+        }
+        if (char === "\t") {
+          this.sidebarFocused = !this.sidebarFocused;
+          this.room.setTyping(this.username, false);
+          this.animateSidebar();
+          dirty = true;
           continue;
         }
-        this.lastWasCarriageReturn = char === "\r";
-        if (this.submit()) return;
-        dirty = true;
-        continue;
-      }
-      this.lastWasCarriageReturn = false;
-      if (char === "\x7f" || char === "\b") {
-        this.input = Array.from(this.input).slice(0, -1).join("");
-        dirty = true;
-      } else if (!/[\x00-\x1f\x7f]/.test(char)) {
-        this.input = (this.input + char).slice(0, 2_000);
-        dirty = true;
+        if (this.sidebarFocused) continue;
+        if (char === "\r" || char === "\n") {
+          if (char === "\n" && this.lastWasCarriageReturn) {
+            this.lastWasCarriageReturn = false;
+            continue;
+          }
+          this.lastWasCarriageReturn = char === "\r";
+          if (this.submit()) return;
+          dirty = true;
+          continue;
+        }
+        this.lastWasCarriageReturn = false;
+        let changed = false;
+        if (char === "\x7f" || char === "\b") changed = this.deleteBack();
+        else if (char === "\x04") changed = this.deleteForward();
+        else if (char === "\x01") dirty = this.moveCursorTo(0) || dirty;
+        else if (char === "\x05") dirty = this.moveCursorTo(Array.from(this.input).length) || dirty;
+        else if (char === "\x02") dirty = this.moveCursor(-1) || dirty;
+        else if (char === "\x06") dirty = this.moveCursor(1) || dirty;
+        else if (char === "\x17") changed = this.deleteWordBack();
+        else if (char === "\x15") changed = this.deleteBeforeCursor();
+        else if (char === "\x0b") changed = this.deleteAfterCursor();
+        else if (!/[\x00-\x1f\x7f]/.test(char)) changed = this.insertAtCursor(char);
+        inputChanged = changed || inputChanged;
+        dirty = changed || dirty;
       }
     }
+    if (inputChanged) this.room.setTyping(this.username, Boolean(this.input));
     if (dirty) this.render();
+  }
+
+  private handleEscape(sequence: string): { dirty: boolean; inputChanged: boolean } {
+    const arrow = sequence.match(/^\x1b\[(?:(1;[2-8]))?([ABCD])$/);
+    if (arrow) {
+      const modifier = arrow[1];
+      const direction = arrow[2]!;
+      const wordMotion = (modifier === "1;3" || modifier === "1;5") && (direction === "C" || direction === "D");
+      const dirty = wordMotion && !this.sidebarFocused ? this.moveWord(direction === "D" ? -1 : 1) : this.handleArrow(direction);
+      return { dirty, inputChanged: false };
+    }
+    const page = sequence.match(/^\x1b\[([56])~$/);
+    if (page && !this.sidebarFocused) { this.scrollChat(page[1] === "5" ? 8 : -8); return { dirty: true, inputChanged: false }; }
+    if (/^\x1b(?:\[(?:H|1~|7~)|OH)$/.test(sequence) && !this.sidebarFocused) return { dirty: this.moveCursorTo(0), inputChanged: false };
+    if (/^\x1b(?:\[(?:F|4~|8~)|OF)$/.test(sequence) && !this.sidebarFocused) return { dirty: this.moveCursorTo(Array.from(this.input).length), inputChanged: false };
+    if (sequence === "\x1bb" && !this.sidebarFocused) return { dirty: this.moveWord(-1), inputChanged: false };
+    if (sequence === "\x1bf" && !this.sidebarFocused) return { dirty: this.moveWord(1), inputChanged: false };
+    if (sequence === "\x1b\x7f" || sequence === "\x1b\x08") {
+      const changed = !this.sidebarFocused && this.deleteWordBack();
+      return { dirty: changed, inputChanged: changed };
+    }
+    if (sequence === "\x1b[3~") {
+      const changed = !this.sidebarFocused && this.deleteForward();
+      return { dirty: changed, inputChanged: changed };
+    }
+    return { dirty: false, inputChanged: false };
   }
 
   private moveRoom(offset: number): void {
@@ -116,6 +151,7 @@ export class TuiSession {
     if (next === this.roomIndex) return;
     this.unsubscribe();
     this.unsubscribeService();
+    this.room.setTyping(this.username, false);
     this.room.leave(this.username);
     this.roomIndex = next;
     this.room = this.rooms[next]!;
@@ -132,9 +168,128 @@ export class TuiSession {
     this.render();
   }
 
+  private handleArrow(direction: string): boolean {
+    if (this.sidebarFocused) {
+      if (direction === "A" || direction === "B") this.moveRoom(direction === "A" ? -1 : 1);
+      return direction === "A" || direction === "B";
+    }
+    if (direction === "C") return this.moveCursor(1);
+    if (direction === "D") return this.moveCursor(-1);
+    const moved = this.moveCursorVertical(direction === "A" ? -1 : 1);
+    if (!moved) this.scrollChat(direction === "A" ? 1 : -1);
+    return true;
+  }
+
+  private moveCursor(offset: number): boolean {
+    return this.moveCursorTo(this.cursorOffset + offset);
+  }
+
+  private moveCursorTo(offset: number, preserveColumn = false): boolean {
+    const next = Math.max(0, Math.min(Array.from(this.input).length, offset));
+    if (next === this.cursorOffset) return false;
+    this.cursorOffset = next;
+    if (!preserveColumn) this.preferredCursorColumn = undefined;
+    return true;
+  }
+
+  private moveCursorVertical(offset: number): boolean {
+    const layout = layoutComposer(this.input, this.cursorOffset, this.mainWidth());
+    const targetRow = layout.cursorRow + offset;
+    if (targetRow < 0 || targetRow >= layout.rows.length) return false;
+    const desiredColumn = this.preferredCursorColumn ?? layout.cursorColumn;
+    const target = layout.rows[targetRow]!;
+    this.preferredCursorColumn = desiredColumn;
+    return this.moveCursorTo(Math.max(0, Math.min(target.end, target.start + desiredColumn) - 2), true);
+  }
+
+  private moveWord(direction: -1 | 1): boolean {
+    const chars = Array.from(this.input);
+    let next = this.cursorOffset;
+    if (direction < 0) {
+      while (next > 0 && /\s/.test(chars[next - 1]!)) next--;
+      while (next > 0 && !/\s/.test(chars[next - 1]!)) next--;
+    } else {
+      while (next < chars.length && !/\s/.test(chars[next]!)) next++;
+      while (next < chars.length && /\s/.test(chars[next]!)) next++;
+    }
+    return this.moveCursorTo(next);
+  }
+
+  private insertAtCursor(value: string): boolean {
+    const chars = Array.from(this.input);
+    if (chars.length >= 2_000) return false;
+    const inserted = Array.from(value).slice(0, 2_000 - chars.length);
+    if (!inserted.length) return false;
+    chars.splice(this.cursorOffset, 0, ...inserted);
+    this.input = chars.join("");
+    this.cursorOffset += inserted.length;
+    this.preferredCursorColumn = undefined;
+    return true;
+  }
+
+  private deleteBack(): boolean {
+    if (!this.cursorOffset) return false;
+    const chars = Array.from(this.input);
+    chars.splice(this.cursorOffset - 1, 1);
+    this.input = chars.join("");
+    this.cursorOffset--;
+    this.preferredCursorColumn = undefined;
+    return true;
+  }
+
+  private deleteForward(): boolean {
+    const chars = Array.from(this.input);
+    if (this.cursorOffset >= chars.length) return false;
+    chars.splice(this.cursorOffset, 1);
+    this.input = chars.join("");
+    this.preferredCursorColumn = undefined;
+    return true;
+  }
+
+  private deleteWordBack(): boolean {
+    const end = this.cursorOffset;
+    if (!end) return false;
+    const chars = Array.from(this.input);
+    let start = end;
+    while (start > 0 && /\s/.test(chars[start - 1]!)) start--;
+    while (start > 0 && !/\s/.test(chars[start - 1]!)) start--;
+    chars.splice(start, end - start);
+    this.input = chars.join("");
+    this.cursorOffset = start;
+    this.preferredCursorColumn = undefined;
+    return true;
+  }
+
+  private deleteBeforeCursor(): boolean {
+    if (!this.cursorOffset) return false;
+    const chars = Array.from(this.input);
+    chars.splice(0, this.cursorOffset);
+    this.input = chars.join("");
+    this.cursorOffset = 0;
+    this.preferredCursorColumn = undefined;
+    return true;
+  }
+
+  private deleteAfterCursor(): boolean {
+    const chars = Array.from(this.input);
+    if (this.cursorOffset >= chars.length) return false;
+    this.input = chars.slice(0, this.cursorOffset).join("");
+    this.preferredCursorColumn = undefined;
+    return true;
+  }
+
+  private mainWidth(): number {
+    const sidebarWidth = Math.round(this.sidebarWidth);
+    const hudWidth = this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
+    return this.width - sidebarWidth - hudWidth;
+  }
+
   private submit(): boolean {
     const line = this.input;
     this.input = "";
+    this.cursorOffset = 0;
+    this.preferredCursorColumn = undefined;
+    this.room.setTyping(this.username, false);
     this.scrollOffset = 0;
     if (line === "/quit") {
       this.stream.end();
@@ -155,15 +310,18 @@ export class TuiSession {
     this.syncAnimation();
     const sidebarWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
-    const mainWidth = this.width - sidebarWidth - hudWidth;
+    const mainWidth = this.mainWidth();
     const pageLinks = this.pageLinkRows(mainWidth, Math.max(1, Math.min(5, this.height - 8)));
     const topStatus = this.topStatusRows(mainWidth, this.height);
     const topRows = [...pageLinks, ...topStatus];
-    const allInputRows = wrap(`  ${this.input}`, mainWidth);
+    const inputLayout = layoutComposer(this.input, this.cursorOffset, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - 4));
-    const inputRows = allInputRows.slice(-maximumComposerRows);
-    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length);
-    const contentRows = this.height - 2;
+    let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
+    if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
+    if (inputLayout.cursorRow >= firstInputRow + maximumComposerRows) firstInputRow = inputLayout.cursorRow - maximumComposerRows + 1;
+    const inputRows = inputLayout.rows.slice(firstInputRow, firstInputRow + maximumComposerRows).map((row) => row.text);
+    const typingStatus = this.typingStatus(mainWidth);
+    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (typingStatus ? 1 : 0));
     if (this.messageCacheRoom !== this.room.name || this.messageCacheWidth !== mainWidth) {
       this.messageCacheRoom = this.room.name;
       this.messageCacheWidth = mainWidth;
@@ -200,9 +358,13 @@ export class TuiSession {
     const body = visible.map(({ text, kind }, index) => {
       const color = kind === "system" ? MUTED : CHAT;
       const columnRow = index + topRows.length;
-      const renderedText = padAnsi(text, mainWidth);
+      const rendered = padAnsi(text, mainWidth);
+      const renderedText = this.sidebarFocused ? rendered.replaceAll(`${ESC}22m`, `${ESC}22m${DIM}`) : rendered;
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
+    const typing = typingStatus
+      ? [`${this.sidebarRow(topRows.length + visible.length, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${pad(typingStatus, mainWidth)}${ESC}23m${RESET}${this.hudRow(topRows.length + visible.length, hudWidth)}`]
+      : [];
     const composer = inputRows.map((inputText, index) => {
       const last = index === inputRows.length - 1;
       const sidebarFooter = last
@@ -211,9 +373,10 @@ export class TuiSession {
       const hudFooter = hudWidth ? `${last ? HUD_MUTED : HUD}${pad(last ? "  linear history · rebase only" : "", hudWidth)}${RESET}` : "";
       return `${sidebarFooter}${paneTone}${COMPOSER}${pad(truncate(inputText, mainWidth), mainWidth)}${RESET}${hudFooter}`;
     });
-    const cursorColumn = sidebarWidth + Math.min(mainWidth, Array.from(inputRows.at(-1) ?? "").length + 1);
-    const screen = [header, ...statusHeaders, ...body, ...composer].join("\r\n");
-    const cursor = this.sidebarFocused ? `${ESC}?25l` : `${ESC}${this.height};${cursorColumn}H${ESC}?25h`;
+    const cursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);
+    const cursorRow = this.height - inputRows.length + 1 + inputLayout.cursorRow - firstInputRow;
+    const screen = [header, ...statusHeaders, ...body, ...typing, ...composer].join("\r\n");
+    const cursor = this.sidebarFocused ? `${ESC}?25l` : `${ESC}${cursorRow};${cursorColumn}H${ESC}?25h`;
     const frame = `${screen}${cursor}`;
     if (frame === this.lastFrame) return;
     this.lastFrame = frame;
@@ -296,6 +459,17 @@ export class TuiSession {
     return lines;
   }
 
+  private typingStatus(width: number): string {
+    const names = this.room.typingMembers.filter((name) => name !== this.username);
+    if (!names.length) return "";
+    const subject = names.length === 1
+      ? names[0]!
+      : names.length === 2
+        ? `${names[0]} and ${names[1]}`
+        : `${names[0]}, ${names[1]} +${names.length - 2}`;
+    return truncate(`  ${subject} ${names.length === 1 ? "is" : "are"} typing…`, width);
+  }
+
   private close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -304,6 +478,7 @@ export class TuiSession {
     if (this.animationTimer) clearInterval(this.animationTimer);
     if (this.sidebarAnimationTimer) clearInterval(this.sidebarAnimationTimer);
     if (this.renderTimer) clearTimeout(this.renderTimer);
+    this.room.setTyping(this.username, false);
     this.room.leave(this.username);
     this.write("\x1b[?25h\x1b[?1049l");
   }
@@ -407,6 +582,46 @@ function renderVersionRow(value: string, url: string | undefined, width: number)
   }
   const fitted = padAnsi(rendered, width);
   return fitted;
+}
+
+export interface ComposerLayout {
+  rows: Array<{ text: string; start: number; end: number }>;
+  cursorRow: number;
+  cursorColumn: number;
+}
+
+export function layoutComposer(input: string, cursorOffset: number, width: number): ComposerLayout {
+  const lineWidth = Math.max(1, width);
+  const inputChars = Array.from(input);
+  const chars = [" ", " ", ...inputChars];
+  const rows: ComposerLayout["rows"] = [];
+  let start = 0;
+  while (start < chars.length) {
+    const maximumEnd = Math.min(chars.length, start + lineWidth);
+    let end = maximumEnd;
+    if (maximumEnd < chars.length) {
+      for (let index = maximumEnd - 1; index > start; index--) {
+        if (index >= 2 && chars[index] === " ") { end = index + 1; break; }
+      }
+    }
+    rows.push({ text: chars.slice(start, end).join(""), start, end });
+    start = end;
+  }
+  if (!rows.length) rows.push({ text: "", start: 0, end: 0 });
+  const absoluteCursor = 2 + Math.max(0, Math.min(inputChars.length, cursorOffset));
+  if (absoluteCursor === chars.length && rows.at(-1)!.text.length === lineWidth) {
+    rows.push({ text: "", start: chars.length, end: chars.length });
+  }
+  let cursorRow = rows.length - 1;
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index]!;
+    if (absoluteCursor < row.end || (index === rows.length - 1 && absoluteCursor <= row.end)) {
+      cursorRow = index;
+      break;
+    }
+  }
+  const row = rows[cursorRow]!;
+  return { rows, cursorRow, cursorColumn: Math.max(0, Math.min(Array.from(row.text).length, absoluteCursor - row.start)) };
 }
 
 function truncate(value: string, width: number): string {

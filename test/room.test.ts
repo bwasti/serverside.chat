@@ -44,6 +44,21 @@ test("connection accounting distinguishes people from concurrent sessions", () =
   expect(room.connectionCount).toBe(4);
 });
 
+test("typing presence broadcasts transitions without per-keystroke churn", () => {
+  const room = new Room("mine");
+  let updates = 0;
+  room.subscribeService(() => updates++);
+
+  room.setTyping("alice", true);
+  room.setTyping("alice", true);
+  expect(room.typingMembers).toEqual(["alice"]);
+  expect(updates).toBe(1);
+
+  room.setTyping("alice", false);
+  expect(room.typingMembers).toEqual([]);
+  expect(updates).toBe(2);
+});
+
 test("rolling response-byte ceiling is enforced", () => {
   const room = new Room("mine");
   expect(room.canSendResponse(64 * 1024 * 1024)).toBe(true);

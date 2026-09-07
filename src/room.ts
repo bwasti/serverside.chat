@@ -27,6 +27,8 @@ export class Room {
   private nextId = 1;
   private listeners = new Set<(message: Message) => void>();
   private serviceListeners = new Set<() => void>();
+  private readonly typing = new Set<string>();
+  private readonly typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly serviceStartedAt: Date;
   serviceRequests = 0;
   serviceErrors = 0;
@@ -58,6 +60,27 @@ export class Room {
   subscribeService(listener: () => void): () => void {
     this.serviceListeners.add(listener);
     return () => this.serviceListeners.delete(listener);
+  }
+
+  get typingMembers(): string[] { return [...this.typing].sort(); }
+
+  setTyping(username: string, active: boolean): void {
+    const existing = this.typingTimers.get(username);
+    if (existing) clearTimeout(existing);
+    this.typingTimers.delete(username);
+    if (!active) {
+      if (this.typing.delete(username)) for (const listener of this.serviceListeners) listener();
+      return;
+    }
+    const added = !this.typing.has(username);
+    this.typing.add(username);
+    const expiry = setTimeout(() => {
+      if (this.typingTimers.get(username) !== expiry) return;
+      this.typingTimers.delete(username);
+      if (this.typing.delete(username)) for (const listener of this.serviceListeners) listener();
+    }, 1_800);
+    this.typingTimers.set(username, expiry);
+    if (added) for (const listener of this.serviceListeners) listener();
   }
 
   setAgentResponder(responder: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, requester: string) => Promise<string>): void {
