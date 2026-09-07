@@ -175,9 +175,9 @@ export class TuiSession {
     this.write(`${ESC}?25l${ESC}H${ESC}2J${screen}${cursor}`);
   }
 
-  private pageLinkRows(width: number, limit: number): string[] {
-    const links = [{ label: "stable", url: this.room.pageUrl }, ...this.room.agentState.links.filter((link) => link.url !== this.room.pageUrl)];
-    return links.slice(0, limit).map((link) => {
+  private pageLinkRows(width: number, _limit: number): string[] {
+    const links = [{ label: "main", url: this.room.pageUrl }];
+    return links.map((link) => {
       const ref = compactUrl(link.url).replace(/^localhost:\d+\//, "");
       const description = link.label === "head" ? "working tip" : link.label;
       const label = truncate(`  ↗ ${ref}  —  ${description}`, width);

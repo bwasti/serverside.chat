@@ -78,12 +78,27 @@ export class RoomWorkspace {
   log(): string { return this.git(["log", "-12", "--oneline", "--decorate"]).stdout; }
   versionGraph(limit = 8): string[] {
     const count = Math.max(1, Math.min(12, Math.floor(limit) || 8));
-    return this.git(["log", "--graph", "--all", "--topo-order", "--decorate=short", `-${count}`, "--format=%h %s %d"]).stdout
+    const head = this.head();
+    const previews = new Map(this.visiblePreviews().map((preview) => [preview.commit, preview.description]));
+    const lines = this.git(["log", "--graph", "--all", "--topo-order", "--decorate=short", `-${count}`, "--format=%h%x09%s%x09%d"]).stdout
       .trimEnd().split("\n").filter(Boolean).map((line) => {
         const match = line.match(/^([*|\\/ .-]*)(.*)$/);
         const graph = (match?.[1] ?? "").replaceAll("*", "●").replaceAll("|", "│").replaceAll("\\", "╲").replaceAll("/", "╱");
-        return `${graph}${match?.[2] ?? line}`.replace(/\s+$/, "").slice(0, 120);
+        const fields = (match?.[2] ?? line).split("\t");
+        const commit = fields[0] ?? "";
+        if (!/^[0-9a-f]{7,40}$/.test(commit)) return `${graph}…`;
+        const labels: string[] = [];
+        if (commit === head) labels.push("head");
+        if (commit === this.activeCommit) labels.push("stable");
+        const preview = previews.get(commit);
+        if (preview) labels.push(preview);
+        const refs = (fields[2] ?? "").replace(/[()]/g, "").split(",").map((ref) => ref.trim().replace(/^HEAD -> /, "").replace(/^tag: /, "")).filter((ref) => ref && ref !== "stable" && ref !== labels[0]);
+        const tags = [...labels, ...refs.filter((ref) => !labels.includes(ref))];
+        const summary = tags.length ? tags.slice(0, 3).join(" · ") : (fields[1] ?? "commit");
+        return `${graph}${commit}  ${summary}`.replace(/\s+$/, "").slice(0, 120);
       });
+    if (Number(this.git(["rev-list", "--all", "--count"]).stdout.trim()) > count) lines.push("…");
+    return lines;
   }
   branches(): string { return this.git(["branch", "--format=%(refname:short)"]).stdout; }
   deploymentStatus(): { activeCommit: string; headCommit: string; activeIsHead: boolean; previews: Array<{ id: string; commit: string; description: string }> } {

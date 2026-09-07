@@ -38,8 +38,7 @@ test("version graph exposes concise commit stacks and refs", () => {
   workspace.writeFile("feature.txt", "stacked\n");
   const commit = workspace.commit("stacked work");
   const graph = workspace.versionGraph();
-  expect(graph.some((line) => line.includes(commit.commit) && line.includes("stacked work"))).toBe(true);
-  expect(graph.some((line) => line.includes("feature"))).toBe(true);
+  expect(graph.some((line) => line.includes(commit.commit) && line.includes("head"))).toBe(true);
   expect(graph.every((line) => line.length <= 120)).toBe(true);
 });
 
