@@ -68,6 +68,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
   let principal: Principal | undefined;
   client.on("authentication", (context) => {
     if (context.method !== "publickey") return context.reject(["publickey"]);
+    if (!context.key?.algo || !context.key.data) return context.reject(["publickey"]);
     const parsed = utils.parseKey(`${context.key.algo} ${context.key.data.toString("base64")}`);
     const key = Array.isArray(parsed) ? parsed[0] : parsed;
     if (!key || key instanceof Error) return context.reject(["publickey"]);
