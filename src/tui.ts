@@ -355,8 +355,38 @@ function pad(value: string, width: number): string {
 }
 
 function padAnsi(value: string, width: number): string {
-  const visible = value.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-  return value + " ".repeat(Math.max(0, width - Array.from(visible).length));
+  const clipped = clipAnsi(value, width);
+  return clipped + " ".repeat(Math.max(0, width - visibleLength(clipped)));
+}
+
+function visibleLength(value: string): number {
+  return Array.from(value.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")).length;
+}
+
+function clipAnsi(value: string, width: number): string {
+  if (visibleLength(value) <= width) return value;
+  let output = "";
+  let visible = 0;
+  for (let index = 0; index < value.length && visible < width;) {
+    if (value[index] === "\x1b" && value[index + 1] === "[") {
+      const end = value.slice(index).search(/[A-Za-z]/);
+      if (end < 0) break;
+      output += value.slice(index, index + end + 1);
+      index += end + 1;
+    } else if (value[index] === "\x1b" && value[index + 1] === "]") {
+      const bell = value.indexOf("\x07", index + 2);
+      const stringTerminator = value.indexOf("\x1b\\", index + 2);
+      const end = bell >= 0 && (stringTerminator < 0 || bell < stringTerminator) ? bell + 1 : stringTerminator >= 0 ? stringTerminator + 2 : value.length;
+      output += value.slice(index, end);
+      index = end;
+    } else {
+      const character = Array.from(value.slice(index))[0]!;
+      output += character;
+      index += character.length;
+      visible++;
+    }
+  }
+  return `${output}\x1b]8;;\x1b\\${RESET}`;
 }
 
 function wrap(value: string, width: number): string[] {
