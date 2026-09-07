@@ -2,6 +2,8 @@
 
 The executable room-service contract is documented in [`docs/service-api.md`](docs/service-api.md). The implemented account and room policy model is in [`docs/accounts.md`](docs/accounts.md); its security boundary is described in [`docs/security-model.md`](docs/security-model.md).
 
+The versioned systemd deployment layout and release procedure are documented in [`docs/deployment.md`](docs/deployment.md).
+
 An early SSH/TUI prototype for chat rooms backed by tiny Wasm services and a room-scoped AI agent.
 
 This prototype has an SSH TUI, persistent multi-client rooms, public-key accounts and invitations, a QuickJS-Wasm service runtime, room-scoped SQLite and scratch storage, Git-backed deployments and previews, host-owned telemetry/realtime sockets, and an optional Fireworks room agent.

@@ -1,0 +1,44 @@
+[Unit]
+Description=serverside.chat SSH rooms and Wasm services
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=serverside-chat
+Group=serverside-chat
+WorkingDirectory=/opt/serverside-chat/current
+EnvironmentFile=/etc/serverside-chat/environment
+Environment=NODE_ENV=production
+Environment=DATA_DIR=/var/lib/serverside-chat
+Environment=HOST=0.0.0.0
+Environment=PORT=2222
+Environment=WEB_HOST=0.0.0.0
+Environment=WEB_PORT=3000
+ExecStart=/usr/local/bin/bun src/server.ts
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0077
+
+# The host process needs network access and one writable state directory. Room
+# JavaScript remains behind the narrower QuickJS capability boundary.
+StateDirectory=serverside-chat
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/serverside-chat
+
+[Install]
+WantedBy=multi-user.target
