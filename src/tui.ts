@@ -13,7 +13,6 @@ const HUD = `${ESC}48;5;233m${ESC}38;5;250m`;
 const HUD_MUTED = `${ESC}48;5;233m${ESC}38;5;244m`;
 const MUTED = `${ESC}38;5;244m`;
 const CHAT = `${ESC}38;5;252m`;
-const AGENT_ROW = `${ESC}48;5;236m${ESC}38;5;252m`;
 const OWNER = `${ESC}38;5;213m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -175,7 +174,7 @@ export class TuiSession {
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const body = visible.map(({ text, kind }, index) => {
-      const color = kind === "agent" || kind === "commit" ? AGENT_ROW : kind === "system" ? MUTED : CHAT;
+      const color = kind === "system" ? MUTED : CHAT;
       const columnRow = index + topRows.length;
       const renderedText = padAnsi(text, mainWidth);
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
