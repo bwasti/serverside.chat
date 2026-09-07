@@ -21,11 +21,13 @@ export interface GuestResponse { status: number; headers: Record<string, string>
 export class ServiceRuntime {
   private readonly databasePath: string;
   private readonly scratchRoot: string;
+  private filesystemBytes: number;
   constructor(private readonly workspace: RoomWorkspace, private readonly room: Room, dataDir: string) {
     this.databasePath = `${dataDir}/rooms/${workspace.roomName}/service.sqlite`;
     this.scratchRoot = resolve(dataDir, "rooms", workspace.roomName, "scratch");
     mkdirSync(dirname(this.databasePath), { recursive: true });
     mkdirSync(this.scratchRoot, { recursive: true });
+    this.filesystemBytes = this.scratchFiles().reduce((sum, file) => sum + file.bytes, 0);
   }
 
   async fetch(request: Request, deploymentRef: string | undefined, servicePath: string, publish?: (payload: string) => void): Promise<GuestResponse> {
@@ -88,8 +90,8 @@ export class ServiceRuntime {
       } finally { vm.dispose(); runtime.dispose(); }
     } finally {
       db.close();
-      this.room.recordResources(databaseBytes(this.databasePath), this.scratchFiles().reduce((sum, file) => sum + file.bytes, 0));
-      for (const log of logs) this.room.recordServiceLog(`guest ${log}`);
+      this.room.recordResources(databaseBytes(this.databasePath), this.filesystemBytes);
+      this.room.recordServiceLogs(logs.map((log) => `guest ${log}`));
     }
   }
 
@@ -114,7 +116,11 @@ export class ServiceRuntime {
   }
 
   private filesystemCall(action: string, path: string, content?: string): unknown {
-    if (action === "list") return { files: this.scratchFiles() };
+    if (action === "list") {
+      const files = this.scratchFiles();
+      this.filesystemBytes = files.reduce((sum, file) => sum + file.bytes, 0);
+      return { files };
+    }
     const target = this.safeScratchPath(path);
     if (action === "readText") {
       if (!existsSync(target) || !statSync(target).isFile()) throw new Error("scratch file not found");
@@ -126,17 +132,20 @@ export class ServiceRuntime {
       const bytes = Buffer.byteLength(content);
       if (bytes > MAX_FS_FILE) throw new Error("scratch file exceeds 512 KiB limit");
       const old = existsSync(target) ? statSync(target).size : 0;
-      const total = this.scratchFiles().reduce((sum, file) => sum + file.bytes, 0) - old + bytes;
+      const total = this.filesystemBytes - old + bytes;
       if (total > MAX_FS) throw new Error("scratch filesystem exceeds 5 MiB limit");
       mkdirSync(dirname(target), { recursive: true });
       const temporary = `${target}.tmp-${crypto.randomUUID()}`;
       writeFileSync(temporary, content, { mode: 0o600 });
       renameSync(temporary, target);
+      this.filesystemBytes = total;
       return { path, bytes };
     }
     if (action === "delete") {
       if (!existsSync(target) || !statSync(target).isFile()) throw new Error("scratch file not found");
+      const bytes = statSync(target).size;
       unlinkSync(target);
+      this.filesystemBytes = Math.max(0, this.filesystemBytes - bytes);
       return { deleted: path };
     }
     throw new Error("unknown scratch filesystem operation");

@@ -4,6 +4,7 @@ import { dirname, relative, resolve, sep } from "node:path";
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_WORKSPACE_BYTES = 5 * 1024 * 1024;
+const MAX_PUBLISHED_CACHE_ENTRIES = 128;
 
 export class RoomWorkspace {
   readonly root: string;
@@ -12,6 +13,7 @@ export class RoomWorkspace {
   readonly previewDescriptions = new Map<string, string>();
   readonly previewBranches = new Map<string, string>();
   readonly archivedPreviews = new Set<string>();
+  private readonly publishedCache = new Map<string, string>();
   activeCommit!: string;
 
   constructor(dataDir: string, readonly roomName: string, sourceRoot?: string) {
@@ -205,7 +207,15 @@ export class RoomWorkspace {
     const commit = this.resolveDeploymentRef(ref);
     if (!commit) throw new Error("preview not found");
     const safe = relative(this.root, this.safePath(path));
-    return this.limit(this.git(["show", `${commit}:${safe}`]).stdout);
+    const key = `${commit}:${safe}`;
+    const cached = this.publishedCache.get(key);
+    if (cached !== undefined) return cached;
+    const content = this.limit(this.git(["show", key]).stdout);
+    this.publishedCache.set(key, content);
+    if (this.publishedCache.size > MAX_PUBLISHED_CACHE_ENTRIES) {
+      this.publishedCache.delete(this.publishedCache.keys().next().value!);
+    }
+    return content;
   }
 
   private seed(): void {

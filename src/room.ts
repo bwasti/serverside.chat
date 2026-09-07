@@ -103,22 +103,29 @@ export class Room {
   tryBeginRequest(): boolean {
     if (this.activeRequests >= ROOM_LIMITS.concurrentRequests) return false;
     this.activeRequests++;
-    for (const listener of this.serviceListeners) listener();
     return true;
   }
-  endRequest(): void { this.activeRequests = Math.max(0, this.activeRequests - 1); for (const listener of this.serviceListeners) listener(); }
+  endRequest(): void { this.activeRequests = Math.max(0, this.activeRequests - 1); }
   setWebConnections(count: number): void { this.webConnections = Math.max(0, Math.min(ROOM_LIMITS.connections, count)); for (const listener of this.serviceListeners) listener(); }
   recordResources(databaseBytes: number, filesystemBytes: number): void {
-    this.databaseBytes = Math.max(0, databaseBytes);
-    this.filesystemBytes = Math.max(0, filesystemBytes);
+    const nextDatabaseBytes = Math.max(0, databaseBytes);
+    const nextFilesystemBytes = Math.max(0, filesystemBytes);
+    if (nextDatabaseBytes === this.databaseBytes && nextFilesystemBytes === this.filesystemBytes) return;
+    this.databaseBytes = nextDatabaseBytes;
+    this.filesystemBytes = nextFilesystemBytes;
     this.saveState();
     for (const listener of this.serviceListeners) listener();
   }
 
   recordServiceLog(text: string): void {
+    this.recordServiceLogs([text]);
+  }
+
+  recordServiceLogs(lines: string[]): void {
+    if (!lines.length) return;
     const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-    this.serviceLogs.push(`${time} ${text.replace(/[\r\n]/g, " ").slice(0, 500)}`);
-    if (this.serviceLogs.length > 50) this.serviceLogs.shift();
+    for (const text of lines.slice(0, 20)) this.serviceLogs.push(`${time} ${text.replace(/[\r\n]/g, " ").slice(0, 500)}`);
+    if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
     this.saveState();
   }
 

@@ -57,3 +57,15 @@ test("guest scratch filesystem persists across isolates and rejects traversal", 
   workspace.commit("test scratch traversal");
   await expect(runtime.fetch(new Request("http://service/mine"), "head", "/")).rejects.toThrow("scratch path escapes room");
 });
+
+test("guest CPU limit interrupts runaway service code", async () => {
+  const data = mkdtempSync(join(tmpdir(), "wasm-chat-runtime-"));
+  const workspace = new RoomWorkspace(data, "mine");
+  workspace.writeFile("worker.js", `export default { fetch() { while (true) {} } };`);
+  workspace.commit("test runaway worker");
+  const runtime = new ServiceRuntime(workspace, new Room("mine"), data);
+  const started = performance.now();
+
+  await expect(runtime.fetch(new Request("http://service/mine"), "head", "/")).rejects.toThrow();
+  expect(performance.now() - started).toBeLessThan(2_000);
+}, 5_000);

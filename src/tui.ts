@@ -35,14 +35,19 @@ export class TuiSession {
   private room: Room;
   private animationTimer?: ReturnType<typeof setInterval>;
   private sidebarAnimationTimer?: ReturnType<typeof setInterval>;
+  private renderTimer?: ReturnType<typeof setTimeout>;
   private sidebarWidth = 3;
   private scrollOffset = 0;
+  private lastFrame = "";
+  private messageCacheRoom = "";
+  private messageCacheWidth = 0;
+  private readonly messageCache = new Map<number, string[]>();
 
   constructor(private readonly stream: ServerChannel, private readonly rooms: Room[], private readonly username: string) {
     this.room = rooms[0]!;
     this.write("\x1b[?1049h\x1b[?25h");
-    this.unsubscribe = this.room.subscribe(() => this.render());
-    this.unsubscribeService = this.room.subscribeService(() => this.render());
+    this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
+    this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
     this.room.join(username);
     stream.on("data", (data: Buffer) => this.onData(data));
     stream.on("close", () => this.close());
@@ -115,8 +120,9 @@ export class TuiSession {
     this.roomIndex = next;
     this.room = this.rooms[next]!;
     this.scrollOffset = 0;
-    this.unsubscribe = this.room.subscribe(() => this.render());
-    this.unsubscribeService = this.room.subscribeService(() => this.render());
+    this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
+    this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
+    this.messageCache.clear();
     this.room.join(this.username);
     this.render();
   }
@@ -142,6 +148,10 @@ export class TuiSession {
 
   private render(): void {
     if (this.closed) return;
+    if (this.renderTimer) {
+      clearTimeout(this.renderTimer);
+      this.renderTimer = undefined;
+    }
     this.syncAnimation();
     const sidebarWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
@@ -154,9 +164,23 @@ export class TuiSession {
     const inputRows = allInputRows.slice(-maximumComposerRows);
     const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length);
     const contentRows = this.height - 2;
-    const messages = this.room.messages.flatMap((message) =>
-      this.formatMessage(message, mainWidth).map((text) => ({ text, kind: message.kind })),
-    );
+    if (this.messageCacheRoom !== this.room.name || this.messageCacheWidth !== mainWidth) {
+      this.messageCacheRoom = this.room.name;
+      this.messageCacheWidth = mainWidth;
+      this.messageCache.clear();
+    }
+    const messages = this.room.messages.flatMap((message) => {
+      let rows = this.messageCache.get(message.id);
+      if (!rows) {
+        rows = this.formatMessage(message, mainWidth);
+        this.messageCache.set(message.id, rows);
+      }
+      return rows.map((text) => ({ text, kind: message.kind }));
+    });
+    if (this.messageCache.size > this.room.messages.length) {
+      const retained = new Set(this.room.messages.map((message) => message.id));
+      for (const id of this.messageCache.keys()) if (!retained.has(id)) this.messageCache.delete(id);
+    }
     const maximumOffset = Math.max(0, messages.length - messageRows);
     this.scrollOffset = Math.min(this.scrollOffset, maximumOffset);
     const end = messages.length - this.scrollOffset;
@@ -190,7 +214,10 @@ export class TuiSession {
     const cursorColumn = sidebarWidth + Math.min(mainWidth, Array.from(inputRows.at(-1) ?? "").length + 1);
     const screen = [header, ...statusHeaders, ...body, ...composer].join("\r\n");
     const cursor = this.sidebarFocused ? `${ESC}?25l` : `${ESC}${this.height};${cursorColumn}H${ESC}?25h`;
-    this.write(`${ESC}?25l${ESC}H${ESC}2J${screen}${cursor}`);
+    const frame = `${screen}${cursor}`;
+    if (frame === this.lastFrame) return;
+    this.lastFrame = frame;
+    this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
   }
 
   private pageLinkRows(width: number, _limit: number): string[] {
@@ -276,6 +303,7 @@ export class TuiSession {
     this.unsubscribeService();
     if (this.animationTimer) clearInterval(this.animationTimer);
     if (this.sidebarAnimationTimer) clearInterval(this.sidebarAnimationTimer);
+    if (this.renderTimer) clearTimeout(this.renderTimer);
     this.room.leave(this.username);
     this.write("\x1b[?25h\x1b[?1049l");
   }
@@ -291,11 +319,19 @@ export class TuiSession {
   private syncAnimation(): void {
     const animating = this.agentIsActive() || Date.now() - this.room.lastRequestAt < 1_200;
     if (animating && !this.animationTimer) {
-      this.animationTimer = setInterval(() => this.render(), 100);
+      this.animationTimer = setInterval(() => this.render(), 250);
     } else if (!animating && this.animationTimer) {
       clearInterval(this.animationTimer);
       this.animationTimer = undefined;
     }
+  }
+
+  private scheduleRender(): void {
+    if (this.closed || this.renderTimer) return;
+    this.renderTimer = setTimeout(() => {
+      this.renderTimer = undefined;
+      this.render();
+    }, 25);
   }
 
   private expandedSidebarWidth(): number {
