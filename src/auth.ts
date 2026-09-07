@@ -30,6 +30,12 @@ export interface RoomPolicy {
   agentMode: AgentMode;
 }
 
+export interface WebPairing {
+  code: string;
+  sessionToken: string;
+  expiresAt: number;
+}
+
 interface UserRow { id: string; handle: string; display_name: string; status: string }
 interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode }
 
@@ -103,6 +109,14 @@ export class AccountStore {
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL,
         revoked_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS web_pairings (
+        id TEXT PRIMARY KEY,
+        code_hash TEXT NOT NULL UNIQUE,
+        session_hash TEXT NOT NULL UNIQUE,
+        requested_from TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS agent_credentials (
         id TEXT PRIMARY KEY,
@@ -269,6 +283,46 @@ export class AccountStore {
     return { principal: authenticated, roomName: invite.room_name, role: invite.role };
   }
 
+  createWebPairing(requestedFrom: string, ttlMs = 10 * 60 * 1_000): WebPairing {
+    const now = Date.now();
+    this.db.query("DELETE FROM web_pairings WHERE expires_at <= ?").run(now);
+    const active = this.db.query("SELECT COUNT(*) AS count FROM web_pairings").get() as { count: number };
+    if (active.count >= 5_000) throw new Error("too many pending browser sign-ins");
+    const rawCode = randomBytes(6).toString("hex").toUpperCase();
+    const code = `${rawCode.slice(0, 6)}-${rawCode.slice(6)}`;
+    const sessionToken = randomBytes(32).toString("base64url");
+    const expiresAt = now + Math.max(60_000, Math.min(15 * 60 * 1_000, ttlMs));
+    this.db.query("INSERT INTO web_pairings(id, code_hash, session_hash, requested_from, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), tokenHash(normalizePairingCode(code)), tokenHash(sessionToken), requestedFrom.slice(0, 120), now, expiresAt);
+    return { code, sessionToken, expiresAt };
+  }
+
+  approveWebPairing(principal: Principal, code: string, sessionTtlMs = 30 * 24 * 60 * 60 * 1_000): void {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("an authenticated account must approve browser sign-in");
+    const normalized = normalizePairingCode(code);
+    const pairing = this.db.query("SELECT id, session_hash, expires_at FROM web_pairings WHERE code_hash = ?").get(tokenHash(normalized)) as { id: string; session_hash: string; expires_at: number } | null;
+    if (!pairing || pairing.expires_at <= Date.now()) throw new Error("pairing code is invalid or expired");
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.query("INSERT INTO web_sessions(id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+        .run(crypto.randomUUID(), principal.id, pairing.session_hash, now, now + Math.max(60_000, sessionTtlMs));
+      this.db.query("DELETE FROM web_pairings WHERE id = ?").run(pairing.id);
+    })();
+    this.audit(principal, undefined, "web.pair.approve");
+  }
+
+  principalForWebSession(sessionToken: string): Principal | undefined {
+    if (!/^[a-zA-Z0-9_-]{40,64}$/.test(sessionToken)) return undefined;
+    const row = this.db.query(`SELECT u.id, u.handle, u.display_name, u.status
+      FROM web_sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?`).get(tokenHash(sessionToken), Date.now()) as UserRow | null;
+    return row?.status === "active" ? userPrincipal(row) : undefined;
+  }
+
+  revokeWebSession(sessionToken: string): void {
+    if (/^[a-zA-Z0-9_-]{40,64}$/.test(sessionToken)) this.db.query("UPDATE web_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL").run(Date.now(), tokenHash(sessionToken));
+  }
+
   linkIdentity(userId: string, provider: string, subject: string, email?: string): void {
     this.db.query("INSERT INTO identities(provider, provider_subject, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(provider.slice(0, 40), subject.slice(0, 255), userId, email?.slice(0, 320) ?? null, Date.now());
@@ -300,3 +354,9 @@ function normalizeHandle(value: string): string {
 }
 
 function tokenHash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+
+function normalizePairingCode(value: string): string {
+  const compact = value.trim().toUpperCase().replace(/-/g, "");
+  if (!/^[0-9A-F]{12}$/.test(compact)) throw new Error("pairing code is invalid or expired");
+  return compact;
+}

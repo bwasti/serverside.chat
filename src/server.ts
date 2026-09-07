@@ -17,6 +17,8 @@ const dataDir = process.env.DATA_DIR ?? ".data";
 const webBaseUrl = (process.env.WEB_BASE_URL ?? "http://Brams-MacBook-Air.local:3000").replace(/\/$/, "");
 const webHost = process.env.WEB_HOST ?? host;
 const webPort = Number(process.env.WEB_PORT ?? 3000);
+const sshPublicHost = process.env.SSH_PUBLIC_HOST ?? new URL(webBaseUrl).hostname;
+const sshPublicPort = Number(process.env.SSH_PUBLIC_PORT ?? port);
 const keyPath = `${dataDir}/ssh_host_ed25519_key`;
 
 mkdirSync(dataDir, { recursive: true });
@@ -57,7 +59,7 @@ if (fireworksKey) {
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }
-const webServer = startWebServer(rooms, workspaces, webHost, webPort, dataDir, accounts);
+const webServer = startWebServer(rooms, workspaces, webHost, webPort, dataDir, accounts, { host: sshPublicHost, port: sshPublicPort });
 const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection) => {
   let principal: Principal | undefined;
   client.on("authentication", (context) => {
@@ -112,7 +114,10 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         const stream = acceptExec();
         try {
           const command = parseSshEntryCommand(info.command);
-          if (command.kind === "room") launch(stream, command.roomName, true);
+          if (command.kind === "approve") {
+            accounts.approveWebPairing(principal!, command.code);
+            stream.end(`Browser sign-in approved as ${principal!.handle}.\r\n`);
+          } else if (command.kind === "room") launch(stream, command.roomName, true);
           else {
             const redeemed = accounts.redeem(principal!, command.token);
             principal = redeemed.principal;

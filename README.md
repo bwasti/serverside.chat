@@ -23,7 +23,7 @@ In another terminal:
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p 2222
 ```
 
-The browser version is served at `/`. It uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Until web login is implemented, browser sessions are anonymous and read-only.
+The browser version is served at `/`. It uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Anonymous sessions are read-only. Click **sign in** and approve the short-lived pairing code from an existing account with `ssh -p 2222 serverside.chat approve <code>`; the browser then reconnects with a Secure, HttpOnly session cookie and receives that account's room permissions.
 
 SSH can also deep-link into a room or redeem an invitation before opening the TUI:
 
@@ -45,6 +45,7 @@ Commands inside the room:
 - `/agent <request>` explicitly invokes the agent when room policy permits it
 - `/invite admin|contributor|viewer` creates a one-use 24-hour invite (admin only)
 - `/redeem <invite>` binds the current verified SSH key to a persistent account
+- `/approve <browser-code>` signs a browser into the current SSH account
 - `/permissions` shows the current room policy
 - `/permissions visibility public|private`
 - `/permissions contributions members|admins|disabled`

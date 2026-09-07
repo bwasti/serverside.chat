@@ -41,6 +41,19 @@ test("an invited SSH key becomes a durable room account", () => {
   accounts.close();
 });
 
+test("SSH approval creates a hashed, revocable browser session", () => {
+  const { accounts, member } = setup();
+  const pairing = accounts.createWebPairing("203.0.113.10", 60_000);
+  expect(accounts.principalForWebSession(pairing.sessionToken)).toBeUndefined();
+  expect(() => accounts.approveWebPairing(anonymousPrincipal("SHA256:guest"), pairing.code)).toThrow("authenticated account");
+  accounts.approveWebPairing(member, pairing.code, 60_000);
+  expect(accounts.principalForWebSession(pairing.sessionToken)).toMatchObject({ id: member.id, handle: "bob", authenticated: true });
+  expect(() => accounts.approveWebPairing(member, pairing.code)).toThrow("invalid or expired");
+  accounts.revokeWebSession(pairing.sessionToken);
+  expect(accounts.principalForWebSession(pairing.sessionToken)).toBeUndefined();
+  accounts.close();
+});
+
 test("public visibility is independent from contribution and agent authority", () => {
   const { accounts, owner, member } = setup();
   const guest = anonymousPrincipal("SHA256:guest", "alice");

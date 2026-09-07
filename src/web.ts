@@ -7,19 +7,20 @@ import type { RoomWorkspace } from "./workspace";
 import { ServiceRuntime } from "./runtime";
 import { TuiSession, type TuiStream } from "./tui";
 
-interface ServiceSocketData { kind: "service"; room: string; windowStarted: number; messages: number }
+interface ServiceSocketData { kind: "service"; room: string; principal: Principal; windowStarted: number; messages: number }
 interface TuiSocketData { kind: "tui"; principal: Principal; cols: number; rows: number; windowStarted: number; messages: number }
 type SocketData = ServiceSocketData | TuiSocketData;
 const SOCKET_PATH = ".well-known/realtime";
 const MAX_ROOM_SOCKETS = 100;
 const MAX_BROWSER_TUIS = 128;
+const SESSION_COOKIE = "__Host-serverside_session";
 const terminalAssets = new Map([
   ["/_terminal/xterm.js", { file: Bun.file("node_modules/@xterm/xterm/lib/xterm.js"), type: "text/javascript; charset=utf-8" }],
   ["/_terminal/xterm.css", { file: Bun.file("node_modules/@xterm/xterm/css/xterm.css"), type: "text/css; charset=utf-8" }],
   ["/_terminal/addon-fit.js", { file: Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js"), type: "text/javascript; charset=utf-8" }],
 ]);
 
-export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorkspace>, host: string, port: number, dataDir = ".data", accounts?: AccountStore) {
+export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorkspace>, host: string, port: number, dataDir = ".data", accounts?: AccountStore, sshEntry = { host: "serverside.chat", port: 2222 }) {
   const byName = new Map(rooms.map((room) => [room.name, room]));
   const runtimes = new Map(rooms.map((room) => [room.name, new ServiceRuntime(workspaces.get(room.name)!, room, dataDir)]));
   const socketCounts = new Map<string, number>();
@@ -31,6 +32,25 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
     async fetch(request, server) {
       const started = performance.now();
       const url = new URL(request.url);
+      const sessionToken = readSessionCookie(request);
+      const requestPrincipal = accounts?.principalForWebSession(sessionToken ?? "") ?? anonymousWebPrincipal(request);
+      if (url.pathname === "/_auth/pair" && request.method === "POST") {
+        if (!accounts) return Response.json({ error: "account storage is unavailable" }, { status: 503 });
+        if (requestPrincipal.authenticated) return Response.json({ authenticated: true, handle: requestPrincipal.handle });
+        try {
+          const pairing = accounts.createWebPairing(webAddress(request));
+          return Response.json({ authenticated: false, code: pairing.code, expiresAt: pairing.expiresAt, command: `ssh -p ${sshEntry.port} ${sshEntry.host} approve ${pairing.code}` }, { headers: { "set-cookie": sessionCookie(pairing.sessionToken) } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "could not start browser sign-in" }, { status: 503 });
+        }
+      }
+      if (url.pathname === "/_auth/status" && request.method === "GET") {
+        return Response.json(requestPrincipal.authenticated ? { authenticated: true, handle: requestPrincipal.handle } : { authenticated: false }, { headers: { "cache-control": "no-store" } });
+      }
+      if (url.pathname === "/_auth/logout" && request.method === "POST") {
+        if (accounts && sessionToken) accounts.revokeWebSession(sessionToken);
+        return Response.json({ authenticated: false }, { headers: { "set-cookie": clearSessionCookie() } });
+      }
       if (request.method === "GET" && url.pathname === "/") {
         return new Response(browserTuiHtml(), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
@@ -38,7 +58,7 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       if (request.method === "GET" && asset) return new Response(asset.file, { headers: { "content-type": asset.type, "cache-control": "public, max-age=86400" } });
       if (url.pathname === "/_terminal/socket") {
         if (browserTuis.size >= MAX_BROWSER_TUIS) return new Response("browser terminal limit reached\n", { status: 503 });
-        const principal = anonymousWebPrincipal(request);
+        const principal = requestPrincipal;
         const cols = boundedDimension(url.searchParams.get("cols"), 80, 40, 300);
         const rows = boundedDimension(url.searchParams.get("rows"), 24, 10, 120);
         if (server.upgrade(request, { data: { kind: "tui", principal, cols, rows, windowStarted: Date.now(), messages: 0 } })) return;
@@ -48,11 +68,11 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       const name = parts[0] ?? "";
       const room = byName.get(name);
       if (!room) return new Response("room not found\n", { status: 404 });
-      const principal = anonymousWebPrincipal(request);
+      const principal = requestPrincipal;
       if (accounts && !accounts.canView(principal, name)) return new Response("room not found\n", { status: 404 });
       if (parts.slice(1).join("/") === SOCKET_PATH) {
         if ((socketCounts.get(name) ?? 0) >= MAX_ROOM_SOCKETS || room.connectionCount >= ROOM_LIMITS.connections) return new Response("room socket limit reached\n", { status: 503 });
-        if (server.upgrade(request, { data: { kind: "service", room: name, windowStarted: Date.now(), messages: 0 } })) return;
+        if (server.upgrade(request, { data: { kind: "service", room: name, principal, windowStarted: Date.now(), messages: 0 } })) return;
         return new Response("websocket upgrade required\n", { status: 426 });
       }
       if (!room.tryBeginRequest()) { room.recordRequest(request.method, url.pathname, 503, performance.now() - started, 19); return new Response("room request limit\n", { status: 503 }); }
@@ -130,15 +150,32 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
   });
   if (accounts) for (const room of rooms) room.subscribeService(() => {
     if (room.policy.visibility !== "private") return;
-    for (const socket of sockets.get(room.name) ?? []) socket.close(1008, "room is private");
+    for (const socket of sockets.get(room.name) ?? []) if (socket.data.kind === "service" && !room.canView(socket.data.principal)) socket.close(1008, "room is private");
   });
   return webServer;
 }
 
 function anonymousWebPrincipal(request: Request): Principal {
-  const address = request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() || "direct";
+  const address = webAddress(request);
   const suffix = createHash("sha256").update(address).digest("hex").slice(0, 6);
   return { id: `anonymous:web:${address}`, kind: "anonymous", handle: `web-${suffix}`, displayName: "Anonymous", authenticated: false };
+}
+
+function webAddress(request: Request): string {
+  return request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() || "direct";
+}
+
+function readSessionCookie(request: Request): string | undefined {
+  const prefix = `${SESSION_COOKIE}=`;
+  return request.headers.get("cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix))?.slice(prefix.length);
+}
+
+function sessionCookie(token: string): string {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000`;
+}
+
+function clearSessionCookie(): string {
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
 }
 
 function injectRealtimeClient(html: string, room: string): string {
@@ -196,19 +233,31 @@ export function browserTuiHtml(): string {
     html,body,#terminal{width:100%;height:100%;margin:0;background:#0d1117;overflow:hidden}
     body{box-sizing:border-box;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
     #state{position:fixed;right:12px;top:8px;color:#7d8590;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;z-index:2}
+    #signin{position:fixed;right:12px;bottom:10px;z-index:3;border:1px solid #39414d;border-radius:5px;background:#222933;color:#d8dee9;padding:6px 10px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;cursor:pointer}
+    #pairing{position:fixed;inset:0;z-index:4;display:grid;place-items:center;background:#0d1117cc;color:#d8dee9;font:14px ui-monospace,SFMono-Regular,Menlo,monospace}
+    #pairing[hidden],#signin[hidden]{display:none}
+    #paircard{width:min(560px,calc(100vw - 40px));box-sizing:border-box;border:1px solid #39414d;border-radius:8px;background:#161b22;padding:20px;box-shadow:0 20px 70px #0009}
+    #paircard h1{margin:0 0 10px;font-size:16px;color:#58a6ff}#paircard p{color:#9da7b3;line-height:1.5}#paircode{color:#f778ba;font-size:20px;letter-spacing:1px}
+    #paircommand{display:block;overflow:auto;padding:10px;background:#0d1117;border-radius:5px;color:#d8dee9;white-space:nowrap}#pairactions{display:flex;gap:8px;margin-top:14px}
+    #pairactions button{border:1px solid #39414d;border-radius:5px;background:#222933;color:#d8dee9;padding:6px 10px;cursor:pointer}
     .xterm{height:100%;padding:0}.xterm-viewport{overflow-y:hidden!important}
   </style>
 </head>
 <body>
-  <div id="terminal" aria-label="serverside.chat terminal"></div><div id="state">connecting…</div>
+  <div id="terminal" aria-label="serverside.chat terminal"></div><div id="state">connecting…</div><button id="signin" hidden>sign in</button>
+  <div id="pairing" hidden><section id="paircard" role="dialog" aria-modal="true" aria-labelledby="pairtitle"><h1 id="pairtitle">sign in from SSH</h1><p>Approve this browser with your existing serverside.chat account. This code expires in ten minutes.</p><strong id="paircode"></strong><code id="paircommand"></code><div id="pairactions"><button id="copycommand">copy command</button><button id="closepair">cancel</button></div></section></div>
   <script src="/_terminal/xterm.js"></script>
   <script src="/_terminal/addon-fit.js"></script>
   <script>
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#0d1117',foreground:'#d8dee9',cursor:'#d8dee9'}});
     const fit = new FitAddon.FitAddon();
     const state = document.getElementById('state');
+    const signin = document.getElementById('signin');
+    const pairing = document.getElementById('pairing');
+    const paircode = document.getElementById('paircode');
+    const paircommand = document.getElementById('paircommand');
     terminal.loadAddon(fit); terminal.open(document.getElementById('terminal')); fit.fit(); terminal.focus();
-    let socket, retry=250, resizeFrame;
+    let socket, retry=250, resizeFrame, authPoll;
     const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
     const connect = () => {
       state.textContent='connecting…'; state.hidden=false;
@@ -221,7 +270,12 @@ export function browserTuiHtml(): string {
     terminal.onData(data=>send({type:'input',data}));
     terminal.onResize(({cols,rows})=>send({type:'resize',cols,rows}));
     addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>fit.fit())});
-    addEventListener('pointerdown',()=>terminal.focus());
+    document.getElementById('terminal').addEventListener('pointerdown',()=>terminal.focus());
+    const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());signin.hidden=Boolean(result.authenticated);return Boolean(result.authenticated)}catch{return false}};
+    signin.addEventListener('click',async()=>{signin.disabled=true;try{const response=await fetch('/_auth/pair',{method:'POST'});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not start sign in');paircode.textContent=result.code;paircommand.textContent=result.command;pairing.hidden=false;clearInterval(authPoll);authPoll=setInterval(async()=>{if(await checkAuth()){clearInterval(authPoll);location.reload()}},1000)}catch(error){state.textContent=error.message;state.hidden=false}finally{signin.disabled=false}});
+    document.getElementById('copycommand').addEventListener('click',()=>navigator.clipboard.writeText(paircommand.textContent||''));
+    document.getElementById('closepair').addEventListener('click',()=>{pairing.hidden=true;clearInterval(authPoll)});
+    checkAuth();
     connect();
   </script>
 </body>

@@ -7,6 +7,8 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain('<script src="/_terminal/xterm.js"></script>');
   expect(page).toContain('<script src="/_terminal/addon-fit.js"></script>');
   expect(page).toContain("new WebSocket(scheme+'//'+location.host+'/_terminal/socket");
+  expect(page).toContain('<button id="signin" hidden>sign in</button>');
+  expect(page).toContain("fetch('/_auth/pair',{method:'POST'})");
   expect(await Bun.file("node_modules/@xterm/xterm/lib/xterm.js").exists()).toBe(true);
   expect(await Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js").exists()).toBe(true);
 });

@@ -330,8 +330,14 @@ export class TuiSession {
   private handleHostCommand(line: string): boolean {
     if (!this.accounts) return false;
     const [command, field, value] = line.trim().split(/\s+/);
-    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem") return false;
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/approve") return false;
     try {
+      if (command === "/approve") {
+        if (!field || value) throw new Error("usage: /approve <browser-code>");
+        this.accounts.approveWebPairing(this.principal, field);
+        this.localNotice = `browser sign-in approved as ${this.username}`;
+        return true;
+      }
       if (command === "/redeem") {
         if (!field || value) throw new Error("usage: /redeem <invite>");
         const redeemed = this.accounts.redeem(this.principal, field);
