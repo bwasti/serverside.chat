@@ -29,6 +29,8 @@ export class TuiSession {
   private sidebarFocused = false;
   private room: Room;
   private animationTimer?: ReturnType<typeof setInterval>;
+  private sidebarAnimationTimer?: ReturnType<typeof setInterval>;
+  private sidebarWidth = 3;
   private scrollOffset = 0;
 
   constructor(private readonly stream: ServerChannel, private readonly rooms: Room[], private readonly username: string) {
@@ -46,6 +48,7 @@ export class TuiSession {
   resize(width: number, height: number): void {
     this.width = Math.max(40, width || 80);
     this.height = Math.max(10, height || 24);
+    if (this.sidebarFocused) this.animateSidebar();
     this.render();
   }
 
@@ -71,6 +74,7 @@ export class TuiSession {
       }
       if (char === "\t") {
         this.sidebarFocused = !this.sidebarFocused;
+        this.animateSidebar();
         dirty = true;
         continue;
       }
@@ -134,7 +138,7 @@ export class TuiSession {
   private render(): void {
     if (this.closed) return;
     this.syncAgentAnimation();
-    const sidebarWidth = this.width >= 60 ? Math.min(20, Math.max(16, Math.floor(this.width * 0.22))) : 0;
+    const sidebarWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.width >= 100 ? Math.min(48, Math.max(34, Math.floor(this.width * 0.30))) : 0;
     const mainWidth = this.width - sidebarWidth - hudWidth;
     const pageLinks = this.pageLinkRows(mainWidth, Math.max(1, Math.min(5, this.height - 8)));
@@ -152,7 +156,9 @@ export class TuiSession {
     const title = `  # ${this.room.name}`;
     const status = `${this.scrollOffset ? `↑${this.scrollOffset}  ` : ""}${this.room.members.size} online  `;
     const headerGap = " ".repeat(Math.max(1, mainWidth - title.length - status.length));
-    const sidebarHeader = sidebarWidth ? `${SIDEBAR}${pad("  wasm chat", sidebarWidth)}${RESET}` : "";
+    const sidebarHeader = sidebarWidth <= 3
+      ? `${SIDEBAR_MUTED}${pad(" › ", sidebarWidth)}${RESET}`
+      : `${SIDEBAR}${pad(truncate("  wasm chat", sidebarWidth), sidebarWidth)}${RESET}`;
     const paneTone = this.sidebarFocused ? DIM : "";
     const hudHeader = hudWidth ? `${HUD}${pad("  SERVICE", hudWidth)}${RESET}` : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
@@ -164,9 +170,9 @@ export class TuiSession {
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth, contentRows)}`;
     });
     const inputText = `  ${this.input}`;
-    const sidebarFooter = sidebarWidth
-      ? `${SIDEBAR}${pad(`  @${truncate(this.username, sidebarWidth - 3)}`, sidebarWidth)}${RESET}`
-      : "";
+    const sidebarFooter = sidebarWidth <= 3
+      ? `${SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
+      : `${SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`;
     const hudFooter = hudWidth ? `${HUD_MUTED}${pad("  host scaffold", hudWidth)}${RESET}` : "";
     const composer = `${sidebarFooter}${paneTone}${COMPOSER}${pad(truncate(inputText, mainWidth), mainWidth)}${RESET}${hudFooter}`;
     const cursorColumn = sidebarWidth + Math.min(mainWidth, Array.from(inputText).length + 1);
@@ -230,12 +236,16 @@ export class TuiSession {
   }
 
   private sidebarRow(index: number, width: number): string {
-    if (!width) return "";
-    if (index === 0) return `${SIDEBAR_MUTED}${pad(this.sidebarFocused ? "  ROOMS  ↑↓" : "  ROOMS", width)}${RESET}`;
+    if (width <= 3) {
+      const roomIndex = index - 1;
+      const marker = roomIndex === this.roomIndex ? " ● " : roomIndex >= 0 && roomIndex < this.rooms.length ? " · " : "   ";
+      return `${roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR}${pad(marker, width)}${RESET}`;
+    }
+    if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS  ↑↓" : "  ROOMS", width), width)}${RESET}`;
     const roomIndex = index - 1;
     if (roomIndex < this.rooms.length) {
       const style = roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
-      return `${style}${pad(`  # ${this.rooms[roomIndex]!.name}`, width)}${RESET}`;
+      return `${style}${pad(truncate(`  # ${this.rooms[roomIndex]!.name}`, width), width)}${RESET}`;
     }
     return `${SIDEBAR}${" ".repeat(width)}${RESET}`;
   }
@@ -263,6 +273,7 @@ export class TuiSession {
     this.unsubscribe();
     this.unsubscribeService();
     if (this.animationTimer) clearInterval(this.animationTimer);
+    if (this.sidebarAnimationTimer) clearInterval(this.sidebarAnimationTimer);
     this.room.leave(this.username);
     this.write("\x1b[?25h\x1b[?1049l");
   }
@@ -282,6 +293,26 @@ export class TuiSession {
       clearInterval(this.animationTimer);
       this.animationTimer = undefined;
     }
+  }
+
+  private expandedSidebarWidth(): number {
+    return Math.min(20, Math.max(16, Math.floor(this.width * 0.22)));
+  }
+
+  private animateSidebar(): void {
+    if (this.sidebarAnimationTimer) return;
+    this.sidebarAnimationTimer = setInterval(() => {
+      const target = this.sidebarFocused ? this.expandedSidebarWidth() : 3;
+      const delta = target - this.sidebarWidth;
+      if (Math.abs(delta) <= 2) {
+        this.sidebarWidth = target;
+        clearInterval(this.sidebarAnimationTimer);
+        this.sidebarAnimationTimer = undefined;
+      } else {
+        this.sidebarWidth += Math.sign(delta) * 2;
+      }
+      this.render();
+    }, 30);
   }
 }
 
