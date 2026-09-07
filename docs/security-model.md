@@ -22,7 +22,7 @@ Canonical promotion is owner-only and is granted to the agent only during an exp
 
 SSH public-key signatures are verified and mapped to persistent users. Unknown verified keys receive anonymous authority and can bind themselves to a new account using a one-use, hashed, expiring room invite. The requested SSH username is never used as proof of identity.
 
-HTTP and WebSocket requests currently receive anonymous authority. Public pages and sockets are available; private rooms return 404, and existing anonymous sockets are closed if a room becomes private. Production sessions should use a host-issued Secure, HttpOnly, SameSite cookie after Google/Apple login. WebSocket upgrades must inherit and validate that session before joining a room topic.
+HTTP and WebSocket requests currently receive anonymous authority. Public pages, service sockets, and the read-only browser TUI are available; private rooms return 404, and existing anonymous sockets are closed if a room becomes private. The browser uses xterm.js only as a renderer connected directly to the constrained TUI—it never receives a PTY or system shell. Production sessions should use a host-issued Secure, HttpOnly, SameSite cookie after Google/Apple login. WebSocket upgrades must inherit and validate that session before joining a room topic.
 
 ## Outbound network accounting
 

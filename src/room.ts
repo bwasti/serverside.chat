@@ -310,7 +310,7 @@ export class Room {
   }
 
   private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal): void {
-    const message: Message = { id: this.nextId++, kind, author, text, at: new Date(), url, detail, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: principal ? this.canInvokeAgent(principal) : kind !== "chat" };
+    const message: Message = { id: this.nextId++, kind, author: stripTerminalControls(author), text: stripTerminalControls(text), at: new Date(), url, detail: detail ? stripTerminalControls(detail) : undefined, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: principal ? this.canInvokeAgent(principal) : kind !== "chat" };
     this.messages.push(message);
     if (this.messages.length > this.historyLimit) this.messages.shift();
     this.saveState();
@@ -390,6 +390,12 @@ function rebaseRoomUrl(value: string, pageUrl: string): string {
 
 function isRoomRole(value: unknown): value is RoomRole {
   return value === "owner" || value === "admin" || value === "contributor" || value === "viewer";
+}
+
+function stripTerminalControls(value: string): string {
+  return value
+    .replace(/\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|.)/g, "")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
 }
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";

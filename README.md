@@ -6,7 +6,7 @@ The versioned systemd deployment layout and release procedure are documented in 
 
 An early SSH/TUI prototype for chat rooms backed by tiny Wasm services and a room-scoped AI agent.
 
-This prototype has an SSH TUI, persistent multi-client rooms, public-key accounts and invitations, a QuickJS-Wasm service runtime, room-scoped SQLite and scratch storage, Git-backed deployments and previews, host-owned telemetry/realtime sockets, and an optional Fireworks room agent.
+This prototype has one shared TUI over SSH and HTTPS, persistent multi-client rooms, public-key accounts and invitations, a QuickJS-Wasm service runtime, room-scoped SQLite and scratch storage, Git-backed deployments and previews, host-owned telemetry/realtime sockets, and an optional Fireworks room agent.
 
 ## Run it
 
@@ -22,6 +22,8 @@ In another terminal:
 ```sh
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p 2222
 ```
+
+The browser version is served at `/`. It uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Until web login is implemented, browser sessions are anonymous and read-only.
 
 Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner. An unknown but valid key enters public rooms as an anonymous browse-only principal; its requested SSH username has no authority. To propose a handle while redeeming an invite:
 

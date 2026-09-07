@@ -74,6 +74,12 @@ test("room bounds messages and input", () => {
   expect(room.messages.map((message) => message.text)).toEqual(["two", "three"]);
 });
 
+test("room messages cannot inject terminal control sequences", () => {
+  const room = new Room("mine");
+  room.chat("alice", "\x1b[31mred\x1b[0m \x1b]8;;https://evil.test\x07link\x1b]8;;\x07");
+  expect(room.messages[0]?.text).toBe("red link");
+});
+
 test("room uses a configured asynchronous agent", async () => {
   const room = new Room("mine");
   room.setAgentResponder(async (history) => `saw ${history.at(-1)?.text}`);

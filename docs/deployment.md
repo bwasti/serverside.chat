@@ -4,6 +4,8 @@ The production-shaped deployment runs as the unprivileged `serverside-chat` user
 
 Caddy terminates public HTTP/TLS on ports 80 and 443 using [`deploy/Caddyfile`](../deploy/Caddyfile), automatically redirects HTTP to HTTPS, and proxies HTTP and WebSocket traffic to the application on `127.0.0.1:3000`. The TUI's SSH protocol remains directly exposed on port 2222; it does not pass through the HTTP reverse proxy.
 
+The host firewall defaults to denying incoming traffic and permits only TCP 22 for management, TCP 2222 for chat SSH, TCP 80/443 for HTTP, HTTPS, and ACME, and UDP 443 for HTTP/3. Port 3000 is both loopback-bound and absent from the firewall allowlist.
+
 The systemd unit is [`deploy/serverside-chat.service`](../deploy/serverside-chat.service). Its host-specific, root-readable environment file is `/etc/serverside-chat/environment`:
 
 ```dotenv

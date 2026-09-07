@@ -29,4 +29,4 @@ Owner and admin can inspect or change these controls with `/permissions`. Disabl
 - Canonical promotion requires the owner identity and an explicit `/agent` run; prompt text cannot grant it.
 - Policy changes, logins, invitation creation, and redemption are written to `audit_events`.
 
-The current browser path is anonymous-only. Consequently, private websites are unavailable over HTTP until provider login and host-issued web sessions are implemented. This is a deliberate deny-by-default boundary, not an invitation token URL workaround.
+The current browser path is anonymous-only. The browser TUI uses a stable source-IP principal to distinguish approximate people from concurrent connections, but remains read-only; it does not pretend that an IP address is an authenticated account. Consequently, private websites and rooms are unavailable over HTTP until provider login and host-issued web sessions are implemented. This is a deliberate deny-by-default boundary, not an invitation token URL workaround.

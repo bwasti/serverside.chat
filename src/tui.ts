@@ -1,6 +1,13 @@
-import type { ServerChannel } from "ssh2";
 import type { AccountStore, AgentMode, ContributionPolicy, Principal, RoomRole, RoomVisibility } from "./auth";
 import { ROOM_LIMITS, type Message, type Room } from "./room";
+
+export interface TuiStream {
+  readonly destroyed: boolean;
+  write(value: string): boolean;
+  end(value?: string): void;
+  on(event: "data", listener: (data: Buffer) => void): unknown;
+  on(event: "close" | "end", listener: () => void): unknown;
+}
 
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
@@ -50,13 +57,15 @@ export class TuiSession {
   private rooms: Room[];
   private localNotice = "";
 
-  constructor(private readonly stream: ServerChannel, rooms: Room[], principal: Principal | string, private readonly accounts?: AccountStore) {
+  constructor(private readonly stream: TuiStream, rooms: Room[], principal: Principal | string, private readonly accounts?: AccountStore) {
     this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
     this.allRooms = rooms;
     this.rooms = rooms.filter((room) => room.canView(this.principal));
     if (!this.rooms.length) throw new Error("principal cannot view any rooms");
     this.room = this.rooms[0]!;
-    if (!this.principal.authenticated && this.accounts) this.localNotice = "anonymous · browse only · /redeem <invite> to join";
+    if (!this.principal.authenticated && this.accounts) this.localNotice = this.principal.sshKeyBlob
+      ? "anonymous · browse only · /redeem <invite> to join"
+      : "anonymous · browse only · web sign-in required to contribute";
     this.write("\x1b[?1049h\x1b[?25h");
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
@@ -550,7 +559,7 @@ export class TuiSession {
   private get username(): string { return this.principal.handle; }
 
   private canUseComposer(): boolean {
-    return !this.principal.authenticated && Boolean(this.accounts)
+    return !this.principal.authenticated && Boolean(this.accounts && this.principal.sshKeyBlob)
       || this.room.canContribute(this.principal)
       || Boolean(this.accounts?.isAdmin(this.principal, this.room.name));
   }
