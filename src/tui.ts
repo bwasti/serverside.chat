@@ -13,7 +13,7 @@ const HUD = `${ESC}48;5;233m${ESC}38;5;250m`;
 const HUD_MUTED = `${ESC}48;5;233m${ESC}38;5;244m`;
 const MUTED = `${ESC}38;5;244m`;
 const CHAT = `${ESC}38;5;252m`;
-const AGENT = `${ESC}38;5;81m`;
+const AGENT_ROW = `${ESC}48;5;236m${ESC}38;5;252m`;
 const OWNER = `${ESC}38;5;213m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -156,13 +156,13 @@ export class TuiSession {
     const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length);
     const contentRows = this.height - 2;
     const messages = this.room.messages.flatMap((message) =>
-      this.formatMessage(message, mainWidth).map((text) => ({ text, kind: message.kind, owner: message.author === this.room.owner })),
+      this.formatMessage(message, mainWidth).map((text) => ({ text, kind: message.kind })),
     );
     const maximumOffset = Math.max(0, messages.length - messageRows);
     this.scrollOffset = Math.min(this.scrollOffset, maximumOffset);
     const end = messages.length - this.scrollOffset;
     const visible = messages.slice(Math.max(0, end - messageRows), end);
-    while (visible.length < messageRows) visible.unshift({ text: "", kind: "chat", owner: false });
+    while (visible.length < messageRows) visible.unshift({ text: "", kind: "chat" });
 
     const title = `  # ${this.room.name}`;
     const status = `${this.scrollOffset ? `↑${this.scrollOffset}  ` : ""}${this.room.members.size} online  `;
@@ -174,10 +174,10 @@ export class TuiSession {
     const hudHeader = hudWidth ? `${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}` : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
-    const body = visible.map(({ text, kind, owner }, index) => {
-      const color = owner ? OWNER : kind === "agent" || kind === "commit" ? AGENT : kind === "system" ? MUTED : CHAT;
+    const body = visible.map(({ text, kind }, index) => {
+      const color = kind === "agent" || kind === "commit" ? AGENT_ROW : kind === "system" ? MUTED : CHAT;
       const columnRow = index + topRows.length;
-      const renderedText = kind === "commit" ? padAnsi(text, mainWidth) : pad(truncate(text, mainWidth), mainWidth);
+      const renderedText = padAnsi(text, mainWidth);
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
     const composer = inputRows.map((inputText, index) => {
@@ -200,7 +200,8 @@ export class TuiSession {
       const ref = compactUrl(link.url).replace(/^localhost:\d+\//, "");
       const description = link.label === "head" ? "working tip" : link.label;
       const label = truncate(`  ↗ ${ref}  —  ${description}`, width);
-      const rendered = `\x1b]8;;${link.url}\x1b\\${label}\x1b]8;;\x1b\\`;
+      const start = label.indexOf(ref);
+      const rendered = start < 0 ? label : `${label.slice(0, start)}\x1b]8;;${link.url}\x1b\\${ESC}24m${label.slice(start, start + ref.length)}\x1b]8;;\x1b\\${label.slice(start + ref.length)}`;
       return rendered + " ".repeat(Math.max(0, width - Array.from(label).length));
     });
   }
@@ -253,18 +254,20 @@ export class TuiSession {
   private formatMessage(message: Message, width: number): string[] {
     const time = message.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
     const marker = message.kind === "agent" ? "✦" : message.kind === "commit" ? "◆" : message.kind === "system" ? "·" : "›";
-    const prefix = ` ${time} ${marker} ${message.author}  `;
+    const plainPrefix = ` ${time} ${marker} ${message.author}  `;
+    const nameTone = message.author === "room-agent" ? CYAN : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
+    const styledName = `${ESC}1m${nameTone}${message.author}${ESC}22m${message.kind === "system" ? MUTED : CHAT}`;
+    const styledPrefix = ` ${time} ${marker} ${styledName}  `;
     if (message.kind === "commit" && message.url) {
       const [hash, ...title] = message.text.split(" ");
       const suffix = `${title.join(" ")}${message.detail ? ` — ${message.detail}` : ""}`;
-      const visible = truncate(`${prefix}${hash} ${suffix}`, width);
-      const hashStart = visible.indexOf(hash);
-      if (hashStart < 0) return [visible];
-      const before = visible.slice(0, hashStart);
-      const after = visible.slice(hashStart + hash.length);
-      return [`${before}\x1b]8;;${message.url}\x1b\\${ESC}3m${hash}${after}${ESC}23m\x1b]8;;\x1b\\`];
+      const content = truncate(`${hash} ${suffix}`, Math.max(0, width - plainPrefix.length));
+      const after = content.slice(hash.length);
+      return [`${styledPrefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${after}${ESC}23m`];
     }
-    return wrap(prefix + message.text.replace(/\s+/g, " "), width);
+    const lines = wrap(plainPrefix + message.text.replace(/\s+/g, " "), width);
+    if (lines[0]) lines[0] = lines[0].replace(message.author, styledName);
+    return lines;
   }
 
   private close(): void {
@@ -359,10 +362,16 @@ function renderVersionRow(value: string, url: string | undefined, width: number)
       const tone = tag === "stable" ? GREEN : tag === "head" ? CYAN : tag.includes(" ") ? MAGENTA : YELLOW;
       return `${tone}${tag}${HUD}`;
     }).join(" · ");
-    rendered = `  ${match[1]}  ${colored}`;
+    const commitMatch = match[1]!.match(/[0-9a-f]{7,40}/);
+    if (commitMatch && url) {
+      const start = commitMatch.index ?? 0;
+      const before = match[1]!.slice(0, start);
+      const after = match[1]!.slice(start + commitMatch[0].length);
+      rendered = `  ${before}\x1b]8;;${url}\x1b\\${ESC}24m${commitMatch[0]}\x1b]8;;\x1b\\${after}  ${colored}`;
+    } else rendered = `  ${match[1]}  ${colored}`;
   }
   const fitted = padAnsi(rendered, width);
-  return url ? `\x1b]8;;${url}\x1b\\${fitted}\x1b]8;;\x1b\\` : fitted;
+  return fitted;
 }
 
 function truncate(value: string, width: number): string {
