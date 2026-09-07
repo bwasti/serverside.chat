@@ -13,7 +13,7 @@ Environment=NODE_ENV=production
 Environment=DATA_DIR=/var/lib/serverside-chat
 Environment=HOST=0.0.0.0
 Environment=PORT=2222
-Environment=WEB_HOST=0.0.0.0
+Environment=WEB_HOST=127.0.0.1
 Environment=WEB_PORT=3000
 ExecStart=/usr/local/bin/bun src/server.ts
 Restart=on-failure
