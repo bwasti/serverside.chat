@@ -32,6 +32,14 @@ ssh -t -p 2222 serverside.chat room mine
 ssh -t -p 2222 serverside.chat invite '<one-use-token>'
 ```
 
+An existing bootstrap account can attach its first canonical OAuth identity with:
+
+```sh
+ssh -p 2222 serverside.chat account
+```
+
+Open the returned ten-minute HTTPS link and choose Google or GitHub. This migration command does not open a shell.
+
 The remote command parser accepts only these two bounded forms; it cannot execute shell commands. For an existing account, the invite form grants membership and opens the room. For a new SSH key, it displays a short-lived HTTPS sign-in link; OAuth creates the canonical account, the browser attaches the verified key and consumes the invite, and the live terminal upgrades without reconnecting. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
 
 Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner as a prototype migration path. An unknown but valid key enters public rooms as an anonymous browse-only principal and receives an HTTPS account/link URL; its requested SSH username has no authority.

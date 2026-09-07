@@ -71,6 +71,15 @@ test("a canonical browser account can attach multiple verified SSH keys", () => 
   accounts.close();
 });
 
+test("an existing bootstrap account can issue a one-use OAuth identity link", () => {
+  const { accounts, owner } = setup();
+  const link = accounts.createAccountLink(owner, 60_000);
+  expect(accounts.consumeAccountLink(link.code)).toMatchObject({ id: owner.id, handle: "alice" });
+  expect(() => accounts.consumeAccountLink(link.code)).toThrow("invalid or expired");
+  expect(() => accounts.createAccountLink(anonymousPrincipal("SHA256:guest"))).toThrow("authenticated account");
+  accounts.close();
+});
+
 test("an SSH invite is granted to the canonical account during browser key linking", () => {
   const { accounts, owner } = setup();
   const account = accounts.createDevelopmentAccount("charlie");

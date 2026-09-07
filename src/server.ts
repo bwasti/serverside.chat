@@ -131,7 +131,10 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         const stream = acceptExec();
         try {
           const command = parseSshEntryCommand(info.command);
-          if (command.kind === "room") launch(stream, command.roomName, true);
+          if (command.kind === "account") {
+            const link = accounts.createAccountLink(principal!);
+            stream.end(`${new URL(webBaseUrl).origin}/?account=${encodeURIComponent(link.code)}\r\n`);
+          } else if (command.kind === "room") launch(stream, command.roomName, true);
           else if (!principal!.authenticated) launch(stream, undefined, true, command.token);
           else {
             const redeemed = accounts.redeem(principal!, command.token);

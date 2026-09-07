@@ -45,7 +45,9 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
         if (action === "start" && request.method === "GET") {
           if (!allowAttempt(authAttempts, `oauth:${webAddress(request)}`, 60 * 60 * 1_000, 30)) return new Response("too many sign-in attempts\n", { status: 429 });
           try {
-            const started = oauth.begin(provider, url.searchParams.get("return") ?? "/", requestPrincipal);
+            const accountLink = url.searchParams.get("account");
+            const linkPrincipal = accountLink && accounts ? accounts.consumeAccountLink(accountLink) : requestPrincipal;
+            const started = oauth.begin(provider, url.searchParams.get("return") ?? "/", linkPrincipal);
             return new Response(null, { status: 302, headers: { location: started.url, "set-cookie": oauthCookie(started.browserToken) } });
           } catch (error) {
             return authErrorRedirect(request, error);
@@ -364,9 +366,10 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const linkactions = document.getElementById('linkactions');
     const autherror = document.getElementById('autherror');
     const sshCode = new URL(location.href).searchParams.get('ssh');
+    const accountCode = new URL(location.href).searchParams.get('account');
     const initialAuthError = new URL(location.href).searchParams.get('auth_error');
     let currentAccount;
-    const showSignIn=()=>{pairtitle.textContent='create your account';pairdescription.textContent=sshCode?'Create an account, then attach the SSH key that sent you here.':'Sign in to contribute to serverside.chat.';accountform.hidden=${developmentAuth ? "false" : "true"};linkactions.hidden=true;autherror.textContent='';pairing.hidden=false;document.getElementById('handle')?.focus()};
+    const showSignIn=()=>{pairtitle.textContent=accountCode?'secure your account':'create your account';pairdescription.textContent=accountCode?'Choose an OAuth provider to attach it to your existing serverside.chat account.':sshCode?'Create an account, then attach the SSH key that sent you here.':'Sign in to contribute to serverside.chat.';accountform.hidden=${developmentAuth ? "Boolean(accountCode)" : "true"};const warning=document.getElementById('devwarning');if(warning)warning.hidden=Boolean(accountCode);linkactions.hidden=true;autherror.textContent='';pairing.hidden=false;document.getElementById('handle')?.focus()};
     const showSshLink=()=>{pairtitle.textContent='link SSH key';pairdescription.textContent='Attach this verified SSH key to @'+currentAccount+'. You can link more keys later.';accountform.hidden=true;linkactions.hidden=false;autherror.textContent='';pairing.hidden=false};
     const activateLink=(_event,value)=>{try{const target=new URL(value,location.href);if(target.origin===location.origin&&target.searchParams.get('signin')==='1'){showSignIn();return}if(target.protocol==='http:'||target.protocol==='https:')window.open(target.href,'_blank','noopener')}catch{}};
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#0d1117',foreground:'#d8dee9',cursor:'#d8dee9'},linkHandler:{activate:activateLink}});
@@ -389,11 +392,11 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());currentAccount=result.authenticated?result.handle:undefined;signin.hidden=Boolean(currentAccount);return Boolean(currentAccount)}catch{return false}};
     const linkSsh=async()=>{if(!sshCode)return;autherror.textContent='';const response=await fetch('/_auth/ssh/link',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:sshCode})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not link SSH key');history.replaceState({},'',location.pathname);pairtitle.textContent='SSH key linked';pairdescription.textContent='This terminal is now signed in as @'+result.handle+'.';linkactions.hidden=true;setTimeout(()=>location.reload(),700)};
     signin.addEventListener('click',showSignIn);
-    document.querySelectorAll('[data-provider]').forEach(button=>button.addEventListener('click',()=>{const returnTo=location.pathname+(sshCode?'?ssh='+encodeURIComponent(sshCode):'');location.href='/_auth/'+button.dataset.provider+'/start?return='+encodeURIComponent(returnTo)}));
+    document.querySelectorAll('[data-provider]').forEach(button=>button.addEventListener('click',()=>{const returnTo=location.pathname+(sshCode?'?ssh='+encodeURIComponent(sshCode):'');const bootstrap=accountCode?'&account='+encodeURIComponent(accountCode):'';location.href='/_auth/'+button.dataset.provider+'/start?return='+encodeURIComponent(returnTo)+bootstrap}));
     accountform.addEventListener('submit',async event=>{event.preventDefault();autherror.textContent='';const button=accountform.querySelector('button');if(!button)return;button.disabled=true;try{const response=await fetch('/_auth/development',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({handle:document.getElementById('handle').value})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not create account');currentAccount=result.handle;if(sshCode)await linkSsh();else location.reload()}catch(error){autherror.textContent=error.message}finally{button.disabled=false}});
     document.getElementById('linkkey').addEventListener('click',async()=>{try{await linkSsh()}catch(error){autherror.textContent=error.message}});
     document.getElementById('closepair').addEventListener('click',()=>{pairing.hidden=true});
-    checkAuth().then(authenticated=>{if(sshCode){if(authenticated)showSshLink();else showSignIn()}else if((location.search.includes('signin=1')||initialAuthError)&&!authenticated)showSignIn();if(initialAuthError)autherror.textContent=initialAuthError});
+    checkAuth().then(authenticated=>{if(accountCode)showSignIn();else if(sshCode){if(authenticated)showSshLink();else showSignIn()}else if((location.search.includes('signin=1')||initialAuthError)&&!authenticated)showSignIn();if(initialAuthError)autherror.textContent=initialAuthError});
     connect();
   </script>
 </body>

@@ -35,6 +35,12 @@ test("an additional OAuth identity links only to the initiating canonical accoun
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-oauth-link-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const canonical = accounts.createDevelopmentAccount("alice").principal;
+  const bootstrap = accounts.createAccountLink(canonical);
+  const bootstrapPrincipal = accounts.consumeAccountLink(bootstrap.code);
+  const oauth = new OAuthService(accounts, "https://serverside.chat", { github: { clientId: "client", clientSecret: "secret" } });
+  const flow = oauth.begin("github", "/", bootstrapPrincipal);
+  const flowUrl = new URL(flow.url);
+  expect(accounts.consumeOAuthFlow("github", flowUrl.searchParams.get("state")!, flow.browserToken).linkUserId).toBe(canonical.id);
   const linked = accounts.authenticateIdentity({ provider: "github", subject: "42", handle: "different-handle" }, canonical);
   const resolved = accounts.authenticateIdentity({ provider: "github", subject: "42", handle: "ignored" });
   const other = accounts.createDevelopmentAccount("bob").principal;

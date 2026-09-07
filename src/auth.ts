@@ -41,6 +41,11 @@ export interface SshPairing {
   roomName?: string;
 }
 
+export interface AccountLink {
+  code: string;
+  expiresAt: number;
+}
+
 export interface IdentityProfile {
   provider: string;
   subject: string;
@@ -155,6 +160,13 @@ export class AccountStore {
         code_verifier TEXT NOT NULL,
         return_to TEXT NOT NULL DEFAULT '/',
         link_user_id TEXT REFERENCES users(id),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS account_links (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
       );
@@ -325,6 +337,29 @@ export class AccountStore {
       .run(crypto.randomUUID(), principal.id, tokenHash(sessionToken), now, expiresAt);
     this.audit(principal, undefined, "web.session.create");
     return { sessionToken, expiresAt };
+  }
+
+  createAccountLink(principal: Principal, ttlMs = 10 * 60 * 1_000): AccountLink {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("an authenticated account is required");
+    const now = Date.now();
+    this.db.query("DELETE FROM account_links WHERE expires_at <= ? OR user_id = ?").run(now, principal.id);
+    const code = randomBytes(24).toString("base64url");
+    const expiresAt = now + Math.max(60_000, Math.min(15 * 60 * 1_000, ttlMs));
+    this.db.query("INSERT INTO account_links(id, token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), tokenHash(code), principal.id, now, expiresAt);
+    this.audit(principal, undefined, "identity.bootstrap.create");
+    return { code, expiresAt };
+  }
+
+  consumeAccountLink(code: string): Principal {
+    if (!/^[a-zA-Z0-9_-]{32,64}$/.test(code)) throw new Error("account link is invalid or expired");
+    const row = this.db.query("SELECT id, user_id, expires_at FROM account_links WHERE token_hash = ?").get(tokenHash(code)) as { id: string; user_id: string; expires_at: number } | null;
+    if (!row || row.expires_at <= Date.now()) throw new Error("account link is invalid or expired");
+    const principal = this.principalForUserId(row.user_id);
+    if (!principal) throw new Error("account is no longer available");
+    this.db.query("DELETE FROM account_links WHERE id = ?").run(row.id);
+    this.audit(principal, undefined, "identity.bootstrap.consume");
+    return principal;
   }
 
   createSshPairing(principal: Principal, requestedFrom = "", ttlMs = 10 * 60 * 1_000, inviteToken?: string): SshPairing {
