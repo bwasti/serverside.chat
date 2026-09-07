@@ -1,5 +1,5 @@
 {
-  "name": "wasm-chat",
+  "name": "serverside-chat",
   "private": true,
   "type": "module",
   "scripts": {

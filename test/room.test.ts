@@ -125,7 +125,7 @@ test("commits become host-rendered updates and suppress agent prose", async () =
 });
 
 test("room transcript and HUD state survive process recreation", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-room-state-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-room-state-"));
   const statePath = join(data, "room-state.json");
   const first = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath);
   first.chat("alice", "persistent hello");

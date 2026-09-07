@@ -6,7 +6,7 @@ Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript c
 
 The server verifies every SSH public-key signature. A known fingerprint resolves to its account; an unknown verified key receives a stable anonymous principal for that key. On a fresh local install, keys from `~/.ssh/*.pub` (or `SSH_BOOTSTRAP_KEYS`) are enrolled to the initial owner.
 
-An admin creates an invite with `/invite admin|contributor|viewer`. The token is random, stored only as a hash, expires after 24 hours, and is single-use. An anonymous user connects with their own key and runs `/redeem <token>`. Redemption atomically creates an account, binds that exact key, creates the room membership, consumes the invite, and switches the live TUI into the invited room. Later SSH connections with the key resolve directly to that account.
+An admin creates an invite with `/invite admin|contributor|viewer`. The token is random, stored only as a hash, expires after 24 hours, and is single-use. An anonymous user can connect with their own key and run `/redeem <token>`, or redeem and enter directly with `ssh -t -p 2222 serverside.chat invite '<token>'`. Redemption atomically creates an account, binds that exact key, creates the room membership, consumes the invite, and switches the live TUI into the invited room. Existing accounts gain the membership without changing identity, and redemption never downgrades a role they already hold. Later SSH connections with the key resolve directly to that account.
 
 Google and Apple are modeled as additional `(provider, provider_subject)` identities. Their callback and account-linking UI are intentionally not implemented yet; they should attach to the existing user instead of creating a separate permission system.
 

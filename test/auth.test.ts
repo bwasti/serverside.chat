@@ -6,7 +6,7 @@ import { AccountStore, anonymousPrincipal, sshFingerprint } from "../src/auth";
 import { Room } from "../src/room";
 
 function setup() {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-auth-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-auth-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   const member = accounts.ensureLocalOwner("bob");
@@ -50,11 +50,19 @@ test("public visibility is independent from contribution and agent authority", (
   expect(accounts.canView(member, "private-room")).toBe(false);
 
   const invite = accounts.createInvite(owner, "public-room", "contributor");
-  expect(accounts.redeemInvite(member, invite)).toBe("contributor");
+  expect(accounts.redeemInvite(member, invite)).toEqual({ roomName: "public-room", role: "contributor" });
   expect(accounts.canContribute(member, "public-room")).toBe(true);
   expect(accounts.canInvokeAgent(member, "public-room")).toBe(true);
   expect(accounts.canPromote(member, "public-room")).toBe(false);
   expect(accounts.canPromote(owner, "public-room")).toBe(true);
+  accounts.close();
+});
+
+test("invite redemption never downgrades an existing room role", () => {
+  const { accounts, owner } = setup();
+  const invite = accounts.createInvite(owner, "public-room", "viewer");
+  expect(accounts.redeem(owner, invite)).toMatchObject({ principal: { id: owner.id }, roomName: "public-room", role: "owner" });
+  expect(accounts.roleFor(owner, "public-room")).toBe("owner");
   accounts.close();
 });
 

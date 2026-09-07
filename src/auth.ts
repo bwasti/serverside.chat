@@ -223,17 +223,24 @@ export class AccountStore {
     return token;
   }
 
-  redeemInvite(principal: Principal, token: string): RoomRole {
+  redeemInvite(principal: Principal, token: string): { roomName: string; role: RoomRole } {
     if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in before redeeming an invite");
     const row = this.db.query("SELECT id, room_name, role, expires_at, max_uses, uses, revoked_at FROM invites WHERE token_hash = ?").get(tokenHash(token)) as { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number } | null;
     if (!row || row.revoked_at || row.expires_at <= Date.now() || row.uses >= row.max_uses) throw new Error("invite is invalid or expired");
+    const existing = this.roleFor(principal, row.room_name);
+    const grantedRole = existing && ROLE_WEIGHT[existing] >= ROLE_WEIGHT[row.role] ? existing : row.role;
     this.db.transaction(() => {
       this.db.query("INSERT INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(room_name, user_id) DO UPDATE SET role = excluded.role, revoked_at = NULL")
-        .run(row.room_name, principal.id, row.role, Date.now());
+        .run(row.room_name, principal.id, grantedRole, Date.now());
       this.db.query("UPDATE invites SET uses = uses + 1 WHERE id = ?").run(row.id);
     })();
-    this.audit(principal, row.room_name, "invite.redeem", row.role);
-    return row.role;
+    this.audit(principal, row.room_name, "invite.redeem", grantedRole);
+    return { roomName: row.room_name, role: grantedRole };
+  }
+
+  redeem(principal: Principal, token: string): { principal: Principal; roomName: string; role: RoomRole } {
+    if (!principal.authenticated) return this.redeemSshInvite(principal, token);
+    return { principal, ...this.redeemInvite(principal, token) };
   }
 
   redeemSshInvite(principal: Principal, token: string): { principal: Principal; roomName: string; role: RoomRole } {

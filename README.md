@@ -1,4 +1,4 @@
-# wasm-chat
+# serverside.chat
 
 The executable room-service contract is documented in [`docs/service-api.md`](docs/service-api.md). The implemented account and room policy model is in [`docs/accounts.md`](docs/accounts.md); its security boundary is described in [`docs/security-model.md`](docs/security-model.md).
 
@@ -24,6 +24,15 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p 222
 ```
 
 The browser version is served at `/`. It uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Until web login is implemented, browser sessions are anonymous and read-only.
+
+SSH can also deep-link into a room or redeem an invitation before opening the TUI:
+
+```sh
+ssh -t -p 2222 serverside.chat room mine
+ssh -t -p 2222 serverside.chat invite '<one-use-token>'
+```
+
+The remote command parser accepts only these two bounded forms; it cannot execute shell commands. The invite form binds an unknown verified SSH key to a new account, or adds the room membership to an existing account, then opens the invited room. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
 
 Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner. An unknown but valid key enters public rooms as an anonymous browse-only principal; its requested SSH username has no authority. To propose a handle while redeeming an invite:
 

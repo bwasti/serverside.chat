@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { RoomWorkspace } from "../src/workspace";
 
 test("previews are immutable and promotion is explicit", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-test-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "test-room");
   const original = workspace.readPublished("index.html");
 
@@ -25,14 +25,14 @@ test("previews are immutable and promotion is explicit", () => {
 });
 
 test("repository paths cannot escape or inspect git internals", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-test-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "test-room");
   expect(() => workspace.readFile("../../etc/passwd")).toThrow("escapes repository");
   expect(() => workspace.readFile(".git/config")).toThrow("invalid repository path");
 });
 
 test("version graph exposes concise commit stacks and refs", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-test-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "graph-room");
   workspace.createBranch("feature");
   workspace.writeFile("feature.txt", "stacked\n");
@@ -43,7 +43,7 @@ test("version graph exposes concise commit stacks and refs", () => {
 });
 
 test("archiving hides a preview without deleting its commit", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-test-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "archive-room");
   workspace.writeFile("index.html", "<h1>temporary</h1>");
   const commit = workspace.commit("temporary page");
@@ -57,7 +57,7 @@ test("archiving hides a preview without deleting its commit", () => {
 });
 
 test("stable promotion requires rebased linear history", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-test-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "linear-room");
   workspace.createBranch("feature");
   workspace.writeFile("feature.txt", "feature\n");
@@ -80,7 +80,7 @@ test("stable promotion requires rebased linear history", () => {
 });
 
 test("agent can resolve a conflicted rebase and preserve linear history", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-test-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "conflict-room");
   workspace.createBranch("feature");
   workspace.writeFile("index.html", "feature\n");

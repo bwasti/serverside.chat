@@ -72,8 +72,18 @@ test("room focus dims chat text after bold author names", () => {
   tui.stream.end();
 });
 
+test("TUI can open directly into a selected visible room", () => {
+  const mine = new Room("mine");
+  const general = new Room("general");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, [mine, general], "alice", undefined, "general");
+  expect((session as unknown as { room: Room }).room.name).toBe("general");
+  expect(stream.writes.at(-1)).toContain("# general");
+  stream.end();
+});
+
 test("anonymous SSH viewers can redeem an invite without reconnecting", () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-tui-auth-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-auth-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   accounts.ensureRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "explicit" });

@@ -57,12 +57,13 @@ export class TuiSession {
   private rooms: Room[];
   private localNotice = "";
 
-  constructor(private readonly stream: TuiStream, rooms: Room[], principal: Principal | string, private readonly accounts?: AccountStore) {
+  constructor(private readonly stream: TuiStream, rooms: Room[], principal: Principal | string, private readonly accounts?: AccountStore, initialRoom?: string) {
     this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
     this.allRooms = rooms;
     this.rooms = rooms.filter((room) => room.canView(this.principal));
     if (!this.rooms.length) throw new Error("principal cannot view any rooms");
-    this.room = this.rooms[0]!;
+    this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === initialRoom));
+    this.room = this.rooms[this.roomIndex]!;
     if (!this.principal.authenticated && this.accounts) this.localNotice = this.principal.sshKeyBlob
       ? "anonymous · browse only · /redeem <invite> to join"
       : "anonymous · browse only · web sign-in required to contribute";
@@ -333,7 +334,7 @@ export class TuiSession {
     try {
       if (command === "/redeem") {
         if (!field || value) throw new Error("usage: /redeem <invite>");
-        const redeemed = this.accounts.redeemSshInvite(this.principal, field);
+        const redeemed = this.accounts.redeem(this.principal, field);
         this.adoptPrincipal(redeemed.principal, redeemed.roomName);
         this.localNotice = `signed in as ${this.username} · ${redeemed.role} in #${redeemed.roomName}`;
         return true;
@@ -417,7 +418,7 @@ export class TuiSession {
     const headerGap = " ".repeat(Math.max(1, mainWidth - title.length - status.length));
     const sidebarHeader = sidebarWidth <= 3
       ? `${SIDEBAR_MUTED}${pad(" › ", sidebarWidth)}${RESET}`
-      : `${SIDEBAR}${pad(truncate("  wasm chat", sidebarWidth), sidebarWidth)}${RESET}`;
+      : `${SIDEBAR}${pad(truncate("  serverside.chat", sidebarWidth), sidebarWidth)}${RESET}`;
     const paneTone = this.sidebarFocused ? DIM : "";
     const hudHeader = hudWidth ? `${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}` : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;

@@ -2,13 +2,14 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Server, utils, type Connection, type Session } from "ssh2";
+import { Server, utils, type Connection, type ServerChannel, type Session } from "ssh2";
 import { AccountStore, type Principal } from "./auth";
 import { Room } from "./room";
 import { TuiSession } from "./tui";
 import { startWebServer } from "./web";
 import { FireworksAgent } from "./agent";
 import { RoomWorkspace } from "./workspace";
+import { parseSshEntryCommand } from "./ssh-command";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -73,13 +74,14 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
   client.on("ready", () => {
     if (!principal) return client.end();
     accounts.audit(principal, undefined, "ssh.login", principal.keyFingerprint ?? "");
-    const visibleRooms = rooms.filter((room) => room.canView(principal!));
     client.on("session", (accept) => {
       const session: Session = accept();
       let cols = 80;
       let rows = 24;
+      let hasPty = false;
       let tui: TuiSession | undefined;
       session.on("pty", (acceptPty, _reject, info) => {
+        hasPty = true;
         cols = info.cols;
         rows = info.rows;
         acceptPty?.();
@@ -88,14 +90,37 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         tui?.resize(info.cols, info.rows);
         acceptChange?.();
       });
-      session.on("shell", (acceptShell) => {
-        const stream = acceptShell();
+      const launch = (stream: ServerChannel, selectedRoom?: string, requirePty = false) => {
+        if (requirePty && !hasPty) {
+          stream.end("This command needs a terminal. Add -t to the ssh command.\r\n");
+          return;
+        }
+        const visibleRooms = rooms.filter((room) => room.canView(principal!));
         if (!visibleRooms.length) {
           stream.end("No rooms are visible to this account. Ask a room owner for an invitation.\r\n");
           return;
         }
-        tui = new TuiSession(stream, rooms, principal!, accounts);
+        if (selectedRoom && !visibleRooms.some((room) => room.name === selectedRoom)) {
+          stream.end("That room does not exist or is not visible to this account.\r\n");
+          return;
+        }
+        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom);
         tui.resize(cols, rows);
+      };
+      session.on("shell", (acceptShell) => launch(acceptShell()));
+      session.on("exec", (acceptExec, _rejectExec, info) => {
+        const stream = acceptExec();
+        try {
+          const command = parseSshEntryCommand(info.command);
+          if (command.kind === "room") launch(stream, command.roomName, true);
+          else {
+            const redeemed = accounts.redeem(principal!, command.token);
+            principal = redeemed.principal;
+            launch(stream, redeemed.roomName, true);
+          }
+        } catch (error) {
+          stream.end(`${error instanceof Error ? error.message : "SSH entry command failed"}\r\n`);
+        }
       });
     });
   });
@@ -108,7 +133,7 @@ server.on("error", (error: Error) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`wasm-chat listening on ssh://${host}:${port}`);
+  console.log(`serverside.chat listening on ssh://${host}:${port}`);
   console.log(`Connect with: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p ${port}`);
   console.log(`Room pages listening on http://${webHost}:${webServer.port}`);
   console.log(fireworksKey ? `Room agent enabled: ${fireworksModel}` : "Room agent disabled: FIREWORKS_API_KEY is not set");

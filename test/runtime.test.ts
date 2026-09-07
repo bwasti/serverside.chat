@@ -7,7 +7,7 @@ import { ServiceRuntime } from "../src/runtime";
 import { RoomWorkspace } from "../src/workspace";
 
 test("QuickJS service shares durable room-scoped SQLite across fresh requests", async () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-runtime-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
   const workspace = new RoomWorkspace(data, "mine");
   workspace.writeFile("worker.js", `export default { async fetch(request, env) {
     env.db.exec("CREATE TABLE IF NOT EXISTS notes (text TEXT NOT NULL)");
@@ -24,7 +24,7 @@ test("QuickJS service shares durable room-scoped SQLite across fresh requests", 
 }, 20_000);
 
 test("database capability rejects cross-tenant and administrative SQL", async () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-runtime-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
   const workspace = new RoomWorkspace(data, "mine");
   workspace.writeFile("worker.js", `export default { fetch(_request, env) { env.db.exec("ATTACH DATABASE '/tmp/other' AS other"); return new Response("bad"); } };`);
   workspace.commit("test forbidden sql");
@@ -33,7 +33,7 @@ test("database capability rejects cross-tenant and administrative SQL", async ()
 }, 20_000);
 
 test("guest realtime capability publishes a bounded room event", async () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-runtime-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
   const workspace = new RoomWorkspace(data, "mine");
   workspace.writeFile("worker.js", `export default { fetch(_request, env) { env.realtime.publish("changed", { id: 7 }); return new Response("ok"); } };`);
   workspace.commit("test realtime event");
@@ -44,7 +44,7 @@ test("guest realtime capability publishes a bounded room event", async () => {
 });
 
 test("guest scratch filesystem persists across isolates and rejects traversal", async () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-runtime-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
   const workspace = new RoomWorkspace(data, "mine");
   workspace.writeFile("worker.js", `export default { fetch(request, env) { if(request.method==="POST") env.fs.writeText("state/note.txt", "durable"); return Response.json({value:env.fs.readText("state/note.txt"),files:env.fs.list()}); } };`);
   workspace.commit("test scratch filesystem");
@@ -59,7 +59,7 @@ test("guest scratch filesystem persists across isolates and rejects traversal", 
 });
 
 test("guest CPU limit interrupts runaway service code", async () => {
-  const data = mkdtempSync(join(tmpdir(), "wasm-chat-runtime-"));
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
   const workspace = new RoomWorkspace(data, "mine");
   workspace.writeFile("worker.js", `export default { fetch() { while (true) {} } };`);
   workspace.commit("test runaway worker");
