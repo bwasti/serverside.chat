@@ -30,14 +30,38 @@ export interface RoomPolicy {
   agentMode: AgentMode;
 }
 
-export interface WebPairing {
-  code: string;
+export interface WebSession {
   sessionToken: string;
   expiresAt: number;
 }
 
+export interface SshPairing {
+  code: string;
+  expiresAt: number;
+  roomName?: string;
+}
+
+export interface IdentityProfile {
+  provider: string;
+  subject: string;
+  handle: string;
+  displayName?: string;
+  email?: string;
+}
+
+export interface OAuthFlow {
+  state: string;
+  browserToken: string;
+  nonce: string;
+  codeVerifier: string;
+  returnTo: string;
+  expiresAt: number;
+  linkUserId?: string;
+}
+
 interface UserRow { id: string; handle: string; display_name: string; status: string }
 interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode }
+interface InviteRow { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number }
 
 const ROLE_WEIGHT: Record<RoomRole, number> = { viewer: 0, contributor: 1, admin: 2, owner: 3 };
 
@@ -110,11 +134,27 @@ export class AccountStore {
         expires_at INTEGER NOT NULL,
         revoked_at INTEGER
       );
-      CREATE TABLE IF NOT EXISTS web_pairings (
+      CREATE TABLE IF NOT EXISTS ssh_pairings (
         id TEXT PRIMARY KEY,
         code_hash TEXT NOT NULL UNIQUE,
-        session_hash TEXT NOT NULL UNIQUE,
+        fingerprint TEXT NOT NULL,
+        algorithm TEXT NOT NULL,
+        key_blob BLOB NOT NULL,
+        requested_handle TEXT NOT NULL DEFAULT '',
         requested_from TEXT NOT NULL DEFAULT '',
+        invite_id TEXT REFERENCES invites(id),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_flows (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        state_hash TEXT NOT NULL UNIQUE,
+        browser_hash TEXT NOT NULL,
+        nonce TEXT NOT NULL,
+        code_verifier TEXT NOT NULL,
+        return_to TEXT NOT NULL DEFAULT '/',
+        link_user_id TEXT REFERENCES users(id),
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
       );
@@ -199,6 +239,136 @@ export class AccountStore {
     return { ...userPrincipal(row), keyFingerprint: fingerprint, sshAlgorithm: algorithm, sshKeyBlob: keyBlob };
   }
 
+  authenticateIdentity(profile: IdentityProfile, linkTo?: Principal): { principal: Principal; created: boolean } {
+    const provider = normalizeProvider(profile.provider);
+    const subject = profile.subject.trim().slice(0, 255);
+    if (!subject) throw new Error("identity subject is required");
+    const existing = this.db.query(`SELECT u.id, u.handle, u.display_name, u.status
+      FROM identities i JOIN users u ON u.id = i.user_id
+      WHERE i.provider = ? AND i.provider_subject = ?`).get(provider, subject) as UserRow | null;
+    if (existing) {
+      if (existing.status !== "active") throw new Error("account is disabled");
+      if (linkTo && existing.id !== linkTo.id) throw new Error("this identity is already linked to another account");
+      return { principal: userPrincipal(existing), created: false };
+    }
+
+    if (linkTo) {
+      if (!linkTo.authenticated || linkTo.kind !== "user") throw new Error("an authenticated account is required for identity linking");
+      this.db.query("INSERT INTO identities(provider, provider_subject, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(provider, subject, linkTo.id, profile.email?.trim().slice(0, 320) || null, Date.now());
+      this.audit(linkTo, undefined, "identity.link", provider);
+      return { principal: linkTo, created: false };
+    }
+
+    const handle = this.availableHandle(profile.handle);
+    const displayName = (profile.displayName?.trim() || handle).slice(0, 80);
+    const userId = crypto.randomUUID();
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.query("INSERT INTO users(id, handle, display_name, created_at) VALUES (?, ?, ?, ?)").run(userId, handle, displayName, now);
+      this.db.query("INSERT INTO identities(provider, provider_subject, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(provider, subject, userId, profile.email?.trim().slice(0, 320) || null, now);
+    })();
+    const principal: Principal = { id: userId, kind: "user", handle, displayName, authenticated: true };
+    this.audit(principal, undefined, "account.create", provider);
+    return { principal, created: true };
+  }
+
+  createDevelopmentAccount(handle: string, displayName?: string): { principal: Principal; session: WebSession } {
+    const account = this.authenticateIdentity({
+      provider: "development",
+      subject: randomBytes(24).toString("base64url"),
+      handle,
+      displayName,
+    });
+    return { principal: account.principal, session: this.createWebSession(account.principal) };
+  }
+
+  createOAuthFlow(providerName: string, returnTo = "/", ttlMs = 10 * 60 * 1_000, linkUserId?: string): OAuthFlow {
+    const provider = normalizeProvider(providerName);
+    const safeReturnTo = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo.slice(0, 2_048) : "/";
+    const now = Date.now();
+    this.db.query("DELETE FROM oauth_flows WHERE expires_at <= ?").run(now);
+    const active = this.db.query("SELECT COUNT(*) AS count FROM oauth_flows").get() as { count: number };
+    if (active.count >= 5_000) throw new Error("too many pending sign-ins");
+    const state = randomBytes(32).toString("base64url");
+    const browserToken = randomBytes(32).toString("base64url");
+    const nonce = randomBytes(32).toString("base64url");
+    const codeVerifier = randomBytes(48).toString("base64url");
+    const expiresAt = now + Math.max(60_000, Math.min(15 * 60 * 1_000, ttlMs));
+    this.db.query("INSERT INTO oauth_flows(id, provider, state_hash, browser_hash, nonce, code_verifier, return_to, link_user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), provider, tokenHash(state), tokenHash(browserToken), nonce, codeVerifier, safeReturnTo, linkUserId ?? null, now, expiresAt);
+    return { state, browserToken, nonce, codeVerifier, returnTo: safeReturnTo, expiresAt, linkUserId };
+  }
+
+  consumeOAuthFlow(providerName: string, state: string, browserToken: string): Omit<OAuthFlow, "state" | "browserToken"> {
+    const provider = normalizeProvider(providerName);
+    if (!/^[a-zA-Z0-9_-]{40,64}$/.test(state) || !/^[a-zA-Z0-9_-]{40,64}$/.test(browserToken)) throw new Error("sign-in request is invalid or expired");
+    const row = this.db.query("SELECT id, nonce, code_verifier, return_to, link_user_id, expires_at FROM oauth_flows WHERE provider = ? AND state_hash = ? AND browser_hash = ?")
+      .get(provider, tokenHash(state), tokenHash(browserToken)) as { id: string; nonce: string; code_verifier: string; return_to: string; link_user_id?: string; expires_at: number } | null;
+    if (!row || row.expires_at <= Date.now()) throw new Error("sign-in request is invalid or expired");
+    this.db.query("DELETE FROM oauth_flows WHERE id = ?").run(row.id);
+    return { nonce: row.nonce, codeVerifier: row.code_verifier, returnTo: row.return_to, expiresAt: row.expires_at, linkUserId: row.link_user_id };
+  }
+
+  principalForUserId(userId: string): Principal | undefined {
+    const row = this.db.query("SELECT id, handle, display_name, status FROM users WHERE id = ?").get(userId) as UserRow | null;
+    return row?.status === "active" ? userPrincipal(row) : undefined;
+  }
+
+  createWebSession(principal: Principal, ttlMs = 30 * 24 * 60 * 60 * 1_000): WebSession {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("an authenticated account is required");
+    const sessionToken = randomBytes(32).toString("base64url");
+    const now = Date.now();
+    const expiresAt = now + Math.max(60_000, Math.min(90 * 24 * 60 * 60 * 1_000, ttlMs));
+    this.db.query("INSERT INTO web_sessions(id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), principal.id, tokenHash(sessionToken), now, expiresAt);
+    this.audit(principal, undefined, "web.session.create");
+    return { sessionToken, expiresAt };
+  }
+
+  createSshPairing(principal: Principal, requestedFrom = "", ttlMs = 10 * 60 * 1_000, inviteToken?: string): SshPairing {
+    if (principal.authenticated || principal.kind !== "anonymous" || !principal.sshAlgorithm || !principal.sshKeyBlob || !principal.keyFingerprint) throw new Error("an unregistered verified SSH key is required");
+    if (sshFingerprint(principal.sshKeyBlob) !== principal.keyFingerprint) throw new Error("SSH key identity mismatch");
+    const now = Date.now();
+    this.db.query("DELETE FROM ssh_pairings WHERE expires_at <= ? OR fingerprint = ?").run(now, principal.keyFingerprint);
+    const active = this.db.query("SELECT COUNT(*) AS count FROM ssh_pairings").get() as { count: number };
+    if (active.count >= 5_000) throw new Error("too many pending SSH sign-ins");
+    const invite = inviteToken ? this.inviteForToken(inviteToken) : undefined;
+    if (inviteToken && !invite) throw new Error("invite is invalid or expired");
+    const code = randomBytes(18).toString("base64url");
+    const expiresAt = now + Math.max(60_000, Math.min(15 * 60 * 1_000, ttlMs));
+    this.db.query("INSERT INTO ssh_pairings(id, code_hash, fingerprint, algorithm, key_blob, requested_handle, requested_from, invite_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), tokenHash(code), principal.keyFingerprint, principal.sshAlgorithm, principal.sshKeyBlob, principal.requestedHandle ?? "", requestedFrom.slice(0, 120), invite?.id ?? null, now, expiresAt);
+    return { code, expiresAt, roomName: invite?.room_name };
+  }
+
+  linkSshPairing(principal: Principal, code: string, label = "linked from browser"): { fingerprint: string; roomName?: string; role?: RoomRole } {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in before linking an SSH key");
+    if (!/^[a-zA-Z0-9_-]{20,64}$/.test(code)) throw new Error("SSH link is invalid or expired");
+    const pairing = this.db.query("SELECT id, fingerprint, algorithm, key_blob, invite_id, expires_at FROM ssh_pairings WHERE code_hash = ?")
+      .get(tokenHash(code)) as { id: string; fingerprint: string; algorithm: string; key_blob: Buffer; invite_id?: string; expires_at: number } | null;
+    if (!pairing || pairing.expires_at <= Date.now()) throw new Error("SSH link is invalid or expired");
+    const owner = this.db.query("SELECT user_id, revoked_at FROM ssh_keys WHERE fingerprint = ?").get(pairing.fingerprint) as { user_id: string; revoked_at?: number } | null;
+    if (owner && owner.user_id !== principal.id) throw new Error("SSH key is already linked to another account");
+    const now = Date.now();
+    this.db.transaction(() => {
+      if (owner) this.db.query("UPDATE ssh_keys SET algorithm = ?, key_blob = ?, label = ?, revoked_at = NULL, last_used_at = ? WHERE fingerprint = ? AND user_id = ?")
+        .run(pairing.algorithm, pairing.key_blob, label.slice(0, 120), now, pairing.fingerprint, principal.id);
+      else this.db.query("INSERT INTO ssh_keys(fingerprint, user_id, algorithm, key_blob, label, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(pairing.fingerprint, principal.id, pairing.algorithm, pairing.key_blob, label.slice(0, 120), now, now);
+      this.db.query("DELETE FROM ssh_pairings WHERE id = ?").run(pairing.id);
+    })();
+    this.audit(principal, undefined, "ssh.key.link", pairing.fingerprint);
+    if (pairing.invite_id) {
+      const invite = this.db.query("SELECT id, room_name, role, expires_at, max_uses, uses, revoked_at FROM invites WHERE id = ?").get(pairing.invite_id) as InviteRow | null;
+      if (!this.validInvite(invite)) throw new Error("SSH key linked, but invite is invalid or expired");
+      const role = this.grantInvite(principal, invite!);
+      return { fingerprint: pairing.fingerprint, roomName: invite!.room_name, role };
+    }
+    return { fingerprint: pairing.fingerprint };
+  }
+
   roleFor(principal: Principal, roomName: string): RoomRole | undefined {
     if (!principal.authenticated || principal.kind !== "user") return undefined;
     const row = this.db.query("SELECT role FROM room_memberships WHERE room_name = ? AND user_id = ? AND revoked_at IS NULL").get(roomName, principal.id) as { role: RoomRole } | null;
@@ -239,76 +409,14 @@ export class AccountStore {
 
   redeemInvite(principal: Principal, token: string): { roomName: string; role: RoomRole } {
     if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in before redeeming an invite");
-    const row = this.db.query("SELECT id, room_name, role, expires_at, max_uses, uses, revoked_at FROM invites WHERE token_hash = ?").get(tokenHash(token)) as { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number } | null;
-    if (!row || row.revoked_at || row.expires_at <= Date.now() || row.uses >= row.max_uses) throw new Error("invite is invalid or expired");
-    const existing = this.roleFor(principal, row.room_name);
-    const grantedRole = existing && ROLE_WEIGHT[existing] >= ROLE_WEIGHT[row.role] ? existing : row.role;
-    this.db.transaction(() => {
-      this.db.query("INSERT INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(room_name, user_id) DO UPDATE SET role = excluded.role, revoked_at = NULL")
-        .run(row.room_name, principal.id, grantedRole, Date.now());
-      this.db.query("UPDATE invites SET uses = uses + 1 WHERE id = ?").run(row.id);
-    })();
-    this.audit(principal, row.room_name, "invite.redeem", grantedRole);
-    return { roomName: row.room_name, role: grantedRole };
+    const row = this.inviteForToken(token);
+    if (!row) throw new Error("invite is invalid or expired");
+    return { roomName: row.room_name, role: this.grantInvite(principal, row) };
   }
 
   redeem(principal: Principal, token: string): { principal: Principal; roomName: string; role: RoomRole } {
-    if (!principal.authenticated) return this.redeemSshInvite(principal, token);
+    if (!principal.authenticated) throw new Error("create an account and link this SSH key before redeeming an invite");
     return { principal, ...this.redeemInvite(principal, token) };
-  }
-
-  redeemSshInvite(principal: Principal, token: string): { principal: Principal; roomName: string; role: RoomRole } {
-    if (principal.authenticated || principal.kind !== "anonymous" || !principal.sshAlgorithm || !principal.sshKeyBlob || !principal.keyFingerprint) throw new Error("an unregistered SSH key is required");
-    if (sshFingerprint(principal.sshKeyBlob) !== principal.keyFingerprint) throw new Error("SSH key identity mismatch");
-    const invite = this.db.query("SELECT id, room_name, role, expires_at, max_uses, uses, revoked_at FROM invites WHERE token_hash = ?").get(tokenHash(token)) as { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number } | null;
-    if (!invite || invite.revoked_at || invite.expires_at <= Date.now() || invite.uses >= invite.max_uses) throw new Error("invite is invalid or expired");
-    const base = normalizeHandle(principal.requestedHandle ?? "user");
-    let handle = base;
-    let suffix = 1;
-    while (this.db.query("SELECT 1 AS found FROM users WHERE handle = ?").get(handle)) handle = `${base.slice(0, 24)}-${suffix++}`;
-    const userId = crypto.randomUUID();
-    const now = Date.now();
-    const fingerprint = principal.keyFingerprint;
-    const algorithm = principal.sshAlgorithm;
-    const keyBlob = principal.sshKeyBlob;
-    this.db.transaction(() => {
-      this.db.query("INSERT INTO users(id, handle, display_name, created_at) VALUES (?, ?, ?, ?)").run(userId, handle, handle, now);
-      this.db.query("INSERT INTO ssh_keys(fingerprint, user_id, algorithm, key_blob, label, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(fingerprint, userId, algorithm, keyBlob, "invite enrollment", now, now);
-      this.db.query("INSERT INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, ?, ?)").run(invite.room_name, userId, invite.role, now);
-      this.db.query("UPDATE invites SET uses = uses + 1 WHERE id = ? AND uses < max_uses").run(invite.id);
-    })();
-    const authenticated: Principal = { id: userId, kind: "user", handle, displayName: handle, authenticated: true, keyFingerprint: fingerprint, sshAlgorithm: algorithm, sshKeyBlob: keyBlob };
-    this.audit(authenticated, invite.room_name, "invite.redeem.ssh", invite.role);
-    return { principal: authenticated, roomName: invite.room_name, role: invite.role };
-  }
-
-  createWebPairing(requestedFrom: string, ttlMs = 10 * 60 * 1_000): WebPairing {
-    const now = Date.now();
-    this.db.query("DELETE FROM web_pairings WHERE expires_at <= ?").run(now);
-    const active = this.db.query("SELECT COUNT(*) AS count FROM web_pairings").get() as { count: number };
-    if (active.count >= 5_000) throw new Error("too many pending browser sign-ins");
-    const rawCode = randomBytes(6).toString("hex").toUpperCase();
-    const code = `${rawCode.slice(0, 6)}-${rawCode.slice(6)}`;
-    const sessionToken = randomBytes(32).toString("base64url");
-    const expiresAt = now + Math.max(60_000, Math.min(15 * 60 * 1_000, ttlMs));
-    this.db.query("INSERT INTO web_pairings(id, code_hash, session_hash, requested_from, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(crypto.randomUUID(), tokenHash(normalizePairingCode(code)), tokenHash(sessionToken), requestedFrom.slice(0, 120), now, expiresAt);
-    return { code, sessionToken, expiresAt };
-  }
-
-  approveWebPairing(principal: Principal, code: string, sessionTtlMs = 30 * 24 * 60 * 60 * 1_000): void {
-    if (!principal.authenticated || principal.kind !== "user") throw new Error("an authenticated account must approve browser sign-in");
-    const normalized = normalizePairingCode(code);
-    const pairing = this.db.query("SELECT id, session_hash, expires_at FROM web_pairings WHERE code_hash = ?").get(tokenHash(normalized)) as { id: string; session_hash: string; expires_at: number } | null;
-    if (!pairing || pairing.expires_at <= Date.now()) throw new Error("pairing code is invalid or expired");
-    const now = Date.now();
-    this.db.transaction(() => {
-      this.db.query("INSERT INTO web_sessions(id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
-        .run(crypto.randomUUID(), principal.id, pairing.session_hash, now, now + Math.max(60_000, sessionTtlMs));
-      this.db.query("DELETE FROM web_pairings WHERE id = ?").run(pairing.id);
-    })();
-    this.audit(principal, undefined, "web.pair.approve");
   }
 
   principalForWebSession(sessionToken: string): Principal | undefined {
@@ -333,6 +441,38 @@ export class AccountStore {
       .run(roomName ?? null, actor.id, action.slice(0, 80), target.slice(0, 500), Date.now());
   }
 
+  private availableHandle(value: string): string {
+    const base = normalizeHandle(value);
+    let handle = base;
+    let suffix = 1;
+    while (this.db.query("SELECT 1 AS found FROM users WHERE handle = ?").get(handle)) {
+      const marker = `-${suffix++}`;
+      handle = `${base.slice(0, 32 - marker.length)}${marker}`;
+    }
+    return handle;
+  }
+
+  private inviteForToken(token: string): InviteRow | undefined {
+    const row = this.db.query("SELECT id, room_name, role, expires_at, max_uses, uses, revoked_at FROM invites WHERE token_hash = ?").get(tokenHash(token)) as InviteRow | null;
+    return this.validInvite(row) ? row! : undefined;
+  }
+
+  private validInvite(row: InviteRow | null): boolean {
+    return Boolean(row && !row.revoked_at && row.expires_at > Date.now() && row.uses < row.max_uses);
+  }
+
+  private grantInvite(principal: Principal, row: InviteRow): RoomRole {
+    const existing = this.roleFor(principal, row.room_name);
+    const grantedRole = existing && ROLE_WEIGHT[existing] >= ROLE_WEIGHT[row.role] ? existing : row.role;
+    this.db.transaction(() => {
+      this.db.query("INSERT INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(room_name, user_id) DO UPDATE SET role = excluded.role, revoked_at = NULL")
+        .run(row.room_name, principal.id, grantedRole, Date.now());
+      this.db.query("UPDATE invites SET uses = uses + 1 WHERE id = ? AND uses < max_uses").run(row.id);
+    })();
+    this.audit(principal, row.room_name, "invite.redeem", grantedRole);
+    return grantedRole;
+  }
+
   close(): void { this.db.close(); }
 }
 
@@ -353,10 +493,10 @@ function normalizeHandle(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, 32) || "user";
 }
 
-function tokenHash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
-
-function normalizePairingCode(value: string): string {
-  const compact = value.trim().toUpperCase().replace(/-/g, "");
-  if (!/^[0-9A-F]{12}$/.test(compact)) throw new Error("pairing code is invalid or expired");
-  return compact;
+function normalizeProvider(value: string): string {
+  const provider = value.toLowerCase().trim();
+  if (!/^[a-z0-9_-]{1,40}$/.test(provider)) throw new Error("identity provider is invalid");
+  return provider;
 }
+
+function tokenHash(value: string): string { return createHash("sha256").update(value).digest("hex"); }

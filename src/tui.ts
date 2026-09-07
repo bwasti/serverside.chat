@@ -45,6 +45,7 @@ export class TuiSession {
   private room: Room;
   private animationTimer?: ReturnType<typeof setInterval>;
   private sidebarAnimationTimer?: ReturnType<typeof setInterval>;
+  private authenticationTimer?: ReturnType<typeof setInterval>;
   private renderTimer?: ReturnType<typeof setTimeout>;
   private sidebarWidth = 3;
   private scrollOffset = 0;
@@ -57,16 +58,23 @@ export class TuiSession {
   private rooms: Room[];
   private localNotice = "";
 
-  constructor(private readonly stream: TuiStream, rooms: Room[], principal: Principal | string, private readonly accounts?: AccountStore, initialRoom?: string) {
+  constructor(
+    private readonly stream: TuiStream,
+    rooms: Room[],
+    principal: Principal | string,
+    private readonly accounts?: AccountStore,
+    initialRoom?: string,
+    private readonly signInUrl?: string,
+    refreshPrincipal?: () => Principal | undefined,
+    authenticatedRoom?: string,
+  ) {
     this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
     this.allRooms = rooms;
     this.rooms = rooms.filter((room) => room.canView(this.principal));
     if (!this.rooms.length) throw new Error("principal cannot view any rooms");
     this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === initialRoom));
     this.room = this.rooms[this.roomIndex]!;
-    if (!this.principal.authenticated && this.accounts) this.localNotice = this.principal.sshKeyBlob
-      ? "anonymous · browse only · /redeem <invite> to join"
-      : "anonymous · browse only · web sign-in required to contribute";
+    if (!this.principal.authenticated && this.accounts) this.localNotice = "anonymous · browse only · sign in to contribute";
     this.write("\x1b[?1049h\x1b[?25h");
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
@@ -74,6 +82,15 @@ export class TuiSession {
     stream.on("data", (data: Buffer) => this.onData(data));
     stream.on("close", () => this.close());
     stream.on("end", () => this.close());
+    if (!this.principal.authenticated && refreshPrincipal) this.authenticationTimer = setInterval(() => {
+      const refreshed = refreshPrincipal();
+      if (!refreshed?.authenticated) return;
+      if (this.authenticationTimer) clearInterval(this.authenticationTimer);
+      this.authenticationTimer = undefined;
+      this.adoptPrincipal(refreshed, authenticatedRoom ?? this.room.name);
+      this.localNotice = `signed in as @${this.username}`;
+      this.render();
+    }, 1_000);
     this.render();
   }
 
@@ -330,14 +347,8 @@ export class TuiSession {
   private handleHostCommand(line: string): boolean {
     if (!this.accounts) return false;
     const [command, field, value] = line.trim().split(/\s+/);
-    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/approve") return false;
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem") return false;
     try {
-      if (command === "/approve") {
-        if (!field || value) throw new Error("usage: /approve <browser-code>");
-        this.accounts.approveWebPairing(this.principal, field);
-        this.localNotice = `browser sign-in approved as ${this.username}`;
-        return true;
-      }
       if (command === "/redeem") {
         if (!field || value) throw new Error("usage: /redeem <invite>");
         const redeemed = this.accounts.redeem(this.principal, field);
@@ -388,7 +399,7 @@ export class TuiSession {
     const topStatus = this.topStatusRows(mainWidth, this.height);
     const topRows = [...pageLinks, ...topStatus];
     const writable = this.canUseComposer();
-    const inputLayout = layoutComposer(writable ? this.input : "read only · sign in or ask for an invite", writable ? this.cursorOffset : 0, mainWidth);
+    const inputLayout = layoutComposer(writable ? this.input : "read only · sign in to contribute", writable ? this.cursorOffset : 0, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - 4));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
     if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
@@ -445,7 +456,9 @@ export class TuiSession {
         ? sidebarWidth <= 3 ? `${SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}` : `${SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`
         : `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
       const hudFooter = hudWidth ? `${last ? HUD_MUTED : HUD}${pad(last ? "  linear history · rebase only" : "", hudWidth)}${RESET}` : "";
-      return `${sidebarFooter}${paneTone}${COMPOSER}${pad(truncate(inputText, mainWidth), mainWidth)}${RESET}${hudFooter}`;
+      const padded = pad(truncate(inputText, mainWidth), mainWidth);
+      const renderedInput = !writable && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, COMPOSER) : padded;
+      return `${sidebarFooter}${paneTone}${COMPOSER}${renderedInput}${RESET}${hudFooter}`;
     });
     const cursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);
     const cursorRow = this.height - inputRows.length + 1 + inputLayout.cursorRow - firstInputRow;
@@ -553,6 +566,7 @@ export class TuiSession {
     this.unsubscribeService();
     if (this.animationTimer) clearInterval(this.animationTimer);
     if (this.sidebarAnimationTimer) clearInterval(this.sidebarAnimationTimer);
+    if (this.authenticationTimer) clearInterval(this.authenticationTimer);
     if (this.renderTimer) clearTimeout(this.renderTimer);
     this.room.setTyping(this.username, false);
     this.room.leave(this.username);
@@ -566,8 +580,7 @@ export class TuiSession {
   private get username(): string { return this.principal.handle; }
 
   private canUseComposer(): boolean {
-    return !this.principal.authenticated && Boolean(this.accounts && this.principal.sshKeyBlob)
-      || this.room.canContribute(this.principal)
+    return this.room.canContribute(this.principal)
       || Boolean(this.accounts?.isAdmin(this.principal, this.room.name));
   }
 
@@ -733,6 +746,12 @@ function truncate(value: string, width: number): string {
 
 function pad(value: string, width: number): string {
   return value + " ".repeat(Math.max(0, width - Array.from(value).length));
+}
+
+function linkText(value: string, label: string, url: string, tone: string, restoreTone: string): string {
+  const start = value.indexOf(label);
+  if (start < 0 || !/^https?:\/\//.test(url)) return value;
+  return `${value.slice(0, start)}${tone}\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\${restoreTone}${value.slice(start + label.length)}`;
 }
 
 function padAnsi(value: string, width: number): string {

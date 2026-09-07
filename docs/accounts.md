@@ -1,16 +1,20 @@
 # Accounts and room policy
 
-Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript cannot read or mutate this database. A durable user may eventually have several identities—SSH keys, Google, Apple, or scoped agent credentials—all resolving to one internal user ID. Display handles are not credentials.
+Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript cannot read or mutate this database. The internal user ID is canonical; Google/GitHub provider subjects, browser sessions, SSH keys, and future scoped agent credentials are separate credentials that resolve to it. Display handles and email addresses are never credentials.
 
 ## SSH enrollment
 
-The server verifies every SSH public-key signature. A known fingerprint resolves to its account; an unknown verified key receives a stable anonymous principal for that key. On a fresh local install, keys from `~/.ssh/*.pub` (or `SSH_BOOTSTRAP_KEYS`) are enrolled to the initial owner.
+The server verifies every SSH public-key signature. A known fingerprint resolves to its account; an unknown verified key receives a stable anonymous principal for that key. The read-only TUI renders a short-lived, clickable HTTPS link containing a random hashed-at-rest key-link token. The user signs into their canonical account in the browser and explicitly attaches that verified key. The live SSH session notices the completed link and adopts the account without reconnecting. Any number of keys can be attached to one account, and a key already owned by another account cannot be reassigned through this flow.
 
-An admin creates an invite with `/invite admin|contributor|viewer`. The token is random, stored only as a hash, expires after 24 hours, and is single-use. An anonymous user can connect with their own key and run `/redeem <token>`, or redeem and enter directly with `ssh -t -p 2222 serverside.chat invite '<token>'`. Redemption atomically creates an account, binds that exact key, creates the room membership, consumes the invite, and switches the live TUI into the invited room. Existing accounts gain the membership without changing identity, and redemption never downgrades a role they already hold. Later SSH connections with the key resolve directly to that account.
+An admin creates an invite with `/invite admin|contributor|viewer`. The token is random, stored only as a hash, expires after 24 hours, and is single-use. `ssh -t -p 2222 serverside.chat invite '<token>'` carries the intended membership through the browser account/key-link flow, consumes it for the canonical account, and switches the live TUI into the invited room. An invite never creates an account from an SSH key. Existing accounts gain membership without changing identity, and redemption never downgrades a stronger role.
 
-The browser TUI presents a **sign in** button while read-only. Clicking it creates a random ten-minute pairing code and a 256-bit session token held in a Secure, HttpOnly, SameSite cookie. The user approves the code from an authenticated SSH account with `ssh -p 2222 serverside.chat approve <code>` or `/approve <code>` inside the TUI. Only hashes of both values are stored. Approval consumes the pairing code, binds the browser session to that durable user for 30 days, and causes the browser to reconnect with the user's room permissions. Sessions are revocable.
+## Browser and OAuth credentials
 
-Google and Apple are modeled as additional `(provider, provider_subject)` identities. Their callback and account-linking UI are intentionally not implemented yet; they should attach to the same user and issue the same kind of host-owned web session instead of creating a separate permission system.
+The browser TUI presents blue, clickable **sign in** text while read-only. Google OpenID Connect and GitHub OAuth use 256-bit state, a browser-bound HttpOnly OAuth-flow cookie, PKCE S256, exact callbacks, one-use flow records, and ten-minute expiry. Google ID tokens are verified against Google's signing keys, issuer, audience, and nonce. GitHub's exchanged access token is used only to revalidate `/user` and is not persisted. A successful identity resolves or creates the canonical internal account, then issues a random 256-bit browser session held in a Secure, HttpOnly, SameSite cookie for 30 days; only its hash is stored.
+
+Until provider credentials are configured, the UI exposes a conspicuously labeled development login. It creates a real canonical account and session but has no recovery or external identity proof, so it must be disabled before production authentication is considered complete.
+
+OAuth identities from different providers are never merged by matching email or handle. An already authenticated account may explicitly attach another provider identity; the flow records the initiating internal user ID, and refuses an identity already owned by another account.
 
 ## Independent room controls
 

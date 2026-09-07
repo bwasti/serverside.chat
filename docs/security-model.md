@@ -20,11 +20,13 @@ Canonical promotion is owner-only and is granted to the agent only during an exp
 
 ## Browser and socket identity
 
-SSH public-key signatures are verified and mapped to persistent users. Unknown verified keys receive anonymous authority and can bind themselves to a new account using a one-use, hashed, expiring room invite. The requested SSH username is never used as proof of identity.
+The canonical authority is an internal account ID. Google/GitHub identities, browser cookies, and SSH keys are credentials mapped to that account; handles and emails are not authentication factors. SSH public-key signatures are verified before lookup. Unknown verified keys receive anonymous authority and a random, expiring HTTPS link; only a browser authenticated to a canonical account can attach the key. A key cannot create an account or reassign itself from another account. The requested SSH username is never proof of identity.
 
 HTTP and WebSocket requests without a valid session receive anonymous authority. Public pages, service sockets, and the read-only browser TUI are available; private rooms return 404, and existing unauthorized sockets are closed if a room becomes private. The browser uses xterm.js only as a renderer connected directly to the constrained TUI—it never receives a PTY or system shell.
 
-Browser pairing is approved by an already authenticated SSH account. Pairing codes expire after ten minutes and are single-use; session tokens have 256 bits of randomness, live only in Secure, HttpOnly, SameSite cookies, and are stored only as hashes. Authenticated HTTP and WebSocket requests resolve to the same internal principal and room memberships as SSH. Google/Apple login can later issue these same web sessions.
+Google OpenID Connect and GitHub OAuth use exact callbacks, 256-bit state bound to a short-lived HttpOnly browser cookie, PKCE S256, and one-use database flow records. Google ID tokens are verified by signature, issuer, audience, and nonce. GitHub access tokens are used only for an immediate authenticated `/user` lookup and are not stored. Provider subjects resolve to canonical accounts and issue 256-bit browser sessions in Secure, HttpOnly, SameSite cookies; only session hashes are stored. OAuth identities are never merged by email or handle.
+
+The temporary development login deliberately provides no external identity proof or recovery. It is labeled in the UI and can be disabled with `DEVELOPMENT_AUTH=false`; it is only for exercising the account and key-link flows before provider credentials are installed.
 
 ## Outbound network accounting
 
@@ -34,6 +36,6 @@ Before outbound fetch is enabled, the host must enforce HTTPS, permitted ports, 
 
 ## Current state
 
-QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, SSH public-key identities, SSH-approved browser sessions, durable room memberships, hashed invitations, and host-enforced chat/agent policies are implemented. The database also reserves records for provider identities, scoped agent credentials, and audit events. Google/Apple login, agent credential issuance, outbound fetch, account recovery, and user-facing membership management are not yet wired.
+QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, canonical accounts, Google/GitHub OAuth flows, browser sessions, browser-authorized multi-key SSH linking, durable room memberships, hashed invitations, and host-enforced chat/agent policies are implemented. Real OAuth buttons appear when provider credentials are configured. Agent credential issuance, outbound fetch, account recovery, and user-facing credential/membership management are not yet wired.
 
 The prototype currently enforces 128 aggregate live SSH/browser connections, 100 WebSockets, 32 concurrent HTTP executions, and 64 MiB of response egress per rolling hour per room. These room-wide limits will become outer ceilings once authenticated per-principal sub-budgets are implemented.

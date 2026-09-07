@@ -6,7 +6,7 @@ The versioned systemd deployment layout and release procedure are documented in 
 
 An early SSH/TUI prototype for chat rooms backed by tiny Wasm services and a room-scoped AI agent.
 
-This prototype has one shared TUI over SSH and HTTPS, persistent multi-client rooms, public-key accounts and invitations, a QuickJS-Wasm service runtime, room-scoped SQLite and scratch storage, Git-backed deployments and previews, host-owned telemetry/realtime sockets, and an optional Fireworks room agent.
+This prototype has one shared TUI over SSH and HTTPS, persistent multi-client rooms, canonical server accounts with OAuth/cookie/SSH credentials, invitations, a QuickJS-Wasm service runtime, room-scoped SQLite and scratch storage, Git-backed deployments and previews, host-owned telemetry/realtime sockets, and an optional Fireworks room agent.
 
 ## Run it
 
@@ -23,7 +23,7 @@ In another terminal:
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p 2222
 ```
 
-The browser version is served at `/`. It uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Anonymous sessions are read-only. Click **sign in** and approve the short-lived pairing code from an existing account with `ssh -p 2222 serverside.chat approve <code>`; the browser then reconnects with a Secure, HttpOnly session cookie and receives that account's room permissions.
+The browser version is served at `/`. It uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Anonymous sessions are read-only. The blue **sign in** text in the composer is a real link. Google and GitHub OAuth create or resolve the canonical account and issue a Secure, HttpOnly session cookie. Until provider credentials are configured, a conspicuously labeled development flow creates a temporary account for testing.
 
 SSH can also deep-link into a room or redeem an invitation before opening the TUI:
 
@@ -32,20 +32,15 @@ ssh -t -p 2222 serverside.chat room mine
 ssh -t -p 2222 serverside.chat invite '<one-use-token>'
 ```
 
-The remote command parser accepts only these two bounded forms; it cannot execute shell commands. The invite form binds an unknown verified SSH key to a new account, or adds the room membership to an existing account, then opens the invited room. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
+The remote command parser accepts only these two bounded forms; it cannot execute shell commands. For an existing account, the invite form grants membership and opens the room. For a new SSH key, it displays a short-lived HTTPS sign-in link; OAuth creates the canonical account, the browser attaches the verified key and consumes the invite, and the live terminal upgrades without reconnecting. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
 
-Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner. An unknown but valid key enters public rooms as an anonymous browse-only principal; its requested SSH username has no authority. To propose a handle while redeeming an invite:
-
-```sh
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null alice@localhost -p 2222
-```
+Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner as a prototype migration path. An unknown but valid key enters public rooms as an anonymous browse-only principal and receives an HTTPS account/link URL; its requested SSH username has no authority.
 
 Commands inside the room:
 
 - `/agent <request>` explicitly invokes the agent when room policy permits it
 - `/invite admin|contributor|viewer` creates a one-use 24-hour invite (admin only)
-- `/redeem <invite>` binds the current verified SSH key to a persistent account
-- `/approve <browser-code>` signs a browser into the current SSH account
+- `/redeem <invite>` grants an invitation to the signed-in canonical account
 - `/permissions` shows the current room policy
 - `/permissions visibility public|private`
 - `/permissions contributions members|admins|disabled`
@@ -53,9 +48,9 @@ Commands inside the room:
 - `/quit` disconnects
 - `Ctrl-C` or `Ctrl-D` disconnects
 
-Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_DIR` (default `.data`), `WEB_BASE_URL` (default `http://Brams-MacBook-Air.local:3000`), and optional colon-delimited `SSH_BOOTSTRAP_KEYS`. The server creates an Ed25519 host key on first launch. Room page URLs are OSC 8 links; supported terminals let you open them with the usual modifier-click gesture.
+Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_DIR` (default `.data`), `WEB_BASE_URL` (default `http://Brams-MacBook-Air.local:3000`), optional colon-delimited `SSH_BOOTSTRAP_KEYS`, and optional `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, and `GITHUB_CLIENT_SECRET`. Set `DEVELOPMENT_AUTH=false` after real providers are configured. Production callbacks are `https://serverside.chat/_auth/google/callback` and `https://serverside.chat/_auth/github/callback`. The server creates an Ed25519 host key on first launch. Room and sign-in URLs are OSC 8 links; supported terminals let you open them with the usual modifier-click gesture.
 
-The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). The droplet deployment binds that application HTTP port to loopback and publishes it through Caddy with automatic HTTPS and WebSocket proxying. On wide terminals, the right HUD displays the version graph; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. SSH key verification and room authorization are enforced, but browser sign-in, per-account rate limits, and account recovery are not complete.
+The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). The droplet deployment binds that application HTTP port to loopback and publishes it through Caddy with automatic HTTPS and WebSocket proxying. On wide terminals, the right HUD displays the version graph; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. Per-account rate limits, recovery, and user-facing credential management are not complete.
 
 Seeded policies are intentionally varied: `mine` is public with member contributions and a passive agent; `general` is public with member contributions and explicit `/agent` invocation; `build-log` is private, admin-write, and has no agent.
 
@@ -77,4 +72,4 @@ Depending on room policy, the agent passively observes authenticated contributor
 
 ## Security boundary (prototype)
 
-SSH accepts only a valid public-key signature. Recognition of that key controls identity; the SSH username is only a requested handle for first-time invite redemption. Visibility, contribution, agent access, administration, and canonical promotion are checked host-side. Browser requests currently have anonymous authority only, so public pages work and private pages deliberately return 404 until web sessions are wired to Google/Apple sign-in.
+The internal user ID is the authority-bearing account. Google/GitHub subjects, browser session cookies, and SSH public keys are credentials that resolve to it; handles are display labels only. SSH accepts only a valid public-key signature, and a new key must be linked from a signed-in browser before it gains account authority. Visibility, contribution, agent access, administration, and canonical promotion are checked host-side.

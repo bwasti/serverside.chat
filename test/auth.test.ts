@@ -26,31 +26,63 @@ test("SSH keys resolve to accounts while unknown keys stay anonymous", () => {
   accounts.close();
 });
 
-test("an invited SSH key becomes a durable room account", () => {
-  const { accounts, owner } = setup();
-  const key = Buffer.from("new-collaborator-public-key");
-  const guest = accounts.principalForKey("ssh-ed25519", key, "charlie");
-  const invite = accounts.createInvite(owner, "private-room", "contributor");
+test("provider identity creates the canonical account and web sessions are revocable credentials", () => {
+  const { accounts } = setup();
+  const first = accounts.authenticateIdentity({ provider: "google", subject: "google-user-123", handle: "charlie", email: "charlie@example.test" });
+  const again = accounts.authenticateIdentity({ provider: "google", subject: "google-user-123", handle: "ignored" });
+  expect(first.created).toBe(true);
+  expect(again).toMatchObject({ created: false, principal: { id: first.principal.id, handle: "charlie" } });
 
-  const redeemed = accounts.redeemSshInvite(guest, invite);
-  expect(redeemed).toMatchObject({ roomName: "private-room", role: "contributor", principal: { handle: "charlie", authenticated: true } });
-  expect(accounts.canView(redeemed.principal, "private-room")).toBe(true);
-  expect(accounts.canContribute(redeemed.principal, "private-room")).toBe(false);
-  expect(accounts.principalForKey("ssh-ed25519", key, "spoofed")).toMatchObject({ id: redeemed.principal.id, handle: "charlie", authenticated: true });
-  expect(() => accounts.redeemSshInvite(guest, invite)).toThrow("invalid or expired");
+  const session = accounts.createWebSession(first.principal, 60_000);
+  expect(accounts.principalForWebSession(session.sessionToken)).toMatchObject({ id: first.principal.id, handle: "charlie", authenticated: true });
+  accounts.revokeWebSession(session.sessionToken);
+  expect(accounts.principalForWebSession(session.sessionToken)).toBeUndefined();
   accounts.close();
 });
 
-test("SSH approval creates a hashed, revocable browser session", () => {
-  const { accounts, member } = setup();
-  const pairing = accounts.createWebPairing("203.0.113.10", 60_000);
-  expect(accounts.principalForWebSession(pairing.sessionToken)).toBeUndefined();
-  expect(() => accounts.approveWebPairing(anonymousPrincipal("SHA256:guest"), pairing.code)).toThrow("authenticated account");
-  accounts.approveWebPairing(member, pairing.code, 60_000);
-  expect(accounts.principalForWebSession(pairing.sessionToken)).toMatchObject({ id: member.id, handle: "bob", authenticated: true });
-  expect(() => accounts.approveWebPairing(member, pairing.code)).toThrow("invalid or expired");
-  accounts.revokeWebSession(pairing.sessionToken);
-  expect(accounts.principalForWebSession(pairing.sessionToken)).toBeUndefined();
+test("temporary development login creates a canonical account without making a credential out of its handle", () => {
+  const { accounts } = setup();
+  const first = accounts.createDevelopmentAccount("alice", "Another Alice");
+  const second = accounts.createDevelopmentAccount("alice", "Third Alice");
+  expect(first.principal).toMatchObject({ handle: "alice-1", displayName: "Another Alice", authenticated: true });
+  expect(second.principal).toMatchObject({ handle: "alice-2", authenticated: true });
+  expect(first.principal.id).not.toBe(second.principal.id);
+  expect(accounts.principalForWebSession(first.session.sessionToken)).toMatchObject({ id: first.principal.id });
+  accounts.close();
+});
+
+test("a canonical browser account can attach multiple verified SSH keys", () => {
+  const { accounts } = setup();
+  const account = accounts.createDevelopmentAccount("charlie");
+  const firstKey = Buffer.from("first-collaborator-public-key");
+  const secondKey = Buffer.from("second-collaborator-public-key");
+  const firstGuest = accounts.principalForKey("ssh-ed25519", firstKey, "ignored");
+  const secondGuest = accounts.principalForKey("ssh-ed25519", secondKey, "ignored");
+
+  expect(() => accounts.redeem(firstGuest, "not-an-invite")).toThrow("create an account");
+  const firstLink = accounts.createSshPairing(firstGuest, "203.0.113.10", 60_000);
+  const secondLink = accounts.createSshPairing(secondGuest, "203.0.113.10", 60_000);
+  accounts.linkSshPairing(account.principal, firstLink.code, "laptop");
+  accounts.linkSshPairing(account.principal, secondLink.code, "desktop");
+
+  expect(accounts.principalForKey("ssh-ed25519", firstKey)).toMatchObject({ id: account.principal.id, handle: "charlie" });
+  expect(accounts.principalForKey("ssh-ed25519", secondKey)).toMatchObject({ id: account.principal.id, handle: "charlie" });
+  expect(() => accounts.linkSshPairing(account.principal, firstLink.code)).toThrow("invalid or expired");
+  accounts.close();
+});
+
+test("an SSH invite is granted to the canonical account during browser key linking", () => {
+  const { accounts, owner } = setup();
+  const account = accounts.createDevelopmentAccount("charlie");
+  const key = Buffer.from("invited-collaborator-public-key");
+  const guest = accounts.principalForKey("ssh-ed25519", key, "ignored");
+  const invite = accounts.createInvite(owner, "private-room", "contributor");
+  const pairing = accounts.createSshPairing(guest, "203.0.113.10", 60_000, invite);
+
+  expect(pairing.roomName).toBe("private-room");
+  expect(accounts.linkSshPairing(account.principal, pairing.code)).toMatchObject({ roomName: "private-room", role: "contributor" });
+  expect(accounts.canView(account.principal, "private-room")).toBe(true);
+  expect(accounts.principalForKey("ssh-ed25519", key)).toMatchObject({ id: account.principal.id });
   accounts.close();
 });
 

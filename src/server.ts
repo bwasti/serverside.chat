@@ -10,6 +10,7 @@ import { startWebServer } from "./web";
 import { FireworksAgent } from "./agent";
 import { RoomWorkspace } from "./workspace";
 import { parseSshEntryCommand } from "./ssh-command";
+import { OAuthService, type OAuthProviderConfig } from "./oauth";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -17,8 +18,7 @@ const dataDir = process.env.DATA_DIR ?? ".data";
 const webBaseUrl = (process.env.WEB_BASE_URL ?? "http://Brams-MacBook-Air.local:3000").replace(/\/$/, "");
 const webHost = process.env.WEB_HOST ?? host;
 const webPort = Number(process.env.WEB_PORT ?? 3000);
-const sshPublicHost = process.env.SSH_PUBLIC_HOST ?? new URL(webBaseUrl).hostname;
-const sshPublicPort = Number(process.env.SSH_PUBLIC_PORT ?? port);
+const developmentAuth = process.env.DEVELOPMENT_AUTH !== "false";
 const keyPath = `${dataDir}/ssh_host_ed25519_key`;
 
 mkdirSync(dataDir, { recursive: true });
@@ -29,6 +29,10 @@ if (!existsSync(keyPath)) {
 
 const roomOwner = sanitizeUsername(process.env.ROOM_OWNER ?? process.env.USER ?? "owner");
 const accounts = new AccountStore(`${dataDir}/accounts.sqlite`);
+const oauth = new OAuthService(accounts, webBaseUrl, {
+  google: oauthProviderConfig("GOOGLE"),
+  github: oauthProviderConfig("GITHUB"),
+});
 const ownerPrincipal = accounts.ensureLocalOwner(roomOwner, roomOwner);
 enrollBootstrapKeys(accounts, ownerPrincipal);
 const roomDefaults = [
@@ -59,7 +63,7 @@ if (fireworksKey) {
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }
-const webServer = startWebServer(rooms, workspaces, webHost, webPort, dataDir, accounts, { host: sshPublicHost, port: sshPublicPort });
+const webServer = startWebServer(rooms, workspaces, webHost, webPort, dataDir, accounts, oauth, developmentAuth);
 const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection) => {
   let principal: Principal | undefined;
   client.on("authentication", (context) => {
@@ -92,7 +96,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         tui?.resize(info.cols, info.rows);
         acceptChange?.();
       });
-      const launch = (stream: ServerChannel, selectedRoom?: string, requirePty = false) => {
+      const launch = (stream: ServerChannel, selectedRoom?: string, requirePty = false, inviteToken?: string) => {
         if (requirePty && !hasPty) {
           stream.end("This command needs a terminal. Add -t to the ssh command.\r\n");
           return;
@@ -106,7 +110,19 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
           stream.end("That room does not exist or is not visible to this account.\r\n");
           return;
         }
-        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom);
+        let signInUrl: string | undefined;
+        let refreshPrincipal: (() => Principal | undefined) | undefined;
+        let authenticatedRoom: string | undefined;
+        if (!principal!.authenticated && principal!.sshAlgorithm && principal!.sshKeyBlob) {
+          const pairing = accounts.createSshPairing(principal!, principal!.keyFingerprint ?? "", 10 * 60 * 1_000, inviteToken);
+          authenticatedRoom = pairing.roomName;
+          signInUrl = `${new URL(webBaseUrl).origin}/?ssh=${encodeURIComponent(pairing.code)}`;
+          const algorithm = principal!.sshAlgorithm;
+          const keyBlob = Buffer.from(principal!.sshKeyBlob);
+          const requestedHandle = principal!.requestedHandle;
+          refreshPrincipal = () => accounts.principalForKey(algorithm, keyBlob, requestedHandle);
+        }
+        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom, signInUrl, refreshPrincipal, authenticatedRoom);
         tui.resize(cols, rows);
       };
       session.on("shell", (acceptShell) => launch(acceptShell()));
@@ -114,10 +130,8 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         const stream = acceptExec();
         try {
           const command = parseSshEntryCommand(info.command);
-          if (command.kind === "approve") {
-            accounts.approveWebPairing(principal!, command.code);
-            stream.end(`Browser sign-in approved as ${principal!.handle}.\r\n`);
-          } else if (command.kind === "room") launch(stream, command.roomName, true);
+          if (command.kind === "room") launch(stream, command.roomName, true);
+          else if (!principal!.authenticated) launch(stream, undefined, true, command.token);
           else {
             const redeemed = accounts.redeem(principal!, command.token);
             principal = redeemed.principal;
@@ -156,4 +170,10 @@ function enrollBootstrapKeys(accounts: AccountStore, owner: Principal): void {
     try { accounts.enrollOpenSshKey(owner.id, readFileSync(path, "utf8"), `bootstrap ${path}`); }
     catch (error) { console.warn(`Skipping bootstrap SSH key ${path}:`, error instanceof Error ? error.message : error); }
   }
+}
+
+function oauthProviderConfig(name: "GOOGLE" | "GITHUB"): OAuthProviderConfig | undefined {
+  const clientId = process.env[`${name}_CLIENT_ID`];
+  const clientSecret = process.env[`${name}_CLIENT_SECRET`];
+  return clientId && clientSecret ? { clientId, clientSecret } : undefined;
 }

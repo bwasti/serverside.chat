@@ -15,9 +15,16 @@ FIREWORKS_API_KEY=...
 WEB_BASE_URL=https://your-host
 ROOM_OWNER=your-handle
 SSH_BOOTSTRAP_KEYS=/etc/serverside-chat/owner.pub
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GITHUB_CLIENT_ID=...
+GITHUB_CLIENT_SECRET=...
+DEVELOPMENT_AUTH=false
 ```
 
-Only the public half of the owner's SSH key is installed at `owner.pub`. The private key stays on the user's device. The server verifies public-key signatures and enrolls that public key to the initial owner account.
+Google's registered redirect URI must be `https://serverside.chat/_auth/google/callback`; GitHub's must be `https://serverside.chat/_auth/github/callback`, with wildcard callback matching disabled. Provider secrets are read only from the root-owned environment file and are never sent to the browser. Enable `DEVELOPMENT_AUTH` only while exercising the pre-OAuth account flow.
+
+Only the public half of the owner's SSH key is installed at `owner.pub`. The private key stays on the user's device. The server verifies public-key signatures and enrolls that public key to the initial owner account as a migration/bootstrap path; normal users establish a canonical OAuth account before attaching one or more SSH keys.
 
 ## Release procedure
 

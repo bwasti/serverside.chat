@@ -82,7 +82,7 @@ test("TUI can open directly into a selected visible room", () => {
   stream.end();
 });
 
-test("anonymous SSH viewers can redeem an invite without reconnecting", () => {
+test("an SSH viewer becomes its canonical account after browser key linking", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-auth-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
@@ -92,12 +92,25 @@ test("anonymous SSH viewers can redeem an invite without reconnecting", () => {
   const secret = new Room("secret", 250, "http://example.test/secret", owner.handle, undefined, accounts);
   const guest = accounts.principalForKey("ssh-ed25519", Buffer.from("guest-key"), "charlie");
   const invite = accounts.createInvite(owner, "secret", "contributor");
+  const pairing = accounts.createSshPairing(guest, "test", 60_000, invite);
+  const account = accounts.createDevelopmentAccount("charlie");
   const stream = new FakeStream();
-  const session = new TuiSession(stream as unknown as ServerChannel, [lobby, secret], guest, accounts);
+  const session = new TuiSession(
+    stream as unknown as ServerChannel,
+    [lobby, secret],
+    guest,
+    accounts,
+    undefined,
+    `https://example.test/?ssh=${pairing.code}`,
+    () => accounts.principalForKey("ssh-ed25519", Buffer.from("guest-key"), "charlie"),
+    pairing.roomName,
+  );
 
   stream.emit("data", Buffer.from("hello\r"));
   expect(lobby.messages).toEqual([]);
-  stream.emit("data", Buffer.from(`/redeem ${invite}\r`));
+  expect(stream.writes.at(-1)).toContain("\x1b]8;;https://example.test/?ssh=");
+  accounts.linkSshPairing(account.principal, pairing.code);
+  await Bun.sleep(1_050);
   const state = session as unknown as { room: Room; principal: { handle: string; authenticated: boolean } };
   expect(state.room.name).toBe("secret");
   expect(state.principal).toMatchObject({ handle: "charlie", authenticated: true });
