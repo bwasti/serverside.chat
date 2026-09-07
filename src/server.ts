@@ -1,6 +1,9 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { Server, type Connection, type Session } from "ssh2";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { Server, utils, type Connection, type Session } from "ssh2";
+import { AccountStore, type Principal } from "./auth";
 import { Room } from "./room";
 import { TuiSession } from "./tui";
 import { startWebServer } from "./web";
@@ -22,9 +25,18 @@ if (!existsSync(keyPath)) {
 }
 
 const roomOwner = sanitizeUsername(process.env.ROOM_OWNER ?? process.env.USER ?? "owner");
-const rooms = ["mine", "general", "build-log"].map(
-  (name) => new Room(name, 250, `${webBaseUrl}/${encodeURIComponent(name)}`, roomOwner, `${dataDir}/rooms/${name}/room-state.json`),
-);
+const accounts = new AccountStore(`${dataDir}/accounts.sqlite`);
+const ownerPrincipal = accounts.ensureLocalOwner(roomOwner, roomOwner);
+enrollBootstrapKeys(accounts, ownerPrincipal);
+const roomDefaults = [
+  { name: "mine", visibility: "public", contributions: "members", agentMode: "passive" },
+  { name: "general", visibility: "public", contributions: "members", agentMode: "explicit" },
+  { name: "build-log", visibility: "private", contributions: "admins", agentMode: "disabled" },
+] as const;
+const rooms = roomDefaults.map(({ name, ...defaults }) => {
+  const policy = accounts.ensureRoom(name, ownerPrincipal, defaults);
+  return new Room(name, 250, `${webBaseUrl}/${encodeURIComponent(name)}`, policy.ownerHandle, `${dataDir}/rooms/${name}/room-state.json`, accounts);
+});
 const workspaces = new Map(rooms.map((room) => [room.name, new RoomWorkspace(dataDir, room.name)]));
 for (const room of rooms) {
   const workspace = workspaces.get(room.name)!;
@@ -38,20 +50,30 @@ if (fireworksKey) {
   const prompt = ["prompts/room-agent/system.md", "prompts/room-agent/context.md", "prompts/room-agent/project.md"]
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
   const agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
-  for (const room of rooms) room.setAgentResponder(async (history, activity, requester) => {
+  for (const room of rooms) room.setAgentResponder(async (history, activity, request) => {
     const workspace = workspaces.get(room.name)!;
-    try { return await agent.respond(room.name, room.pageUrl, history, workspace, activity, requester, room.owner, (limit) => room.tailServiceLogs(limit)); }
+    try { return await agent.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit)); }
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }
-const webServer = startWebServer(rooms, workspaces, webHost, webPort, dataDir);
+const webServer = startWebServer(rooms, workspaces, webHost, webPort, dataDir, accounts);
 const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection) => {
-  let username = "guest";
+  let principal: Principal | undefined;
   client.on("authentication", (context) => {
-    username = sanitizeUsername(context.username);
-    context.accept(); // Development mode: explicitly passwordless.
+    if (context.method !== "publickey") return context.reject(["publickey"]);
+    const parsed = utils.parseKey(`${context.key.algo} ${context.key.data.toString("base64")}`);
+    const key = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!key || key instanceof Error) return context.reject(["publickey"]);
+    if (context.signature) {
+      if (!context.blob || key.verify(context.blob, context.signature, context.hashAlgo) !== true) return context.reject(["publickey"]);
+      principal = accounts.principalForKey(context.key.algo, context.key.data, sanitizeUsername(context.username));
+    }
+    context.accept();
   });
   client.on("ready", () => {
+    if (!principal) return client.end();
+    accounts.audit(principal, undefined, "ssh.login", principal.keyFingerprint ?? "");
+    const visibleRooms = rooms.filter((room) => room.canView(principal!));
     client.on("session", (accept) => {
       const session: Session = accept();
       let cols = 80;
@@ -68,7 +90,11 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
       });
       session.on("shell", (acceptShell) => {
         const stream = acceptShell();
-        tui = new TuiSession(stream, rooms, username);
+        if (!visibleRooms.length) {
+          stream.end("No rooms are visible to this account. Ask a room owner for an invitation.\r\n");
+          return;
+        }
+        tui = new TuiSession(stream, rooms, principal!, accounts);
         tui.resize(cols, rows);
       });
     });
@@ -90,4 +116,14 @@ server.listen(port, host, () => {
 
 function sanitizeUsername(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 32) || "guest";
+}
+
+function enrollBootstrapKeys(accounts: AccountStore, owner: Principal): void {
+  const configured = process.env.SSH_BOOTSTRAP_KEYS?.split(":").filter(Boolean);
+  const directory = join(homedir(), ".ssh");
+  const paths = configured ?? (existsSync(directory) ? readdirSync(directory).filter((name) => name.endsWith(".pub")).map((name) => join(directory, name)) : []);
+  for (const path of paths) {
+    try { accounts.enrollOpenSshKey(owner.id, readFileSync(path, "utf8"), `bootstrap ${path}`); }
+    catch (error) { console.warn(`Skipping bootstrap SSH key ${path}:`, error instanceof Error ? error.message : error); }
+  }
 }

@@ -8,18 +8,21 @@ room identity × immutable deployment commit × authenticated principal
 
 The room identity selects the SQLite database, scratch filesystem, realtime topic, quotas, and repository. The commit selects immutable `worker.js` and assets. The authenticated principal selects role and spend authority. None of these values may come from guest JavaScript, URL parameters, SQL, filesystem paths, or WebSocket payloads.
 
-## Proposed room roles
+## Implemented room roles
 
-- `owner`: manage invitations and permissions; approve canonical promotion; authorize high-cost capabilities.
-- `editor`: chat, run agents, create commits and previews, write service data within policy.
-- `viewer`: read chat/site and receive realtime events; no repository mutation or canonical promotion.
-- `agent`: a scoped machine identity delegated by an owner/editor, with explicit expiry, repository permissions, and capability budget.
+- `owner`: manage invitations and room policy; contribute under member/admin policy; exclusively authorize canonical promotion.
+- `admin`: manage invitations and room policy; contribute under member/admin policy; cannot promote canonical.
+- `contributor`: chat and invoke the agent when contribution and agent policies allow it.
+- `viewer`: read a visible room; no chat or agent authority.
+- `anonymous`: browse public rooms and pages; no durable chat, typing presence, or agent visibility.
 
-Canonical promotion remains owner-only. A future owner grant should be a signed, expiring approval bound to the exact room and candidate commit—not a phrase copied into chat.
+Canonical promotion is owner-only and is granted to the agent only during an explicit owner `/agent` invocation. Passive transcript text never supplies promotion authority. A stronger future approval should be signed, expiring, and bound to the exact room and candidate commit.
 
 ## Browser and socket identity
 
-The current LAN prototype has no real authentication. Production HTTP sessions should use a host-issued, Secure, HttpOnly, SameSite cookie. WebSocket upgrades inherit and validate that session before joining a room topic. Invite tokens should be single-purpose, expiring, revocable, and exchanged for a session rather than retained in URLs.
+SSH public-key signatures are verified and mapped to persistent users. Unknown verified keys receive anonymous authority and can bind themselves to a new account using a one-use, hashed, expiring room invite. The requested SSH username is never used as proof of identity.
+
+HTTP and WebSocket requests currently receive anonymous authority. Public pages and sockets are available; private rooms return 404, and existing anonymous sockets are closed if a room becomes private. Production sessions should use a host-issued Secure, HttpOnly, SameSite cookie after Google/Apple login. WebSocket upgrades must inherit and validate that session before joining a room topic.
 
 ## Outbound network accounting
 
@@ -29,6 +32,6 @@ Before outbound fetch is enabled, the host must enforce HTTPS, permitted ports, 
 
 ## Current state
 
-QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, and host-owned realtime sockets are implemented. Authentication, signed invitations, roles on HTTP requests, agent credentials, authenticated socket upgrades, and outbound fetch are not. Until those land, the service must remain on a trusted network and outbound internet access stays disabled.
+QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, SSH public-key identities, durable room memberships, hashed invitations, and host-enforced chat/agent policies are implemented. The database also reserves records for provider identities, web sessions, scoped agent credentials, and audit events. Google/Apple login, authenticated HTTP/socket sessions, agent credential issuance, outbound fetch, account recovery, and user-facing membership management are not yet wired. Until those land, the service should remain on a trusted network and outbound internet access stays disabled.
 
 The prototype currently enforces 128 aggregate live SSH/browser connections, 100 WebSockets, 32 concurrent HTTP executions, and 64 MiB of response egress per rolling hour per room. These room-wide limits will become outer ceilings once authenticated per-principal sub-budgets are implemented.

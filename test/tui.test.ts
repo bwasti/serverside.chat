@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ServerChannel } from "ssh2";
+import { AccountStore } from "../src/auth";
 import { Room } from "../src/room";
 import { layoutComposer, TuiSession } from "../src/tui";
 
@@ -66,4 +70,30 @@ test("room focus dims chat text after bold author names", () => {
 
   expect(tui.stream.writes.at(-1)).toContain("\x1b[22m\x1b[2m");
   tui.stream.end();
+});
+
+test("anonymous SSH viewers can redeem an invite without reconnecting", () => {
+  const data = mkdtempSync(join(tmpdir(), "wasm-chat-tui-auth-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "explicit" });
+  accounts.ensureRoom("secret", owner, { visibility: "private", contributions: "members", agentMode: "passive" });
+  const lobby = new Room("lobby", 250, "http://example.test/lobby", owner.handle, undefined, accounts);
+  const secret = new Room("secret", 250, "http://example.test/secret", owner.handle, undefined, accounts);
+  const guest = accounts.principalForKey("ssh-ed25519", Buffer.from("guest-key"), "charlie");
+  const invite = accounts.createInvite(owner, "secret", "contributor");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, [lobby, secret], guest, accounts);
+
+  stream.emit("data", Buffer.from("hello\r"));
+  expect(lobby.messages).toEqual([]);
+  stream.emit("data", Buffer.from(`/redeem ${invite}\r`));
+  const state = session as unknown as { room: Room; principal: { handle: string; authenticated: boolean } };
+  expect(state.room.name).toBe("secret");
+  expect(state.principal).toMatchObject({ handle: "charlie", authenticated: true });
+  stream.emit("data", Buffer.from("now I can contribute\r"));
+  expect(secret.messages.at(-1)).toMatchObject({ author: "charlie", text: "now I can contribute", authorRole: "contributor", agentVisible: true });
+
+  stream.end();
+  accounts.close();
 });

@@ -1,4 +1,6 @@
 import { ROOM_LIMITS, type Room } from "./room";
+import type { ServerWebSocket } from "bun";
+import type { AccountStore, Principal } from "./auth";
 import type { RoomWorkspace } from "./workspace";
 import { ServiceRuntime } from "./runtime";
 
@@ -6,11 +8,12 @@ interface SocketData { room: string; windowStarted: number; messages: number }
 const SOCKET_PATH = ".well-known/realtime";
 const MAX_ROOM_SOCKETS = 100;
 
-export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorkspace>, host: string, port: number, dataDir = ".data") {
+export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorkspace>, host: string, port: number, dataDir = ".data", accounts?: AccountStore) {
   const byName = new Map(rooms.map((room) => [room.name, room]));
   const runtimes = new Map(rooms.map((room) => [room.name, new ServiceRuntime(workspaces.get(room.name)!, room, dataDir)]));
   const socketCounts = new Map<string, number>();
-  return Bun.serve<SocketData>({
+  const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
+  const webServer = Bun.serve<SocketData>({
     hostname: host,
     port,
     async fetch(request, server) {
@@ -20,6 +23,8 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       const name = parts[0] ?? "";
       const room = byName.get(name);
       if (!room) return new Response("room not found\n", { status: 404 });
+      const principal = anonymousWebPrincipal(request);
+      if (accounts && !accounts.canView(principal, name)) return new Response("room not found\n", { status: 404 });
       if (parts.slice(1).join("/") === SOCKET_PATH) {
         if ((socketCounts.get(name) ?? 0) >= MAX_ROOM_SOCKETS || room.connectionCount >= ROOM_LIMITS.connections) return new Response("room socket limit reached\n", { status: 503 });
         if (server.upgrade(request, { data: { room: name, windowStarted: Date.now(), messages: 0 } })) return;
@@ -49,6 +54,9 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       maxPayloadLength: 16 * 1024,
       idleTimeout: 120,
       open(ws) {
+        let roomSockets = sockets.get(ws.data.room);
+        if (!roomSockets) { roomSockets = new Set(); sockets.set(ws.data.room, roomSockets); }
+        roomSockets.add(ws);
         socketCounts.set(ws.data.room, (socketCounts.get(ws.data.room) ?? 0) + 1);
         byName.get(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
         ws.subscribe(`room:${ws.data.room}`);
@@ -64,9 +72,23 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
         const payload = JSON.stringify({ type: "client", data });
         ws.publish(`room:${ws.data.room}`, payload);
       },
-      close(ws) { socketCounts.set(ws.data.room, Math.max(0, (socketCounts.get(ws.data.room) ?? 1) - 1)); byName.get(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0); },
+      close(ws) {
+        sockets.get(ws.data.room)?.delete(ws);
+        socketCounts.set(ws.data.room, Math.max(0, (socketCounts.get(ws.data.room) ?? 1) - 1));
+        byName.get(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
+      },
     },
   });
+  if (accounts) for (const room of rooms) room.subscribeService(() => {
+    if (room.policy.visibility !== "private") return;
+    for (const socket of sockets.get(room.name) ?? []) socket.close(1008, "room is private");
+  });
+  return webServer;
+}
+
+function anonymousWebPrincipal(request: Request): Principal {
+  const address = request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() || "direct";
+  return { id: `anonymous:web:${address}`, kind: "anonymous", handle: "web-guest", displayName: "Anonymous", authenticated: false };
 }
 
 function injectRealtimeClient(html: string, room: string): string {

@@ -1,3 +1,5 @@
+import type { AccountStore, Principal, RoomPolicy, RoomRole } from "./auth";
+
 export type MessageKind = "chat" | "system" | "agent" | "commit";
 
 export interface Message {
@@ -8,6 +10,9 @@ export interface Message {
   at: Date;
   url?: string;
   detail?: string;
+  authorId?: string;
+  authorRole?: RoomRole;
+  agentVisible?: boolean;
 }
 
 export interface AgentSnapshot {
@@ -15,6 +20,11 @@ export interface AgentSnapshot {
   detail: string;
   events: string[];
   links: Array<{ label: string; url: string }>;
+}
+
+export interface AgentRequest {
+  principal: Principal;
+  explicit: boolean;
 }
 
 export const ROOM_LIMITS = { connections: 128, concurrentRequests: 32, egressBytesPerHour: 64 * 1024 * 1024, databaseBytes: 5 * 1024 * 1024, filesystemBytes: 5 * 1024 * 1024 } as const;
@@ -42,12 +52,12 @@ export class Room {
   filesystemBytes = 0;
   lastRequestAt = 0;
   private readonly egressSamples: Array<{ at: number; bytes: number }> = [];
-  private agentResponder?: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, requester: string) => Promise<string>;
+  private agentResponder?: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: AgentRequest) => Promise<string>;
   private agentQueue = Promise.resolve();
   private passiveTimer?: ReturnType<typeof setTimeout>;
   readonly agentState: AgentSnapshot = { status: "disabled", detail: "no model", events: [], links: [] };
 
-  constructor(name: string, private readonly historyLimit = 250, readonly pageUrl = `http://localhost:3000/${name}`, readonly owner = "owner", private readonly statePath?: string) {
+  constructor(name: string, private readonly historyLimit = 250, readonly pageUrl = `http://localhost:3000/${name}`, readonly owner = "owner", private readonly statePath?: string, private readonly accounts?: AccountStore) {
     this.name = name;
     this.serviceStartedAt = this.loadState();
   }
@@ -83,9 +93,45 @@ export class Room {
     if (added) for (const listener of this.serviceListeners) listener();
   }
 
-  setAgentResponder(responder: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, requester: string) => Promise<string>): void {
+  setAgentResponder(responder: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: AgentRequest) => Promise<string>): void {
     this.agentResponder = responder;
     this.updateAgent("idle", "listening");
+  }
+
+  get policy(): RoomPolicy {
+    return this.accounts?.roomPolicy(this.name) ?? { name: this.name, ownerId: "local:owner", ownerHandle: this.owner, visibility: "public", contributions: "members", agentMode: "passive" };
+  }
+
+  roleFor(actor: Principal | string): RoomRole | undefined {
+    const principal = this.resolvePrincipal(actor);
+    return this.accounts?.roleFor(principal, this.name) ?? (principal.authenticated ? (principal.handle === this.owner ? "owner" : "contributor") : undefined);
+  }
+
+  canView(actor: Principal | string): boolean {
+    const principal = this.resolvePrincipal(actor);
+    return this.accounts?.canView(principal, this.name) ?? true;
+  }
+
+  canContribute(actor: Principal | string): boolean {
+    const principal = this.resolvePrincipal(actor);
+    return this.accounts?.canContribute(principal, this.name) ?? principal.authenticated;
+  }
+
+  canInvokeAgent(actor: Principal | string): boolean {
+    const principal = this.resolvePrincipal(actor);
+    return this.accounts?.canInvokeAgent(principal, this.name) ?? principal.authenticated;
+  }
+
+  updatePolicy(actor: Principal, changes: Partial<Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">>): RoomPolicy {
+    if (!this.accounts) throw new Error("room policy storage is not configured");
+    const policy = this.accounts.updateRoomPolicy(actor, this.name, changes);
+    for (const listener of this.serviceListeners) listener();
+    return policy;
+  }
+
+  createInvite(actor: Principal, role: Exclude<RoomRole, "owner">): string {
+    if (!this.accounts) throw new Error("account storage is not configured");
+    return this.accounts.createInvite(actor, this.name, role);
   }
 
   addAgentLink(label: string, url: string): void {
@@ -181,50 +227,57 @@ export class Room {
     for (const listener of this.serviceListeners) listener();
   }
 
-  chat(username: string, text: string): void {
+  chat(actor: Principal | string, text: string): boolean {
+    const principal = this.resolvePrincipal(actor);
+    if (!this.canContribute(principal)) return false;
     const clean = text.trim().slice(0, 2_000);
     if (clean) {
-      this.post("chat", username, clean);
-      this.scheduleAgent(username);
+      this.post("chat", principal.handle, clean, undefined, undefined, principal);
+      if (this.policy.agentMode === "passive" && this.canInvokeAgent(principal)) this.scheduleAgent(principal);
     }
+    return true;
   }
 
   notice(text: string): void {
     this.post("system", "room", text.slice(0, 2_000));
   }
 
-  agent(username: string, prompt: string): void {
+  agent(actor: Principal | string, prompt: string): boolean {
+    const principal = this.resolvePrincipal(actor);
+    if (!this.canInvokeAgent(principal)) return false;
     const clean = prompt.trim().slice(0, 2_000);
     if (!clean) {
       this.post("agent", "room-agent", "Try /agent status, or pass me a prompt.");
-      return;
+      return true;
     }
-    this.post("chat", username, `@room-agent ${clean}`);
-    if (this.agentResponder) return this.runAgent(true, username);
+    this.post("chat", principal.handle, `@room-agent ${clean}`, undefined, undefined, principal);
+    if (this.agentResponder) { this.runAgent(true, principal); return true; }
     const reply = clean.toLowerCase() === "status"
       ? `Room '${this.name}' is online with ${this.members.size} connected member(s). The Wasm/AI adapter is not configured yet.`
       : "I’m present, but this prototype has no model backend yet. Your prompt was recorded in the room transcript.";
     this.post("agent", "room-agent", reply);
+    return true;
   }
 
-  private scheduleAgent(username: string): void {
+  private scheduleAgent(requester: Principal): void {
     if (!this.agentResponder) return;
     if (this.passiveTimer) clearTimeout(this.passiveTimer);
     this.updateAgent("queued", "new room activity");
-    this.passiveTimer = setTimeout(() => this.runAgent(false, username), 700);
+    this.passiveTimer = setTimeout(() => this.runAgent(false, requester), 700);
   }
 
-  private runAgent(explicit: boolean, requester: string): void {
+  private runAgent(explicit: boolean, requester: Principal): void {
     if (!this.agentResponder) return;
     if (this.passiveTimer) clearTimeout(this.passiveTimer);
     this.passiveTimer = undefined;
     this.updateAgent("queued", explicit ? "direct request" : "reviewing conversation");
     this.agentQueue = this.agentQueue.then(async () => {
       let committed = false;
-      const reply = await this.agentResponder!(this.messages.slice(), (status, detail, link) => {
+      const visibleHistory = this.messages.filter((message) => message.agentVisible || message.kind === "agent" || message.kind === "commit");
+      const reply = await this.agentResponder!(visibleHistory, (status, detail, link) => {
         if (detail === "commit created") committed = true;
         this.updateAgent(status as AgentSnapshot["status"], detail, link);
-      }, requester);
+      }, { principal: requester, explicit });
       if (!committed && reply && reply !== "[silent]") this.post("agent", "room-agent", reply);
       this.updateAgent("idle", committed || reply === "[silent]" ? "listening" : "response sent");
     }).catch((error: unknown) => {
@@ -256,8 +309,8 @@ export class Room {
     for (const listener of this.serviceListeners) listener();
   }
 
-  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string): void {
-    const message = { id: this.nextId++, kind, author, text, at: new Date(), url, detail };
+  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal): void {
+    const message: Message = { id: this.nextId++, kind, author, text, at: new Date(), url, detail, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: principal ? this.canInvokeAgent(principal) : kind !== "chat" };
     this.messages.push(message);
     if (this.messages.length > this.historyLimit) this.messages.shift();
     this.saveState();
@@ -276,7 +329,7 @@ export class Room {
         const at = new Date(String(item.at));
         if (Number.isNaN(at.getTime())) continue;
         const oldRoomUrl = `http://localhost:3000/${encodeURIComponent(this.name)}`;
-        this.messages.push({ id: item.id, kind: item.kind as MessageKind, author: item.author, text: item.text.replaceAll(oldRoomUrl, this.pageUrl), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? item.detail : undefined });
+        this.messages.push({ id: item.id, kind: item.kind as MessageKind, author: item.author, text: item.text.replaceAll(oldRoomUrl, this.pageUrl), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? item.detail : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, agentVisible: typeof item.agentVisible === "boolean" ? item.agentVisible : item.kind !== "chat" });
         this.nextId = Math.max(this.nextId, item.id + 1);
       }
       this.serviceRequests = finiteNumber(state.serviceRequests);
@@ -315,6 +368,11 @@ export class Room {
     const cutoff = Date.now() - 60 * 60 * 1_000;
     while (this.egressSamples[0] && this.egressSamples[0].at < cutoff) this.egressSamples.shift();
   }
+
+  private resolvePrincipal(actor: Principal | string): Principal {
+    if (typeof actor !== "string") return actor;
+    return { id: `local:${actor}`, kind: "user", handle: actor, displayName: actor, authenticated: true };
+  }
 }
 
 function finiteNumber(value: unknown): number {
@@ -328,6 +386,10 @@ function rebaseRoomUrl(value: string, pageUrl: string): string {
     if (old.pathname === current.pathname) return `${pageUrl}${old.search}${old.hash}`;
   } catch { /* Preserve malformed legacy display data rather than dropping history. */ }
   return value;
+}
+
+function isRoomRole(value: unknown): value is RoomRole {
+  return value === "owner" || value === "admin" || value === "contributor" || value === "viewer";
 }
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";

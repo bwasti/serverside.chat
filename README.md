@@ -1,10 +1,10 @@
 # wasm-chat
 
-The executable room-service contract is documented in [`docs/service-api.md`](docs/service-api.md). Identity, roles, and capability accounting are specified in [`docs/security-model.md`](docs/security-model.md).
+The executable room-service contract is documented in [`docs/service-api.md`](docs/service-api.md). The implemented account and room policy model is in [`docs/accounts.md`](docs/accounts.md); its security boundary is described in [`docs/security-model.md`](docs/security-model.md).
 
 An early SSH/TUI prototype for chat rooms backed by tiny Wasm services and a room-scoped AI agent.
 
-This slice implements the frontend seam: seeded in-memory rooms, a passwordless development SSH server, multi-client chat, a visible stub agent, and a host-side HTTP scaffold serving a default page for every room. The QuickJS/Wasmtime runtime, SQLite storage, version control, persistence, invitations, and real model adapter are the next layer—not silently simulated here.
+This prototype has an SSH TUI, persistent multi-client rooms, public-key accounts and invitations, a QuickJS-Wasm service runtime, room-scoped SQLite and scratch storage, Git-backed deployments and previews, host-owned telemetry/realtime sockets, and an optional Fireworks room agent.
 
 ## Run it
 
@@ -21,7 +21,7 @@ In another terminal:
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p 2222
 ```
 
-The SSH username becomes your chat name. To pick one explicitly:
+Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner. An unknown but valid key enters public rooms as an anonymous browse-only principal; its requested SSH username has no authority. To propose a handle while redeeming an invite:
 
 ```sh
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null alice@localhost -p 2222
@@ -29,14 +29,21 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null alice@localhost 
 
 Commands inside the room:
 
-- `/agent status` asks the room agent for its current status
-- `/help` shows the agent hint
+- `/agent <request>` explicitly invokes the agent when room policy permits it
+- `/invite admin|contributor|viewer` creates a one-use 24-hour invite (admin only)
+- `/redeem <invite>` binds the current verified SSH key to a persistent account
+- `/permissions` shows the current room policy
+- `/permissions visibility public|private`
+- `/permissions contributions members|admins|disabled`
+- `/permissions agent passive|explicit|disabled`
 - `/quit` disconnects
 - `Ctrl-C` or `Ctrl-D` disconnects
 
-Configuration is via `HOST` (default `127.0.0.1`), `PORT` (default `2222`), `DATA_DIR` (default `.data`), and `WEB_BASE_URL` (default `http://localhost:3000`). The server creates an Ed25519 host key on first launch. Room page URLs are OSC 8 links; supported terminals let you open them with the usual modifier-click gesture.
+Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_DIR` (default `.data`), `WEB_BASE_URL` (default `http://Brams-MacBook-Air.local:3000`), and optional colon-delimited `SSH_BOOTSTRAP_KEYS`. The server creates an Ed25519 host key on first launch. Room page URLs are OSC 8 links; supported terminals let you open them with the usual modifier-click gesture.
 
-The SSH server binds to `HOST` (default `0.0.0.0`) so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP scaffold binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). Advertised room links use `WEB_BASE_URL`, defaulting to `http://Brams-MacBook-Air.local:3000`. On terminals at least 100 columns wide, the right HUD displays host-owned request counts, errors, latency, response bytes, recent access logs, uptime, connected users, and agent activity. Room code cannot disable this telemetry. Development authentication is passwordless, so do not expose these ports beyond a trusted network.
+The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). On wide terminals, the right HUD displays the version graph; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. This is still a LAN prototype: SSH key verification and room authorization are enforced, but browser sign-in, Internet-grade transport, rate limits per account, and account recovery are not complete.
+
+Seeded policies are intentionally varied: `mine` is public with member contributions and a passive agent; `general` is public with member contributions and explicit `/agent` invocation; `build-log` is private, admin-write, and has no agent.
 
 ## Room agent
 
@@ -52,8 +59,8 @@ Canonical history is strictly linear: promotion must be a fast-forward from `sta
 
 Every valid abbreviated or full commit hash in the room repository is lazily servable with `?__ref=<commit>`; it does not need a registered preview. Registered previews add a durable description and a row in the top deployment bar. The agent can archive a feature preview to remove that row without deleting its commit or direct URL. On rebase conflicts, the agent can inspect and edit conflicted files, continue until resolved, and then posts the resulting preview to chat for human feedback.
 
-The agent passively observes authenticated room chat and may respond, act, or remain silent. Its reviewable prompts live in [`prompts/room-agent/`](prompts/room-agent/). Routine thinking and tool activity appear in the right-side HUD instead of generating chat messages.
+Depending on room policy, the agent passively observes authenticated contributor chat, responds only to `/agent`, or is disabled. Anonymous text never enters the transcript or agent context. Its reviewable prompts live in [`prompts/room-agent/`](prompts/room-agent/). Routine thinking and tool activity appear in the status UI instead of generating chat messages.
 
 ## Security boundary (prototype)
 
-Authentication currently accepts every SSH connection. Keep the default loopback bind. Before exposing it, add invite/public-key authentication, connection and message rate limits, durable room membership, agent authorization rules, and resource accounting. User service code is not executed in this prototype.
+SSH accepts only a valid public-key signature. Recognition of that key controls identity; the SSH username is only a requested handle for first-time invite redemption. Visibility, contribution, agent access, administration, and canonical promotion are checked host-side. Browser requests currently have anonymous authority only, so public pages work and private pages deliberately return 404 until web sessions are wired to Google/Apple sign-in.

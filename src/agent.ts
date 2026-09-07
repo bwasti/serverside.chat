@@ -34,13 +34,13 @@ const tools = [
 export class FireworksAgent {
   constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
 
-  async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: AgentActivity, requester: string, owner: string, serviceLogs: (limit?: number) => string[]): Promise<string> {
+  async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: AgentActivity, requester: string, owner: string, canPromote: boolean, serviceLogs: (limit?: number) => string[]): Promise<string> {
     const latest = [...history].reverse().find((message) => message.kind === "chat");
     if (!latest || isTrivialSocialMessage(latest.text)) return "[silent]";
     activity("thinking", "reading room activity");
     const intent: RoomIntent = looksLikeTechnicalQuestion(latest.text) && !isConcreteWorkRequest(latest.text) ? "TECHNICAL" : "WORK";
     const messages: ChatMessage[] = [
-      { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nUser who triggered this run: ${requester}\nOnly the room owner may authorize canonical promotion.` },
+      { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nAuthenticated user who triggered this run: ${requester}\nCanonical promotion capability for this run: ${canPromote ? "granted" : "not granted"}.` },
       ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "agent" ? "assistant" : "user", content: message.kind === "agent" ? message.text : `${message.author}: ${message.text}` })),
     ];
     for (let turn = 0; turn < 10; turn++) {
@@ -55,7 +55,7 @@ export class FireworksAgent {
       }
       for (const call of message.tool_calls) {
         activity("working", call.function.name.replaceAll("_", " "));
-        const result = execute(workspace, pageUrl, call, requester === owner, serviceLogs);
+        const result = execute(workspace, pageUrl, call, canPromote, serviceLogs);
         if (call.function.name === "git_commit" && result.ok && typeof result.commit === "string") activity("working", "commit created", { label: `${result.commit} ${String(result.title)}`, url: `${pageUrl}?__ref=${result.commit}`, blurb: String(result.blurb ?? "") });
         if (call.function.name === "create_preview" && result.ok && typeof result.url === "string") activity("working", "preview ready", { label: String(result.description ?? `preview ${String(result.commit ?? "")}`), url: result.url });
         if (call.function.name === "archive_preview" && result.ok && typeof result.url === "string") activity("working", "preview archived", { label: "archived", url: result.url });

@@ -1,4 +1,5 @@
 import type { ServerChannel } from "ssh2";
+import type { AccountStore, AgentMode, ContributionPolicy, Principal, RoomRole, RoomVisibility } from "./auth";
 import { ROOM_LIMITS, type Message, type Room } from "./room";
 
 const ESC = "\x1b[";
@@ -44,13 +45,22 @@ export class TuiSession {
   private messageCacheRoom = "";
   private messageCacheWidth = 0;
   private readonly messageCache = new Map<number, string[]>();
+  private principal: Principal;
+  private readonly allRooms: Room[];
+  private rooms: Room[];
+  private localNotice = "";
 
-  constructor(private readonly stream: ServerChannel, private readonly rooms: Room[], private readonly username: string) {
-    this.room = rooms[0]!;
+  constructor(private readonly stream: ServerChannel, rooms: Room[], principal: Principal | string, private readonly accounts?: AccountStore) {
+    this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
+    this.allRooms = rooms;
+    this.rooms = rooms.filter((room) => room.canView(this.principal));
+    if (!this.rooms.length) throw new Error("principal cannot view any rooms");
+    this.room = this.rooms[0]!;
+    if (!this.principal.authenticated && this.accounts) this.localNotice = "anonymous · browse only · /redeem <invite> to join";
     this.write("\x1b[?1049h\x1b[?25h");
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
-    this.room.join(username);
+    this.room.join(this.username);
     stream.on("data", (data: Buffer) => this.onData(data));
     stream.on("close", () => this.close());
     stream.on("end", () => this.close());
@@ -90,6 +100,7 @@ export class TuiSession {
           continue;
         }
         if (this.sidebarFocused) continue;
+        if (!this.canUseComposer()) continue;
         if (char === "\r" || char === "\n") {
           if (char === "\n" && this.lastWasCarriageReturn) {
             this.lastWasCarriageReturn = false;
@@ -116,7 +127,8 @@ export class TuiSession {
         dirty = changed || dirty;
       }
     }
-    if (inputChanged) this.room.setTyping(this.username, Boolean(this.input));
+    if (inputChanged && this.room.canContribute(this.principal)) this.room.setTyping(this.username, Boolean(this.input));
+    if (inputChanged) this.localNotice = "";
     if (dirty) this.render();
   }
 
@@ -295,14 +307,59 @@ export class TuiSession {
       this.stream.end();
       return true;
     }
-    if (line === "/help") this.room.agent(this.username, "");
-    else if (line.startsWith("/agent")) this.room.agent(this.username, line.slice(6));
-    else this.room.chat(this.username, line);
+    if (this.handleHostCommand(line)) return false;
+    const accepted = line === "/help"
+      ? this.room.agent(this.principal, "")
+      : line.startsWith("/agent")
+        ? this.room.agent(this.principal, line.slice(6))
+        : this.room.chat(this.principal, line);
+    if (!accepted && line) this.localNotice = "room policy does not allow that action";
     return false;
+  }
+
+  private handleHostCommand(line: string): boolean {
+    if (!this.accounts) return false;
+    const [command, field, value] = line.trim().split(/\s+/);
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem") return false;
+    try {
+      if (command === "/redeem") {
+        if (!field || value) throw new Error("usage: /redeem <invite>");
+        const redeemed = this.accounts.redeemSshInvite(this.principal, field);
+        this.adoptPrincipal(redeemed.principal, redeemed.roomName);
+        this.localNotice = `signed in as ${this.username} · ${redeemed.role} in #${redeemed.roomName}`;
+        return true;
+      }
+      if (command === "/invite") {
+        const role = field as Exclude<RoomRole, "owner">;
+        if (role !== "admin" && role !== "contributor" && role !== "viewer") throw new Error("usage: /invite admin|contributor|viewer");
+        const token = this.room.createInvite(this.principal, role);
+        this.localNotice = `invite ${token} · ${role} · expires in 24h`;
+        return true;
+      }
+      if (!field) {
+        const policy = this.room.policy;
+        this.localNotice = `${policy.visibility} · ${policy.contributions} contribute · ${policy.agentMode} agent`;
+        return true;
+      }
+      if (!value) throw new Error("usage: /permissions visibility|contributions|agent value");
+      if (field === "visibility" && (value === "public" || value === "private")) this.room.updatePolicy(this.principal, { visibility: value as RoomVisibility });
+      else if (field === "contributions" && (value === "members" || value === "admins" || value === "disabled")) this.room.updatePolicy(this.principal, { contributions: value as ContributionPolicy });
+      else if (field === "agent" && (value === "passive" || value === "explicit" || value === "disabled")) this.room.updatePolicy(this.principal, { agentMode: value as AgentMode });
+      else throw new Error("invalid permission setting");
+      const policy = this.room.policy;
+      this.localNotice = `${policy.visibility} · ${policy.contributions} contribute · ${policy.agentMode} agent`;
+    } catch (error) {
+      this.localNotice = error instanceof Error ? error.message : "permission command failed";
+    }
+    return true;
   }
 
   private render(): void {
     if (this.closed) return;
+    if (!this.room.canView(this.principal)) {
+      this.stream.end("Room access changed. Reconnect after receiving an invitation.\r\n");
+      return;
+    }
     if (this.renderTimer) {
       clearTimeout(this.renderTimer);
       this.renderTimer = undefined;
@@ -314,14 +371,15 @@ export class TuiSession {
     const pageLinks = this.pageLinkRows(mainWidth, Math.max(1, Math.min(5, this.height - 8)));
     const topStatus = this.topStatusRows(mainWidth, this.height);
     const topRows = [...pageLinks, ...topStatus];
-    const inputLayout = layoutComposer(this.input, this.cursorOffset, mainWidth);
+    const writable = this.canUseComposer();
+    const inputLayout = layoutComposer(writable ? this.input : "read only · sign in or ask for an invite", writable ? this.cursorOffset : 0, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - 4));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
     if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
     if (inputLayout.cursorRow >= firstInputRow + maximumComposerRows) firstInputRow = inputLayout.cursorRow - maximumComposerRows + 1;
     const inputRows = inputLayout.rows.slice(firstInputRow, firstInputRow + maximumComposerRows).map((row) => row.text);
-    const typingStatus = this.typingStatus(mainWidth);
-    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (typingStatus ? 1 : 0));
+    const bottomStatus = this.localNotice ? truncate(`  ${this.localNotice}`, mainWidth) : this.typingStatus(mainWidth);
+    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0));
     if (this.messageCacheRoom !== this.room.name || this.messageCacheWidth !== mainWidth) {
       this.messageCacheRoom = this.room.name;
       this.messageCacheWidth = mainWidth;
@@ -345,7 +403,7 @@ export class TuiSession {
     const visible = messages.slice(Math.max(0, end - messageRows), end);
     while (visible.length < messageRows) visible.unshift({ text: "", kind: "chat" });
 
-    const title = `  # ${this.room.name}`;
+    const title = `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
     const status = `${this.scrollOffset ? `↑${this.scrollOffset}  ` : ""}${this.room.members.size} online  `;
     const headerGap = " ".repeat(Math.max(1, mainWidth - title.length - status.length));
     const sidebarHeader = sidebarWidth <= 3
@@ -362,8 +420,8 @@ export class TuiSession {
       const renderedText = this.sidebarFocused ? rendered.replaceAll(`${ESC}22m`, `${ESC}22m${DIM}`) : rendered;
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
-    const typing = typingStatus
-      ? [`${this.sidebarRow(topRows.length + visible.length, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${pad(typingStatus, mainWidth)}${ESC}23m${RESET}${this.hudRow(topRows.length + visible.length, hudWidth)}`]
+    const typing = bottomStatus
+      ? [`${this.sidebarRow(topRows.length + visible.length, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${pad(bottomStatus, mainWidth)}${ESC}23m${RESET}${this.hudRow(topRows.length + visible.length, hudWidth)}`]
       : [];
     const composer = inputRows.map((inputText, index) => {
       const last = index === inputRows.length - 1;
@@ -376,7 +434,7 @@ export class TuiSession {
     const cursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);
     const cursorRow = this.height - inputRows.length + 1 + inputLayout.cursorRow - firstInputRow;
     const screen = [header, ...statusHeaders, ...body, ...typing, ...composer].join("\r\n");
-    const cursor = this.sidebarFocused ? `${ESC}?25l` : `${ESC}${cursorRow};${cursorColumn}H${ESC}?25h`;
+    const cursor = this.sidebarFocused || !writable ? `${ESC}?25l` : `${ESC}${cursorRow};${cursorColumn}H${ESC}?25h`;
     const frame = `${screen}${cursor}`;
     if (frame === this.lastFrame) return;
     this.lastFrame = frame;
@@ -401,9 +459,11 @@ export class TuiSession {
     const sitePulse = Date.now() - this.room.lastRequestAt < 1_200 ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
     const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
     const healthTone = this.room.serviceErrors ? RED : GREEN;
-    const agentTone = this.room.agentState.status === "error" ? RED : active ? MAGENTA : MUTED;
+    const agentDisabled = this.room.policy.agentMode === "disabled";
+    const agentTone = agentDisabled ? MUTED : this.room.agentState.status === "error" ? RED : active ? MAGENTA : MUTED;
     const site = `  SITE   ${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}   conn ${this.room.connectionCount}/${ROOM_LIMITS.connections}   req ${this.room.serviceRequests}   err ${this.room.serviceErrors}   ${averageLatency.toFixed(1)}ms`;
-    const agent = `  AGENT  ${agentTone}${spinner}${STATUS} ${this.room.agentState.status}   ${this.room.agentState.detail}`;
+    const agentMode = this.room.policy.agentMode === "passive" ? "passive" : this.room.policy.agentMode === "explicit" ? "/agent only" : "room policy";
+    const agent = `  AGENT  ${agentTone}${agentDisabled ? "·" : spinner}${STATUS} ${agentDisabled ? "disabled" : this.room.agentState.status}   ${agentDisabled ? agentMode : `${this.room.agentState.detail} · ${agentMode}`}`;
     const identity = [site, agent];
     const metrics = [
       usageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatBytes),
@@ -485,6 +545,33 @@ export class TuiSession {
 
   private write(value: string): void {
     if (!this.stream.destroyed) this.stream.write(value);
+  }
+
+  private get username(): string { return this.principal.handle; }
+
+  private canUseComposer(): boolean {
+    return !this.principal.authenticated && Boolean(this.accounts)
+      || this.room.canContribute(this.principal)
+      || Boolean(this.accounts?.isAdmin(this.principal, this.room.name));
+  }
+
+  private adoptPrincipal(principal: Principal, preferredRoom: string): void {
+    const oldUsername = this.username;
+    this.unsubscribe();
+    this.unsubscribeService();
+    this.room.setTyping(oldUsername, false);
+    this.room.leave(oldUsername);
+    this.principal = principal;
+    this.rooms = this.allRooms.filter((room) => room.canView(principal));
+    if (!this.rooms.length) throw new Error("account cannot view any rooms");
+    this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === preferredRoom));
+    this.room = this.rooms[this.roomIndex]!;
+    this.scrollOffset = 0;
+    this.messageCacheRoom = "";
+    this.messageCache.clear();
+    this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
+    this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
+    this.room.join(this.username);
   }
 
   private agentIsActive(): boolean {
