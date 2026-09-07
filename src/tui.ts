@@ -4,6 +4,7 @@ import { ROOM_LIMITS, type Message, type Room } from "./room";
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
 const HEADER = `${ESC}48;5;234m${ESC}38;5;45m`;
+const STATUS = `${ESC}48;5;234m${ESC}38;5;252m`;
 const COMPOSER = `${ESC}48;5;238m${ESC}38;5;255m`;
 const SIDEBAR = `${ESC}48;5;236m${ESC}38;5;250m`;
 const SIDEBAR_MUTED = `${ESC}48;5;236m${ESC}38;5;244m`;
@@ -149,7 +150,10 @@ export class TuiSession {
     const pageLinks = this.pageLinkRows(mainWidth, Math.max(1, Math.min(5, this.height - 8)));
     const topStatus = this.topStatusRows(mainWidth, this.height);
     const topRows = [...pageLinks, ...topStatus];
-    const messageRows = Math.max(3, this.height - 2 - topRows.length);
+    const allInputRows = wrap(`  ${this.input}`, mainWidth);
+    const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - 4));
+    const inputRows = allInputRows.slice(-maximumComposerRows);
+    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length);
     const contentRows = this.height - 2;
     const messages = this.room.messages.flatMap((message) =>
       this.formatMessage(message, mainWidth).map((text) => ({ text, kind: message.kind, owner: message.author === this.room.owner })),
@@ -169,21 +173,23 @@ export class TuiSession {
     const paneTone = this.sidebarFocused ? DIM : "";
     const hudHeader = hudWidth ? `${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}` : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
-    const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${HEADER}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
+    const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const body = visible.map(({ text, kind, owner }, index) => {
       const color = owner ? OWNER : kind === "agent" || kind === "commit" ? AGENT : kind === "system" ? MUTED : CHAT;
       const columnRow = index + topRows.length;
       const renderedText = kind === "commit" ? padAnsi(text, mainWidth) : pad(truncate(text, mainWidth), mainWidth);
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
-    const inputText = `  ${this.input}`;
-    const sidebarFooter = sidebarWidth <= 3
-      ? `${SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
-      : `${SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`;
-    const hudFooter = hudWidth ? `${HUD_MUTED}${pad("  linear history · rebase only", hudWidth)}${RESET}` : "";
-    const composer = `${sidebarFooter}${paneTone}${COMPOSER}${pad(truncate(inputText, mainWidth), mainWidth)}${RESET}${hudFooter}`;
-    const cursorColumn = sidebarWidth + Math.min(mainWidth, Array.from(inputText).length + 1);
-    const screen = [header, ...statusHeaders, ...body, composer].join("\r\n");
+    const composer = inputRows.map((inputText, index) => {
+      const last = index === inputRows.length - 1;
+      const sidebarFooter = last
+        ? sidebarWidth <= 3 ? `${SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}` : `${SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`
+        : `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
+      const hudFooter = hudWidth ? `${last ? HUD_MUTED : HUD}${pad(last ? "  linear history · rebase only" : "", hudWidth)}${RESET}` : "";
+      return `${sidebarFooter}${paneTone}${COMPOSER}${pad(truncate(inputText, mainWidth), mainWidth)}${RESET}${hudFooter}`;
+    });
+    const cursorColumn = sidebarWidth + Math.min(mainWidth, Array.from(inputRows.at(-1) ?? "").length + 1);
+    const screen = [header, ...statusHeaders, ...body, ...composer].join("\r\n");
     const cursor = this.sidebarFocused ? `${ESC}?25l` : `${ESC}${this.height};${cursorColumn}H${ESC}?25h`;
     this.write(`${ESC}?25l${ESC}H${ESC}2J${screen}${cursor}`);
   }
@@ -194,26 +200,28 @@ export class TuiSession {
       const ref = compactUrl(link.url).replace(/^localhost:\d+\//, "");
       const description = link.label === "head" ? "working tip" : link.label;
       const label = truncate(`  ↗ ${ref}  —  ${description}`, width);
-      const rendered = `\x1b]8;;${link.url}\x1b\\${ESC}4m${label}${ESC}24m\x1b]8;;\x1b\\`;
+      const rendered = `\x1b]8;;${link.url}\x1b\\${label}\x1b]8;;\x1b\\`;
       return rendered + " ".repeat(Math.max(0, width - Array.from(label).length));
     });
   }
 
   private topStatusRows(width: number, height: number): string[] {
     const active = this.agentIsActive();
-    const spinner = active ? ` ${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]}` : "";
+    const spinner = active ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
     const sitePulse = Date.now() - this.room.lastRequestAt < 1_200 ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
-    const agent = `  AGENT${spinner} ${this.room.agentState.status} · ${this.room.agentState.detail}`;
-    const site = `${sitePulse} SITE ${this.room.members.size} people · ${this.room.connectionCount} conn · ${this.room.serviceErrors} errors`;
-    const gap = " ".repeat(Math.max(2, width - agent.length - site.length - 2));
-    const identity = width >= 72 ? [truncate(`${agent}${gap}${site}`, width)] : [truncate(agent, width), truncate(`  ${site}`, width)];
+    const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
+    const healthTone = this.room.serviceErrors ? RED : GREEN;
+    const agentTone = this.room.agentState.status === "error" ? RED : active ? MAGENTA : MUTED;
+    const site = `  SITE   ${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}   conn ${this.room.connectionCount}/${ROOM_LIMITS.connections}   req ${this.room.serviceRequests}   err ${this.room.serviceErrors}   ${averageLatency.toFixed(1)}ms`;
+    const agent = `  AGENT  ${agentTone}${spinner}${STATUS} ${this.room.agentState.status}   ${this.room.agentState.detail}`;
+    const identity = [site, agent];
     const metrics = [
       usageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatBytes),
       usageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatBytes),
       usageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String),
       usageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatBytes),
     ];
-    if (height < 15) return [...identity.slice(0, 1), `  ${metrics.map((metric) => metric.compact).join("  ")}`];
+    if (height < 15) return [site, agent, `  ${metrics.map((metric) => metric.compact).join("  ")}`];
     const metricRows = width >= 50
       ? [`  ${metrics[0]!.full}  ${metrics[1]!.full}`, `  ${metrics[2]!.full}  ${metrics[3]!.full}`]
       : metrics.map((metric) => `  ${metric.full}`);
@@ -224,11 +232,7 @@ export class TuiSession {
     if (!width) return "";
     const row = this.room.versionGraph[index];
     if (!row) return `${HUD}${" ".repeat(width)}${RESET}`;
-    const tone = row.text.includes("stable") ? GREEN : row.text.includes("head") ? CYAN : row.text.includes(" · ") ? MAGENTA : MUTED;
-    const style = `${HUD}${tone}`;
-    const label = pad(truncate(`  ${row.text}`, width), width);
-    const content = row.url ? `\x1b]8;;${row.url}\x1b\\${ESC}4m${label}${ESC}24m\x1b]8;;\x1b\\` : label;
-    return `${style}${content}${RESET}`;
+    return `${HUD}${renderVersionRow(row.text, row.url, width)}${RESET}`;
   }
 
   private sidebarRow(index: number, width: number): string {
@@ -258,7 +262,7 @@ export class TuiSession {
       if (hashStart < 0) return [visible];
       const before = visible.slice(0, hashStart);
       const after = visible.slice(hashStart + hash.length);
-      return [`${before}\x1b]8;;${message.url}\x1b\\${ESC}3m${ESC}4m${hash}${ESC}24m${after}${ESC}23m\x1b]8;;\x1b\\`];
+      return [`${before}\x1b]8;;${message.url}\x1b\\${ESC}3m${hash}${after}${ESC}23m\x1b]8;;\x1b\\`];
     }
     return wrap(prefix + message.text.replace(/\s+/g, " "), width);
   }
@@ -330,7 +334,7 @@ function usageBar(label: string, used: number, limit: number, format: (value: nu
   const ratio = Math.max(0, Math.min(1, used / limit));
   const filled = Math.round(ratio * 6);
   const tone = ratio >= 0.9 ? RED : ratio >= 0.7 ? YELLOW : GREEN;
-  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${HEADER}`;
+  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${STATUS}`;
   const percent = `${Math.round(ratio * 100)}%`;
   return {
     full: `${label} ${bar} ${format(used)}/${format(limit)}`,
@@ -344,6 +348,21 @@ function compactUrl(value: string): string {
     .replace("?__ref=head", "#head")
     .replace("?__ref=stable", "#stable")
     .replace(/\?__preview=([0-9a-f]{7})[^&]*/, "#$1");
+}
+
+function renderVersionRow(value: string, url: string | undefined, width: number): string {
+  const match = value.match(/^(.*?[0-9a-f]{7,40})(?:\s{2,})(.*)$/);
+  let rendered = `  ${value}`;
+  if (match) {
+    const tags = match[2]!.split(" · ");
+    const colored = tags.map((tag) => {
+      const tone = tag === "stable" ? GREEN : tag === "head" ? CYAN : tag.includes(" ") ? MAGENTA : YELLOW;
+      return `${tone}${tag}${HUD}`;
+    }).join(" · ");
+    rendered = `  ${match[1]}  ${colored}`;
+  }
+  const fitted = padAnsi(rendered, width);
+  return url ? `\x1b]8;;${url}\x1b\\${fitted}\x1b]8;;\x1b\\` : fitted;
 }
 
 function truncate(value: string, width: number): string {
@@ -390,8 +409,15 @@ function clipAnsi(value: string, width: number): string {
 }
 
 function wrap(value: string, width: number): string[] {
-  const chars = Array.from(value);
   const lines: string[] = [];
-  for (let index = 0; index < chars.length; index += width) lines.push(chars.slice(index, index + width).join(""));
+  let remaining = value;
+  while (Array.from(remaining).length > width) {
+    const candidate = Array.from(remaining).slice(0, width).join("");
+    const breakAt = candidate.lastIndexOf(" ");
+    const index = breakAt > 0 ? breakAt : candidate.length;
+    lines.push(remaining.slice(0, index).trimEnd());
+    remaining = remaining.slice(index).trimStart();
+  }
+  lines.push(remaining);
   return lines.length ? lines : [""];
 }
