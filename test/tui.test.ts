@@ -82,6 +82,37 @@ test("TUI can open directly into a selected visible room", () => {
   stream.end();
 });
 
+test("Enter selects the highlighted room and returns focus to chat", () => {
+  const mine = new Room("mine");
+  const general = new Room("general");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, [mine, general], "alice");
+
+  stream.emit("data", Buffer.from("\t\x1b[B\r"));
+  const state = session as unknown as { room: Room; sidebarFocused: boolean };
+  expect(state.room.name).toBe("general");
+  expect(state.sidebarFocused).toBe(false);
+
+  stream.emit("data", Buffer.from("selected\r"));
+  expect(general.messages.at(-1)).toMatchObject({ author: "alice", text: "selected" });
+  stream.end();
+});
+
+test("wide version control HUD reserves its lower third for site telemetry", () => {
+  const room = new Room("mine");
+  room.versionGraph.push({ text: "* abcdef0  head", url: "https://example.test/mine?__ref=abcdef0" });
+  const tui = open(room);
+  tui.session.resize(120, 24);
+
+  const frame = tui.stream.writes.at(-1)!;
+  expect(frame).toContain("VERSION CONTROL");
+  expect(frame).toContain("abcdef0");
+  expect(frame).toContain("SITE TELEMETRY");
+  expect(frame).toContain("BYTES/H");
+  expect(frame.indexOf("SITE TELEMETRY")).toBeGreaterThan(frame.indexOf("abcdef0"));
+  tui.stream.end();
+});
+
 test("an SSH viewer becomes its canonical account after browser key linking", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-auth-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));

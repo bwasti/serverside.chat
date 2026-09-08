@@ -126,6 +126,17 @@ export class TuiSession {
           dirty = true;
           continue;
         }
+        if (this.sidebarFocused && (char === "\r" || char === "\n")) {
+          if (char === "\n" && this.lastWasCarriageReturn) {
+            this.lastWasCarriageReturn = false;
+            continue;
+          }
+          this.lastWasCarriageReturn = char === "\r";
+          this.sidebarFocused = false;
+          this.animateSidebar();
+          dirty = true;
+          continue;
+        }
         if (this.sidebarFocused) continue;
         if (!this.canUseComposer()) continue;
         if (char === "\r" || char === "\n") {
@@ -462,10 +473,10 @@ export class TuiSession {
       const sidebarFooter = last
         ? sidebarWidth <= 3 ? `${SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}` : `${SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`
         : `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
-      const hudFooter = hudWidth ? `${last ? HUD_MUTED : HUD}${pad(last ? "  linear history · rebase only" : "", hudWidth)}${RESET}` : "";
+      const columnRow = topRows.length + visible.length + typing.length + index;
       const padded = pad(truncate(inputText, mainWidth), mainWidth);
       const renderedInput = !writable && !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, COMPOSER) : padded;
-      return `${sidebarFooter}${paneTone}${COMPOSER}${renderedInput}${RESET}${hudFooter}`;
+      return `${sidebarFooter}${paneTone}${COMPOSER}${renderedInput}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
     const cursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);
     const cursorRow = this.height - inputRows.length + 1 + inputLayout.cursorRow - firstInputRow;
@@ -516,9 +527,35 @@ export class TuiSession {
 
   private hudRow(index: number, width: number): string {
     if (!width) return "";
+    const telemetryStart = Math.max(2, Math.floor((this.height - 1) * 2 / 3));
+    if (index >= telemetryStart) {
+      const telemetry = this.siteTelemetryRows()[index - telemetryStart];
+      return `${index === telemetryStart ? HUD_MUTED : HUD}${padAnsi(telemetry ?? "", width)}${RESET}`;
+    }
     const row = this.room.versionGraph[index];
     if (!row) return `${HUD}${" ".repeat(width)}${RESET}`;
     return `${HUD}${renderVersionRow(row.text, row.url, width)}${RESET}`;
+  }
+
+  private siteTelemetryRows(): string[] {
+    const recent = Date.now() - this.room.lastRequestAt < 1_200;
+    const pulse = recent ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
+    const errors = this.room.serviceErrors;
+    const healthTone = errors ? RED : GREEN;
+    const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
+    const metrics = [
+      usageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatBytes, HUD),
+      usageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatBytes, HUD),
+      usageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String, HUD),
+      usageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatBytes, HUD),
+    ];
+    return [
+      "  SITE TELEMETRY",
+      `  ${healthTone}${pulse}${HUD} ${errors ? "errors" : "healthy"}   up ${formatDuration(Math.max(0, Math.floor((Date.now() - this.room.serviceStartedAt.getTime()) / 1_000)))}`,
+      `  people ${this.room.members.size}   conn ${this.room.connectionCount}/${ROOM_LIMITS.connections}`,
+      `  req ${this.room.serviceRequests}   err ${errors}   avg ${averageLatency.toFixed(1)}ms`,
+      ...metrics.map((metric) => `  ${metric.full}`),
+    ];
   }
 
   private sidebarRow(index: number, width: number): string {
@@ -666,11 +703,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_048_576).toFixed(1)}MiB`;
 }
 
-function usageBar(label: string, used: number, limit: number, format: (value: number) => string): { full: string; compact: string } {
+function usageBar(label: string, used: number, limit: number, format: (value: number) => string, restoreTone = STATUS): { full: string; compact: string } {
   const ratio = Math.max(0, Math.min(1, used / limit));
   const filled = Math.round(ratio * 6);
   const tone = ratio >= 0.9 ? RED : ratio >= 0.7 ? YELLOW : GREEN;
-  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${STATUS}`;
+  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${restoreTone}`;
   const percent = `${Math.round(ratio * 100)}%`;
   return {
     full: `${label} ${bar} ${format(used)}/${format(limit)}`,
