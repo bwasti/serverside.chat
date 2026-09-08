@@ -15,5 +15,7 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain('data-provider="github"');
   expect(browserTuiHtml([], false)).not.toContain('id="devwarning"');
   expect(await Bun.file("node_modules/@xterm/xterm/lib/xterm.js").exists()).toBe(true);
+  expect(await Bun.file("node_modules/@xterm/xterm/lib/xterm.js.map").exists()).toBe(true);
   expect(await Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js").exists()).toBe(true);
+  expect(await Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js.map").exists()).toBe(true);
 });

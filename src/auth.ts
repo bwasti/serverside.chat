@@ -260,7 +260,10 @@ export class AccountStore {
       WHERE i.provider = ? AND i.provider_subject = ?`).get(provider, subject) as UserRow | null;
     if (existing) {
       if (existing.status !== "active") throw new Error("account is disabled");
-      if (linkTo && existing.id !== linkTo.id) throw new Error("this identity is already linked to another account");
+      if (linkTo && existing.id !== linkTo.id) {
+        this.transferUnprivilegedIdentity(existing, linkTo, provider, subject);
+        return { principal: linkTo, created: false };
+      }
       return { principal: userPrincipal(existing), created: false };
     }
 
@@ -485,6 +488,26 @@ export class AccountStore {
       handle = `${base.slice(0, 32 - marker.length)}${marker}`;
     }
     return handle;
+  }
+
+  private transferUnprivilegedIdentity(source: UserRow, target: Principal, provider: string, subject: string): void {
+    if (!target.authenticated || target.kind !== "user") throw new Error("an authenticated account is required for identity linking");
+    const count = (sql: string) => (this.db.query(sql).get(source.id) as { count: number }).count;
+    const established = count("SELECT COUNT(*) AS count FROM rooms WHERE owner_user_id = ?")
+      + count("SELECT COUNT(*) AS count FROM room_memberships WHERE user_id = ? AND revoked_at IS NULL")
+      + count("SELECT COUNT(*) AS count FROM ssh_keys WHERE user_id = ?")
+      + count("SELECT COUNT(*) AS count FROM agent_credentials WHERE owner_user_id = ?")
+      + Math.max(0, count("SELECT COUNT(*) AS count FROM identities WHERE user_id = ?") - 1);
+    if (established) throw new Error("this identity is already linked to another account and cannot be merged automatically");
+
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.query("UPDATE identities SET user_id = ? WHERE provider = ? AND provider_subject = ? AND user_id = ?")
+        .run(target.id, provider, subject, source.id);
+      this.db.query("UPDATE web_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL").run(now, source.id);
+      this.db.query("UPDATE users SET status = 'disabled' WHERE id = ?").run(source.id);
+    })();
+    this.audit(target, undefined, "identity.consolidate", `${provider}:${source.handle}`);
   }
 
   private inviteForToken(token: string): InviteRow | undefined {

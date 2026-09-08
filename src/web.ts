@@ -18,8 +18,10 @@ const SESSION_COOKIE = "__Host-serverside_session";
 const OAUTH_COOKIE = "__Host-serverside_oauth";
 const terminalAssets = new Map([
   ["/_terminal/xterm.js", { file: Bun.file("node_modules/@xterm/xterm/lib/xterm.js"), type: "text/javascript; charset=utf-8" }],
+  ["/_terminal/xterm.js.map", { file: Bun.file("node_modules/@xterm/xterm/lib/xterm.js.map"), type: "application/json; charset=utf-8" }],
   ["/_terminal/xterm.css", { file: Bun.file("node_modules/@xterm/xterm/css/xterm.css"), type: "text/css; charset=utf-8" }],
   ["/_terminal/addon-fit.js", { file: Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js"), type: "text/javascript; charset=utf-8" }],
+  ["/_terminal/addon-fit.js.map", { file: Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js.map"), type: "application/json; charset=utf-8" }],
 ]);
 
 export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorkspace>, host: string, port: number, dataDir = ".data", accounts?: AccountStore, oauth?: OAuthService, developmentAuth = true) {

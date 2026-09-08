@@ -50,3 +50,19 @@ test("an additional OAuth identity links only to the initiating canonical accoun
   expect(() => accounts.authenticateIdentity({ provider: "github", subject: "42", handle: "ignored" }, other)).toThrow("another account");
   accounts.close();
 });
+
+test("a bootstrap link consolidates a newly-created OAuth-only account", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-oauth-consolidate-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const canonical = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", canonical, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const accidental = accounts.authenticateIdentity({ provider: "github", subject: "42", handle: "alice" }).principal;
+  const oldSession = accounts.createWebSession(accidental);
+
+  const linked = accounts.authenticateIdentity({ provider: "github", subject: "42", handle: "ignored" }, canonical);
+
+  expect(linked.principal.id).toBe(canonical.id);
+  expect(accounts.authenticateIdentity({ provider: "github", subject: "42", handle: "ignored" }).principal.id).toBe(canonical.id);
+  expect(accounts.principalForWebSession(oldSession.sessionToken)).toBeUndefined();
+  accounts.close();
+});

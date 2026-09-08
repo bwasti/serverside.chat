@@ -399,7 +399,14 @@ export class TuiSession {
     const topStatus = this.topStatusRows(mainWidth, this.height);
     const topRows = [...pageLinks, ...topStatus];
     const writable = this.canUseComposer();
-    const inputLayout = layoutComposer(writable ? this.input : "read only · sign in to contribute", writable ? this.cursorOffset : 0, mainWidth);
+    const readOnlyText = this.principal.authenticated
+      ? this.room.policy.contributions === "disabled"
+        ? "read only · contributions are disabled"
+        : this.room.policy.contributions === "admins"
+          ? "read only · admins can contribute"
+          : `read only · ask @${this.room.owner} for an invite`
+      : "read only · sign in to contribute";
+    const inputLayout = layoutComposer(writable ? this.input : readOnlyText, writable ? this.cursorOffset : 0, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - 4));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
     if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
@@ -457,7 +464,7 @@ export class TuiSession {
         : `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
       const hudFooter = hudWidth ? `${last ? HUD_MUTED : HUD}${pad(last ? "  linear history · rebase only" : "", hudWidth)}${RESET}` : "";
       const padded = pad(truncate(inputText, mainWidth), mainWidth);
-      const renderedInput = !writable && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, COMPOSER) : padded;
+      const renderedInput = !writable && !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, COMPOSER) : padded;
       return `${sidebarFooter}${paneTone}${COMPOSER}${renderedInput}${RESET}${hudFooter}`;
     });
     const cursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);

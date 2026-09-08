@@ -120,3 +120,19 @@ test("an SSH viewer becomes its canonical account after browser key linking", as
   stream.end();
   accounts.close();
 });
+
+test("an authenticated non-member sees an invitation prompt instead of sign-in", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-member-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  const viewer = accounts.createDevelopmentAccount("bob").principal;
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const room = new Room("mine", 250, "https://example.test/mine", owner.handle, undefined, accounts);
+  const stream = new FakeStream();
+  new TuiSession(stream as unknown as ServerChannel, [room], viewer, accounts, undefined, "https://example.test/?signin=1");
+
+  expect(stream.writes.at(-1)).toContain("read only · ask @alice for an invite");
+  expect(stream.writes.at(-1)).not.toContain("\x1b]8;;https://example.test/?signin=1");
+  stream.end();
+  accounts.close();
+});
