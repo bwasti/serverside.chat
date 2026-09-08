@@ -196,6 +196,7 @@ export class Room {
     for (const text of lines.slice(0, 20)) this.serviceLogs.push(`${time} ${text.replace(/[\r\n]/g, " ").slice(0, 500)}`);
     if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
     this.saveState();
+    for (const listener of this.serviceListeners) listener();
   }
 
   tailServiceLogs(requested = 20): string[] {

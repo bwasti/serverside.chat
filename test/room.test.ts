@@ -59,6 +59,17 @@ test("typing presence broadcasts transitions without per-keystroke churn", () =>
   expect(updates).toBe(2);
 });
 
+test("service log writes notify live HUD subscribers", () => {
+  const room = new Room("mine");
+  let updates = 0;
+  room.subscribeService(() => updates++);
+
+  room.recordServiceLog("guest live update");
+
+  expect(updates).toBe(1);
+  expect(room.serviceLogs.at(-1)).toContain("guest live update");
+});
+
 test("rolling response-byte ceiling is enforced", () => {
   const room = new Room("mine");
   expect(room.canSendResponse(64 * 1024 * 1024)).toBe(true);

@@ -98,18 +98,34 @@ test("Enter selects the highlighted room and returns focus to chat", () => {
   stream.end();
 });
 
-test("wide version control HUD reserves its lower third for site telemetry", () => {
+test("wide version control HUD reserves its lower third for live service logs", () => {
   const room = new Room("mine");
   room.versionGraph.push({ text: "* abcdef0  head", url: "https://example.test/mine?__ref=abcdef0" });
+  room.recordServiceLog("guest rendered 你好, 世界");
   const tui = open(room);
   tui.session.resize(120, 24);
 
   const frame = tui.stream.writes.at(-1)!;
   expect(frame).toContain("VERSION CONTROL");
   expect(frame).toContain("abcdef0");
-  expect(frame).toContain("SITE TELEMETRY");
-  expect(frame).toContain("BYTES/H");
-  expect(frame.indexOf("SITE TELEMETRY")).toBeGreaterThan(frame.indexOf("abcdef0"));
+  expect(frame).toContain("LIVE LOGS");
+  expect(frame).toContain("guest rendered 你好, 世界");
+  expect(frame.indexOf("LIVE LOGS")).toBeGreaterThan(frame.indexOf("abcdef0"));
+  tui.stream.end();
+});
+
+test("CJK text uses terminal cell width for wrapping and cursor placement", () => {
+  const layout = layoutComposer("你好, 世界", 6, 9);
+  expect(layout.rows.map((row) => row.text)).toEqual(["  你好, ", "世界"]);
+  expect(layout.cursorRow).toBe(1);
+  expect(layout.cursorColumn).toBe(4);
+
+  const room = new Room("mine");
+  const tui = open(room);
+  tui.session.resize(40, 12);
+  room.chat("alice", "A compact Chinese greeting: 你好, 世界");
+  tui.session.resize(40, 12);
+  expect(tui.stream.writes.at(-1)).toContain("你好, 世界");
   tui.stream.end();
 });
 

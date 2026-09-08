@@ -527,35 +527,22 @@ export class TuiSession {
 
   private hudRow(index: number, width: number): string {
     if (!width) return "";
-    const telemetryStart = Math.max(2, Math.floor((this.height - 1) * 2 / 3));
-    if (index >= telemetryStart) {
-      const telemetry = this.siteTelemetryRows()[index - telemetryStart];
-      return `${index === telemetryStart ? HUD_MUTED : HUD}${padAnsi(telemetry ?? "", width)}${RESET}`;
+    const logStart = Math.max(2, Math.floor((this.height - 1) * 2 / 3));
+    if (index >= logStart) {
+      if (index === logStart) {
+        const live = Date.now() - this.room.lastRequestAt < 1_200;
+        const pulse = live ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
+        return `${HUD_MUTED}${padAnsi(`  LIVE LOGS  ${live ? GREEN : MUTED}${pulse}${HUD_MUTED}`, width)}${RESET}`;
+      }
+      const capacity = Math.max(0, this.height - 1 - logStart - 1);
+      const logs = this.room.serviceLogs.slice(-capacity);
+      const slot = index - logStart - 1;
+      const log = logs[slot - (capacity - logs.length)];
+      return `${HUD}${padAnsi(log ? renderServiceLog(log) : "", width)}${RESET}`;
     }
     const row = this.room.versionGraph[index];
     if (!row) return `${HUD}${" ".repeat(width)}${RESET}`;
     return `${HUD}${renderVersionRow(row.text, row.url, width)}${RESET}`;
-  }
-
-  private siteTelemetryRows(): string[] {
-    const recent = Date.now() - this.room.lastRequestAt < 1_200;
-    const pulse = recent ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
-    const errors = this.room.serviceErrors;
-    const healthTone = errors ? RED : GREEN;
-    const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
-    const metrics = [
-      usageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatBytes, HUD),
-      usageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatBytes, HUD),
-      usageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String, HUD),
-      usageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatBytes, HUD),
-    ];
-    return [
-      "  SITE TELEMETRY",
-      `  ${healthTone}${pulse}${HUD} ${errors ? "errors" : "healthy"}   up ${formatDuration(Math.max(0, Math.floor((Date.now() - this.room.serviceStartedAt.getTime()) / 1_000)))}`,
-      `  people ${this.room.members.size}   conn ${this.room.connectionCount}/${ROOM_LIMITS.connections}`,
-      `  req ${this.room.serviceRequests}   err ${errors}   avg ${averageLatency.toFixed(1)}ms`,
-      ...metrics.map((metric) => `  ${metric.full}`),
-    ];
   }
 
   private sidebarRow(index: number, width: number): string {
@@ -703,11 +690,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_048_576).toFixed(1)}MiB`;
 }
 
-function usageBar(label: string, used: number, limit: number, format: (value: number) => string, restoreTone = STATUS): { full: string; compact: string } {
+function usageBar(label: string, used: number, limit: number, format: (value: number) => string): { full: string; compact: string } {
   const ratio = Math.max(0, Math.min(1, used / limit));
   const filled = Math.round(ratio * 6);
   const tone = ratio >= 0.9 ? RED : ratio >= 0.7 ? YELLOW : GREEN;
-  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${restoreTone}`;
+  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${STATUS}`;
   const percent = `${Math.round(ratio * 100)}%`;
   return {
     full: `${label} ${bar} ${format(used)}/${format(limit)}`,
@@ -744,6 +731,18 @@ function renderVersionRow(value: string, url: string | undefined, width: number)
   return fitted;
 }
 
+function renderServiceLog(value: string): string {
+  const safe = value.replace(/[\r\n]/g, " ");
+  const request = safe.match(/^(\d{2}:\d{2}:\d{2}) (\d{3}) (.*)$/);
+  if (request) {
+    const status = Number(request[2]);
+    const tone = status >= 500 ? RED : status >= 400 ? YELLOW : GREEN;
+    return `  ${MUTED}${request[1]}${HUD} ${tone}${request[2]}${HUD} ${request[3]}`;
+  }
+  const timestamp = safe.match(/^(\d{2}:\d{2}:\d{2}) (.*)$/);
+  return timestamp ? `  ${MUTED}${timestamp[1]}${HUD} ${timestamp[2]}` : `  ${safe}`;
+}
+
 export interface ComposerLayout {
   rows: Array<{ text: string; start: number; end: number }>;
   cursorRow: number;
@@ -757,19 +756,24 @@ export function layoutComposer(input: string, cursorOffset: number, width: numbe
   const rows: ComposerLayout["rows"] = [];
   let start = 0;
   while (start < chars.length) {
-    const maximumEnd = Math.min(chars.length, start + lineWidth);
-    let end = maximumEnd;
-    if (maximumEnd < chars.length) {
-      for (let index = maximumEnd - 1; index > start; index--) {
-        if (index >= 2 && chars[index] === " ") { end = index + 1; break; }
-      }
+    let end = start;
+    let cells = 0;
+    let breakAfter = -1;
+    while (end < chars.length) {
+      const characterWidth = terminalCharacterWidth(chars[end]!);
+      if (cells + characterWidth > lineWidth) break;
+      cells += characterWidth;
+      if (end >= 2 && chars[end] === " ") breakAfter = end + 1;
+      end++;
     }
+    if (end < chars.length && breakAfter > start) end = breakAfter;
+    if (end === start) end++;
     rows.push({ text: chars.slice(start, end).join(""), start, end });
     start = end;
   }
   if (!rows.length) rows.push({ text: "", start: 0, end: 0 });
   const absoluteCursor = 2 + Math.max(0, Math.min(inputChars.length, cursorOffset));
-  if (absoluteCursor === chars.length && rows.at(-1)!.text.length === lineWidth) {
+  if (absoluteCursor === chars.length && terminalWidth(rows.at(-1)!.text) === lineWidth) {
     rows.push({ text: "", start: chars.length, end: chars.length });
   }
   let cursorRow = rows.length - 1;
@@ -781,15 +785,23 @@ export function layoutComposer(input: string, cursorOffset: number, width: numbe
     }
   }
   const row = rows[cursorRow]!;
-  return { rows, cursorRow, cursorColumn: Math.max(0, Math.min(Array.from(row.text).length, absoluteCursor - row.start)) };
+  return { rows, cursorRow, cursorColumn: terminalWidth(chars.slice(row.start, absoluteCursor).join("")) };
 }
 
 function truncate(value: string, width: number): string {
-  return Array.from(value).slice(0, width).join("");
+  let output = "";
+  let cells = 0;
+  for (const character of value) {
+    const characterWidth = terminalCharacterWidth(character);
+    if (cells + characterWidth > width) break;
+    output += character;
+    cells += characterWidth;
+  }
+  return output;
 }
 
 function pad(value: string, width: number): string {
-  return value + " ".repeat(Math.max(0, width - Array.from(value).length));
+  return value + " ".repeat(Math.max(0, width - terminalWidth(value)));
 }
 
 function linkText(value: string, label: string, url: string, tone: string, restoreTone: string): string {
@@ -804,7 +816,7 @@ function padAnsi(value: string, width: number): string {
 }
 
 function visibleLength(value: string): number {
-  return Array.from(value.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")).length;
+  return terminalWidth(value.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
 }
 
 function clipAnsi(value: string, width: number): string {
@@ -825,9 +837,11 @@ function clipAnsi(value: string, width: number): string {
       index = end;
     } else {
       const character = Array.from(value.slice(index))[0]!;
+      const characterWidth = terminalCharacterWidth(character);
+      if (visible + characterWidth > width) break;
       output += character;
       index += character.length;
-      visible++;
+      visible += characterWidth;
     }
   }
   return `${output}\x1b]8;;\x1b\\${RESET}`;
@@ -835,14 +849,48 @@ function clipAnsi(value: string, width: number): string {
 
 function wrap(value: string, width: number): string[] {
   const lines: string[] = [];
-  let remaining = value;
-  while (Array.from(remaining).length > width) {
-    const candidate = Array.from(remaining).slice(0, width).join("");
-    const breakAt = candidate.lastIndexOf(" ");
-    const index = breakAt > 0 ? breakAt : candidate.length;
-    lines.push(remaining.slice(0, index).trimEnd());
-    remaining = remaining.slice(index).trimStart();
+  let remaining = Array.from(value);
+  while (terminalWidth(remaining.join("")) > width) {
+    let cells = 0;
+    let end = 0;
+    let breakAt = -1;
+    while (end < remaining.length) {
+      const characterWidth = terminalCharacterWidth(remaining[end]!);
+      if (cells + characterWidth > width) break;
+      cells += characterWidth;
+      if (/\s/.test(remaining[end]!)) breakAt = end;
+      end++;
+    }
+    const index = breakAt > 0 ? breakAt : Math.max(1, end);
+    lines.push(remaining.slice(0, index).join("").trimEnd());
+    remaining = Array.from(remaining.slice(index).join("").trimStart());
   }
-  lines.push(remaining);
+  lines.push(remaining.join(""));
   return lines.length ? lines : [""];
+}
+
+function terminalWidth(value: string): number {
+  let width = 0;
+  for (const character of value) width += terminalCharacterWidth(character);
+  return width;
+}
+
+function terminalCharacterWidth(character: string): number {
+  const codePoint = character.codePointAt(0) ?? 0;
+  if (codePoint === 0 || codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0) || codePoint === 0x200d || /\p{Mark}/u.test(character)) return 0;
+  return codePoint >= 0x1100 && (
+    codePoint <= 0x115f
+    || codePoint === 0x2329 || codePoint === 0x232a
+    || (codePoint >= 0x2e80 && codePoint <= 0x303e)
+    || (codePoint >= 0x3040 && codePoint <= 0xa4cf && codePoint !== 0x303f)
+    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+    || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
+    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
+    || (codePoint >= 0xff00 && codePoint <= 0xff60)
+    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    || (codePoint >= 0x1f300 && codePoint <= 0x1f64f)
+    || (codePoint >= 0x1f900 && codePoint <= 0x1f9ff)
+    || (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  ) ? 2 : 1;
 }
