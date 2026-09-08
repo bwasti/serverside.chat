@@ -3,13 +3,13 @@ import type { ServerWebSocket } from "bun";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { AccountStore, Principal } from "./auth";
-import type { RoomWorkspace } from "./workspace";
 import { ServiceRuntime } from "./runtime";
 import { TuiSession, type TuiStream } from "./tui";
 import type { OAuthProvider, OAuthService } from "./oauth";
+import type { RoomDirectory } from "./room-directory";
 
 interface ServiceSocketData { kind: "service"; room: string; principal: Principal; windowStarted: number; messages: number }
-interface TuiSocketData { kind: "tui"; principal: Principal; cols: number; rows: number; windowStarted: number; messages: number }
+interface TuiSocketData { kind: "tui"; principal: Principal; initialRoom?: string; cols: number; rows: number; windowStarted: number; messages: number }
 type SocketData = ServiceSocketData | TuiSocketData;
 const SOCKET_PATH = ".well-known/realtime";
 const MAX_ROOM_SOCKETS = 100;
@@ -24,9 +24,10 @@ const terminalAssets = new Map([
   ["/_terminal/addon-fit.js.map", { file: Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js.map"), type: "application/json; charset=utf-8" }],
 ]);
 
-export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorkspace>, host: string, port: number, dataDir = ".data", accounts?: AccountStore, oauth?: OAuthService, developmentAuth = true) {
-  const byName = new Map(rooms.map((room) => [room.name, room]));
-  const runtimes = new Map(rooms.map((room) => [room.name, new ServiceRuntime(workspaces.get(room.name)!, room, dataDir)]));
+export function startWebServer(directory: RoomDirectory, host: string, port: number, dataDir = ".data", accounts?: AccountStore, oauth?: OAuthService, developmentAuth = true) {
+  const rooms = directory.rooms;
+  const workspaces = directory.workspaces;
+  const runtimes = new Map<string, { room: Room; runtime: ServiceRuntime }>();
   const socketCounts = new Map<string, number>();
   const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
   const browserTuis = new Map<ServerWebSocket<SocketData>, { stream: BrowserTuiStream; session: TuiSession }>();
@@ -63,6 +64,7 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
             const state = url.searchParams.get("state") ?? "";
             const browserToken = readCookie(request, OAUTH_COOKIE) ?? "";
             const result = await oauth.finish(provider, code, state, browserToken);
+            directory.ensureStarterRoom(result.principal);
             const headers = new Headers({ location: result.returnTo });
             headers.append("set-cookie", sessionCookie(result.session.sessionToken));
             headers.append("set-cookie", clearOAuthCookie());
@@ -83,6 +85,7 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
           const handle = typeof body.handle === "string" ? body.handle : "";
           if (!/^[a-zA-Z0-9_.-]{1,32}$/.test(handle)) return Response.json({ error: "choose a handle using letters, numbers, dot, dash, or underscore" }, { status: 400 });
           const created = accounts.createDevelopmentAccount(handle, typeof body.displayName === "string" ? body.displayName : undefined);
+          directory.ensureStarterRoom(created.principal);
           return Response.json({ authenticated: true, handle: created.principal.handle, temporaryProvider: true }, { headers: { "set-cookie": sessionCookie(created.session.sessionToken) } });
         } catch (error) {
           return Response.json({ error: error instanceof Error ? error.message : "could not create account" }, { status: 400 });
@@ -116,14 +119,19 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       if (url.pathname === "/_terminal/socket") {
         if (browserTuis.size >= MAX_BROWSER_TUIS) return new Response("browser terminal limit reached\n", { status: 503 });
         const principal = requestPrincipal;
+        directory.ensureStarterRoom(principal);
+        const requestedRoom = url.searchParams.get("room") ?? undefined;
+        const initialRoom = requestedRoom && directory.room(requestedRoom)?.canView(principal)
+          ? requestedRoom
+          : accounts?.ownedRoomNames(principal)[0];
         const cols = boundedDimension(url.searchParams.get("cols"), 80, 40, 300);
         const rows = boundedDimension(url.searchParams.get("rows"), 24, 10, 120);
-        if (server.upgrade(request, { data: { kind: "tui", principal, cols, rows, windowStarted: Date.now(), messages: 0 } })) return;
+        if (server.upgrade(request, { data: { kind: "tui", principal, initialRoom, cols, rows, windowStarted: Date.now(), messages: 0 } })) return;
         return new Response("websocket upgrade required\n", { status: 426 });
       }
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
       const name = parts[0] ?? "";
-      const room = byName.get(name);
+      const room = directory.room(name);
       if (!room) return new Response("room not found\n", { status: 404 });
       const principal = requestPrincipal;
       if (accounts && !accounts.canView(principal, name)) return new Response("room not found\n", { status: 404 });
@@ -139,7 +147,12 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       const deploymentRef = url.searchParams.get("__ref") ?? url.searchParams.get("__preview") ?? (parts[1] === "~preview" ? parts[2] : undefined);
       try {
         const servicePath = `/${parts.slice(1).map(encodeURIComponent).join("/")}${url.search ? `?${[...url.searchParams].filter(([key]) => key !== "__ref" && key !== "__preview").map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&")}` : ""}`.replace(/\?$/, "");
-        const result = await runtimes.get(name)!.fetch(request, deploymentRef, servicePath, (payload) => server.publish(`room:${name}`, payload));
+        const existingRuntime = runtimes.get(name);
+        const runtime = existingRuntime?.room === room
+          ? existingRuntime.runtime
+          : new ServiceRuntime(workspaces.get(name)!, room, dataDir);
+        if (existingRuntime?.room !== room) runtimes.set(name, { room, runtime });
+        const result = await runtime.fetch(request, deploymentRef, servicePath, (payload) => server.publish(`room:${name}`, payload));
         if ((result.headers["content-type"] ?? "").startsWith("text/html")) result.body = injectRealtimeClient(result.body, name);
         const bytes = Buffer.byteLength(result.body);
         if (!room.canSendResponse(bytes)) { room.recordRequest(request.method, url.pathname, 429, performance.now() - started, 25); return new Response("hourly byte limit reached\n", { status: 429 }); }
@@ -158,7 +171,7 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
       open(ws) {
         if (ws.data.kind === "tui") {
           const stream = new BrowserTuiStream(ws);
-          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, undefined, signInUrl);
+          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, ws.data.initialRoom, signInUrl, undefined, undefined, directory);
           session.resize(ws.data.cols, ws.data.rows);
           browserTuis.set(ws, { stream, session });
           return;
@@ -167,7 +180,7 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
         if (!roomSockets) { roomSockets = new Set(); sockets.set(ws.data.room, roomSockets); }
         roomSockets.add(ws);
         socketCounts.set(ws.data.room, (socketCounts.get(ws.data.room) ?? 0) + 1);
-        byName.get(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
+        directory.room(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
         ws.subscribe(`room:${ws.data.room}`);
         ws.send(JSON.stringify({ type: "connected", data: { room: ws.data.room } }));
       },
@@ -201,13 +214,30 @@ export function startWebServer(rooms: Room[], workspaces: Map<string, RoomWorksp
         }
         sockets.get(ws.data.room)?.delete(ws);
         socketCounts.set(ws.data.room, Math.max(0, (socketCounts.get(ws.data.room) ?? 1) - 1));
-        byName.get(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
+        directory.room(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
       },
     },
   });
-  if (accounts) for (const room of rooms) room.subscribeService(() => {
-    if (room.policy.visibility !== "private") return;
-    for (const socket of sockets.get(room.name) ?? []) if (socket.data.kind === "service" && !room.canView(socket.data.principal)) socket.close(1008, "room is private");
+  const watchedRooms = new WeakSet<Room>();
+  const watchRoom = (room: Room) => {
+    if (!accounts || watchedRooms.has(room)) return;
+    watchedRooms.add(room);
+    room.subscribeService(() => {
+      if (room.policy.visibility !== "private") return;
+      for (const socket of sockets.get(room.name) ?? []) if (socket.data.kind === "service" && !room.canView(socket.data.principal)) socket.close(1008, "room is private");
+    });
+  };
+  for (const room of rooms) watchRoom(room);
+  directory.subscribe((event) => {
+    const retired = event.previousName ?? (event.kind === "delete" ? event.name : undefined);
+    if (retired) {
+      for (const socket of sockets.get(retired) ?? []) socket.close(1008, "room moved or deleted");
+      sockets.delete(retired);
+      socketCounts.delete(retired);
+      runtimes.delete(retired);
+    }
+    const room = directory.room(event.name);
+    if (room) watchRoom(room);
   });
   return webServer;
 }
@@ -382,7 +412,8 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const connect = () => {
       state.textContent='connecting…'; state.hidden=false;
       const scheme=location.protocol==='https:'?'wss:':'ws:';
-      socket=new WebSocket(scheme+'//'+location.host+'/_terminal/socket?cols='+terminal.cols+'&rows='+terminal.rows);
+      const requestedRoom=new URL(location.href).searchParams.get('room');
+      socket=new WebSocket(scheme+'//'+location.host+'/_terminal/socket?cols='+terminal.cols+'&rows='+terminal.rows+(requestedRoom?'&room='+encodeURIComponent(requestedRoom):''));
       socket.onopen=()=>{retry=250;state.hidden=true;send({type:'resize',cols:terminal.cols,rows:terminal.rows})};
       socket.onmessage=event=>{try{const message=JSON.parse(event.data);if(message.type==='output')terminal.write(message.data)}catch{}};
       socket.onclose=()=>{state.textContent='reconnecting…';state.hidden=false;setTimeout(connect,retry);retry=Math.min(retry*2,5000)};

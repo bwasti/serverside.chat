@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { AccountStore, anonymousPrincipal, sshFingerprint } from "../src/auth";
 import { Room } from "../src/room";
 
@@ -14,6 +15,22 @@ function setup() {
   accounts.ensureRoom("private-room", owner, { visibility: "private", contributions: "admins", agentMode: "disabled" });
   return { accounts, owner, member };
 }
+
+test("legacy account databases gain site-role and plan defaults", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-auth-migrate-"));
+  const path = join(data, "accounts.sqlite");
+  const legacy = new Database(path);
+  legacy.exec(`CREATE TABLE users (
+    id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL
+  )`);
+  legacy.close();
+
+  const accounts = new AccountStore(path);
+  const principal = accounts.ensureLocalOwner("legacy");
+  expect(accounts.accountProfile(principal)).toMatchObject({ siteRole: "member", plan: "free", roomLimit: 5 });
+  accounts.close();
+});
 
 test("SSH keys resolve to accounts while unknown keys stay anonymous", () => {
   const { accounts, owner } = setup();
@@ -110,6 +127,41 @@ test("public visibility is independent from contribution and agent authority", (
   expect(accounts.canPromote(member, "public-room")).toBe(false);
   expect(accounts.canPromote(owner, "public-room")).toBe(true);
   accounts.close();
+});
+
+test("site admins and free account room limits are distinct from room roles", () => {
+  const { accounts, owner, member } = setup();
+  expect(accounts.accountProfile(owner)).toMatchObject({ siteRole: "member", plan: "free", ownedRooms: 2, roomLimit: 5 });
+  accounts.ensureSiteAdmin(owner);
+  expect(accounts.accountProfile(owner)).toMatchObject({ siteRole: "admin", plan: "free", roomLimit: 100 });
+
+  for (let index = 1; index <= 5; index++) accounts.createRoom(member, `bob-${index}`);
+  expect(accounts.accountProfile(member)).toMatchObject({ siteRole: "member", plan: "free", ownedRooms: 5, roomLimit: 5 });
+  expect(() => accounts.createRoom(member, "bob-6")).toThrow("at most 5 rooms");
+  expect(() => accounts.renameRoom(member, "public-room", "stolen-room")).toThrow("owner or a site admin");
+
+  accounts.renameRoom(owner, "bob-1", "admin-renamed");
+  expect(accounts.roomPolicy("admin-renamed")?.ownerId).toBe(member.id);
+  accounts.deleteRoom(owner, "admin-renamed");
+  expect(accounts.roomPolicy("admin-renamed")).toBeUndefined();
+  accounts.close();
+});
+
+test("default room seeding happens once and does not resurrect deleted rooms", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-auth-seed-"));
+  const path = join(data, "accounts.sqlite");
+  const first = new AccountStore(path);
+  const owner = first.ensureLocalOwner("alice");
+  const defaults = [{ name: "mine", visibility: "public", contributions: "members", agentMode: "passive" }] as const;
+  first.seedRoomsOnce(owner, [...defaults]);
+  first.deleteRoom(owner, "mine");
+  first.close();
+
+  const restored = new AccountStore(path);
+  const restoredOwner = restored.ensureLocalOwner("alice");
+  restored.seedRoomsOnce(restoredOwner, [...defaults]);
+  expect(restored.roomPolicy("mine")).toBeUndefined();
+  restored.close();
 });
 
 test("invite redemption never downgrades an existing room role", () => {

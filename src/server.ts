@@ -4,13 +4,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Server, utils, type Connection, type ServerChannel, type Session } from "ssh2";
 import { AccountStore, type Principal } from "./auth";
-import { Room } from "./room";
 import { TuiSession } from "./tui";
 import { startWebServer } from "./web";
 import { FireworksAgent } from "./agent";
-import { RoomWorkspace } from "./workspace";
 import { parseSshEntryCommand } from "./ssh-command";
 import { OAuthService, type OAuthProviderConfig } from "./oauth";
+import { RoomDirectory } from "./room-directory";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -34,36 +33,30 @@ const oauth = new OAuthService(accounts, webBaseUrl, {
   github: oauthProviderConfig("GITHUB"),
 });
 const ownerPrincipal = accounts.ensureLocalOwner(roomOwner, roomOwner);
+accounts.ensureSiteAdmin(ownerPrincipal);
 enrollBootstrapKeys(accounts, ownerPrincipal);
 const roomDefaults = [
   { name: "mine", visibility: "public", contributions: "members", agentMode: "passive" },
   { name: "general", visibility: "public", contributions: "members", agentMode: "explicit" },
   { name: "build-log", visibility: "private", contributions: "admins", agentMode: "disabled" },
 ] as const;
-const rooms = roomDefaults.map(({ name, ...defaults }) => {
-  const policy = accounts.ensureRoom(name, ownerPrincipal, defaults);
-  return new Room(name, 250, `${webBaseUrl}/${encodeURIComponent(name)}`, policy.ownerHandle, `${dataDir}/rooms/${name}/room-state.json`, accounts);
-});
-const workspaces = new Map(rooms.map((room) => [room.name, new RoomWorkspace(dataDir, room.name)]));
-for (const room of rooms) {
-  const workspace = workspaces.get(room.name)!;
-  room.setVersionGraph(workspace.versionGraph());
-  room.addAgentLink("head", `${room.pageUrl}?__ref=head`);
-  for (const preview of workspace.visiblePreviews()) room.addAgentLink(preview.description, `${room.pageUrl}?__ref=${preview.id}`);
-}
+accounts.seedRoomsOnce(ownerPrincipal, [...roomDefaults]);
 const fireworksKey = process.env.FIREWORKS_API_KEY;
 const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/glm-5p3-flash";
+let agent: FireworksAgent | undefined;
 if (fireworksKey) {
   const prompt = ["prompts/room-agent/system.md", "prompts/room-agent/context.md", "prompts/room-agent/project.md"]
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
-  const agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
-  for (const room of rooms) room.setAgentResponder(async (history, activity, request) => {
-    const workspace = workspaces.get(room.name)!;
+  agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
+}
+const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
+  if (agent) room.setAgentResponder(async (history, activity, request) => {
     try { return await agent.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit)); }
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
-}
-const webServer = startWebServer(rooms, workspaces, webHost, webPort, dataDir, accounts, oauth, developmentAuth);
+});
+const rooms = directory.rooms;
+const webServer = startWebServer(directory, webHost, webPort, dataDir, accounts, oauth, developmentAuth);
 const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection) => {
   let principal: Principal | undefined;
   client.on("authentication", (context) => {
@@ -102,6 +95,8 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
           stream.end("This command needs a terminal. Add -t to the ssh command.\r\n");
           return;
         }
+        const starter = directory.ensureStarterRoom(principal!);
+        if (!selectedRoom && starter) selectedRoom = starter.name;
         const visibleRooms = rooms.filter((room) => room.canView(principal!));
         if (!visibleRooms.length) {
           stream.end("No rooms are visible to this account. Ask a room owner for an invitation.\r\n");
@@ -123,7 +118,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
           const requestedHandle = principal!.requestedHandle;
           refreshPrincipal = () => accounts.principalForKey(algorithm, keyBlob, requestedHandle);
         }
-        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom, signInUrl, refreshPrincipal, authenticatedRoom);
+        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom, signInUrl, refreshPrincipal, authenticatedRoom, directory);
         tui.resize(cols, rows);
       };
       session.on("shell", (acceptShell) => launch(acceptShell()));

@@ -8,13 +8,19 @@ room identity × immutable deployment commit × authenticated principal
 
 The room identity selects the SQLite database, scratch filesystem, realtime topic, quotas, and repository. The commit selects immutable `worker.js` and assets. The authenticated principal selects role and spend authority. None of these values may come from guest JavaScript, URL parameters, SQL, filesystem paths, or WebSocket payloads.
 
-## Implemented room roles
+## Implemented site and room roles
+
+Site roles govern lifecycle authority: `admin` can create and manage rooms globally, while `member` can create and manage only rooms it owns. Plans govern owned-room ceilings independently: `free` is capped at five; `pro` is reserved for later and has no user-facing upgrade path. The bootstrap owner is promoted to site admin by server configuration, not by a browser-supplied handle.
+
+Room roles govern participation:
 
 - `owner`: manage invitations and room policy; contribute under member/admin policy; exclusively authorize canonical promotion.
 - `admin`: manage invitations and room policy; contribute under member/admin policy; cannot promote canonical.
 - `contributor`: chat and invoke the agent when contribution and agent policies allow it.
 - `viewer`: read a visible room; no chat or agent authority.
 - `anonymous`: browse public rooms and pages; no durable chat, typing presence, or agent visibility.
+
+Room creation, rename, and deletion are host operations. Names are validated before database or filesystem access. Rename carries the database authority records and room-owned storage together. Delete removes live routing and authority records but moves storage to a server-owned trash directory so an operator can recover it. Active agent work blocks rename and delete.
 
 Canonical promotion is owner-only and is granted to the agent only during an explicit owner `/agent` invocation. Passive transcript text never supplies promotion authority. A stronger future approval should be signed, expiring, and bound to the exact room and candidate commit.
 

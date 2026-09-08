@@ -40,12 +40,16 @@ ssh -p 2222 serverside.chat account
 
 Open the returned ten-minute HTTPS link and choose Google or GitHub. This migration command does not open a shell.
 
-The remote command parser accepts only these two bounded forms; it cannot execute shell commands. For an existing account, the invite form grants membership and opens the room. For a new SSH key, it displays a short-lived HTTPS sign-in link; OAuth creates the canonical account, the browser attaches the verified key and consumes the invite, and the live terminal upgrades without reconnecting. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
+The remote command parser accepts only the bounded `account`, `room <name>`, and `invite <token>` forms; it cannot execute shell commands. For an existing account, the invite form grants membership and opens the room. For a new SSH key, it displays a short-lived HTTPS sign-in link; OAuth creates the canonical account, the browser attaches the verified key and consumes the invite, and the live terminal upgrades without reconnecting. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
 
 Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner as a prototype migration path. An unknown but valid key enters public rooms as an anonymous browse-only principal and receives an HTTPS account/link URL; its requested SSH username has no authority.
 
 Commands inside the room:
 
+- `/account` shows the canonical handle, site role, plan, and owned-room usage
+- `/room create <name>` creates and enters an owned room
+- `/room rename <name>` renames the current room (owner or site admin)
+- `/room delete <current-name>` recoverably deletes the current room (owner or site admin; the exact name is required)
 - `/agent <request>` explicitly invokes the agent when room policy permits it
 - `/invite admin|contributor|viewer` creates a one-use 24-hour invite (admin only)
 - `/redeem <invite>` grants an invitation to the signed-in canonical account
@@ -58,7 +62,9 @@ Commands inside the room:
 
 Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_DIR` (default `.data`), `WEB_BASE_URL` (default `http://Brams-MacBook-Air.local:3000`), optional colon-delimited `SSH_BOOTSTRAP_KEYS`, and optional `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, and `GITHUB_CLIENT_SECRET`. Set `DEVELOPMENT_AUTH=false` after real providers are configured. Production callbacks are `https://serverside.chat/_auth/google/callback` and `https://serverside.chat/_auth/github/callback`. The server creates an Ed25519 host key on first launch. Room and sign-in URLs are OSC 8 links; supported terminals let you open them with the usual modifier-click gesture.
 
-The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). The droplet deployment binds that application HTTP port to loopback and publishes it through Caddy with automatic HTTPS and WebSocket proxying. On wide terminals, the right HUD displays the version graph; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. Per-account rate limits, recovery, and user-facing credential management are not complete.
+The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). The droplet deployment binds that application HTTP port to loopback and publishes it through Caddy with automatic HTTPS and WebSocket proxying. On wide terminals, the right HUD displays the version graph and a live service-log tail; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. Per-account rate limits, recovery, and user-facing credential management are not complete.
+
+Every authenticated account gets an owned starter room. Free accounts may own five rooms. The schema reserves a `pro` plan with a larger room allowance for later product work, but no billing or upgrade path is enabled. The configured bootstrap owner is the initial site admin and may manage up to 100 rooms; all room creation is bounded.
 
 Seeded policies are intentionally varied: `mine` is public with member contributions and a passive agent; `general` is public with member contributions and explicit `/agent` invocation; `build-log` is private, admin-write, and has no agent.
 

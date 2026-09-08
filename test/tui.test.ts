@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { ServerChannel } from "ssh2";
 import { AccountStore } from "../src/auth";
 import { Room } from "../src/room";
+import { RoomDirectory } from "../src/room-directory";
 import { layoutComposer, TuiSession } from "../src/tui";
 
 class FakeStream extends EventEmitter {
@@ -180,6 +181,28 @@ test("an authenticated non-member sees an invitation prompt instead of sign-in",
 
   expect(stream.writes.at(-1)).toContain("read only · ask @alice for an invite");
   expect(stream.writes.at(-1)).not.toContain("\x1b]8;;https://example.test/?signin=1");
+  stream.end();
+  accounts.close();
+});
+
+test("room owners manage their rooms from the TUI", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-rooms-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("/room create project\r"));
+  expect((session as unknown as { room: Room }).room.name).toBe("project");
+  stream.emit("data", Buffer.from("/room rename launch\r"));
+  expect((session as unknown as { room: Room }).room.name).toBe("launch");
+  stream.emit("data", Buffer.from("/room delete launch\r"));
+  expect((session as unknown as { room: Room }).room.name).toBe("mine");
+  stream.emit("data", Buffer.from("/account\r"));
+  expect(stream.writes.at(-1)).toContain("site member · free · rooms 1/5");
+
   stream.end();
   accounts.close();
 });

@@ -1,0 +1,149 @@
+import { existsSync, mkdirSync, renameSync } from "node:fs";
+import { resolve } from "node:path";
+import type { AccountStore, Principal, RoomPolicy } from "./auth";
+import { Room } from "./room";
+import { RoomWorkspace } from "./workspace";
+
+export interface RoomDirectoryEvent {
+  kind: "create" | "rename" | "delete";
+  name: string;
+  previousName?: string;
+}
+
+type ConfigureRoom = (room: Room, workspace: RoomWorkspace) => void;
+
+export class RoomDirectory {
+  readonly rooms: Room[] = [];
+  readonly workspaces = new Map<string, RoomWorkspace>();
+  private readonly listeners = new Set<(event: RoomDirectoryEvent) => void>();
+
+  constructor(
+    private readonly accounts: AccountStore,
+    private readonly dataDir: string,
+    private readonly webBaseUrl: string,
+    private readonly configureRoom: ConfigureRoom = () => {},
+  ) {
+    for (const policy of accounts.listRooms()) this.add(policy);
+  }
+
+  room(name: string): Room | undefined { return this.rooms.find((room) => room.name === name); }
+
+  subscribe(listener: (event: RoomDirectoryEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  ensureStarterRoom(principal: Principal): Room | undefined {
+    if (!principal.authenticated || principal.kind !== "user") return undefined;
+    const existing = this.accounts.ownedRoomNames(principal)[0];
+    if (existing) return this.room(existing);
+    const base = principal.handle.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "room";
+    let name = base;
+    for (let suffix = 2; this.accounts.roomPolicy(name); suffix++) {
+      const marker = `-${suffix}`;
+      name = `${base.slice(0, 32 - marker.length)}${marker}`;
+    }
+    return this.createRoom(principal, name);
+  }
+
+  createRoom(actor: Principal, name: string): Room {
+    const policy = this.accounts.createRoom(actor, name);
+    try {
+      const room = this.add(policy);
+      this.emit({ kind: "create", name });
+      return room;
+    } catch (error) {
+      this.workspaces.delete(name);
+      this.trashStorage(name);
+      this.accounts.deleteRoom(actor, name);
+      throw error;
+    }
+  }
+
+  renameRoom(actor: Principal, oldName: string, newName: string): Room {
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(newName)) throw new Error("room names use 1-32 lowercase letters, numbers, and dashes");
+    const oldRoom = this.room(oldName);
+    if (!oldRoom) throw new Error("room not found");
+    if (agentBusy(oldRoom)) throw new Error("wait for the room agent to finish before renaming");
+    if (!this.accounts.canManageRoom(actor, oldName)) throw new Error("renaming a room requires its owner or a site admin");
+    if (this.accounts.roomPolicy(newName)) throw new Error("room name is already in use");
+    const oldDirectory = this.roomDataPath(oldName);
+    const newDirectory = this.roomDataPath(newName);
+    if (existsSync(newDirectory)) throw new Error("target room storage already exists");
+    if (existsSync(oldDirectory)) renameSync(oldDirectory, newDirectory);
+    let databaseRenamed = false;
+    try {
+      const policy = this.accounts.renameRoom(actor, oldName, newName);
+      databaseRenamed = true;
+      const index = this.rooms.indexOf(oldRoom);
+      this.workspaces.delete(oldName);
+      const room = this.materialize(policy);
+      if (index >= 0) this.rooms.splice(index, 1, room);
+      else this.rooms.push(room);
+      this.emit({ kind: "rename", name: newName, previousName: oldName });
+      return room;
+    } catch (error) {
+      this.workspaces.delete(newName);
+      if (databaseRenamed) this.accounts.renameRoom(actor, newName, oldName);
+      if (existsSync(newDirectory) && !existsSync(oldDirectory)) renameSync(newDirectory, oldDirectory);
+      throw error;
+    }
+  }
+
+  deleteRoom(actor: Principal, name: string): void {
+    const room = this.room(name);
+    if (!room) throw new Error("room not found");
+    if (agentBusy(room)) throw new Error("wait for the room agent to finish before deleting");
+    if (!this.accounts.canManageRoom(actor, name)) throw new Error("deleting a room requires its owner or a site admin");
+    const source = this.roomDataPath(name);
+    const trashed = this.trashStorage(name);
+    try {
+      this.accounts.deleteRoom(actor, name);
+      const index = this.rooms.indexOf(room);
+      if (index >= 0) this.rooms.splice(index, 1);
+      this.workspaces.delete(name);
+      this.emit({ kind: "delete", name });
+    } catch (error) {
+      if (existsSync(trashed) && !existsSync(source)) renameSync(trashed, source);
+      throw error;
+    }
+  }
+
+  private add(policy: RoomPolicy): Room {
+    const room = this.materialize(policy);
+    this.rooms.push(room);
+    return room;
+  }
+
+  private materialize(policy: RoomPolicy): Room {
+    const room = new Room(policy.name, 250, `${this.webBaseUrl}/${encodeURIComponent(policy.name)}`, policy.ownerHandle, `${this.dataDir}/rooms/${policy.name}/room-state.json`, this.accounts);
+    const workspace = new RoomWorkspace(this.dataDir, policy.name);
+    this.workspaces.set(policy.name, workspace);
+    room.setVersionGraph(workspace.versionGraph());
+    room.addAgentLink("head", `${room.pageUrl}?__ref=head`);
+    for (const preview of workspace.visiblePreviews()) room.addAgentLink(preview.description, `${room.pageUrl}?__ref=${preview.id}`);
+    this.configureRoom(room, workspace);
+    return room;
+  }
+
+  private roomDataPath(name: string): string { return resolve(this.dataDir, "rooms", name); }
+
+  private trashStorage(name: string): string {
+    const source = this.roomDataPath(name);
+    const trashRoot = resolve(this.dataDir, ".trash", "rooms");
+    const trashed = resolve(trashRoot, `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${name}`);
+    if (existsSync(source)) {
+      mkdirSync(trashRoot, { recursive: true });
+      renameSync(source, trashed);
+    }
+    return trashed;
+  }
+
+  private emit(event: RoomDirectoryEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
+
+function agentBusy(room: Room): boolean {
+  return room.agentState.status === "queued" || room.agentState.status === "thinking" || room.agentState.status === "working";
+}

@@ -2,6 +2,17 @@
 
 Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript cannot read or mutate this database. The internal user ID is canonical; Google/GitHub provider subjects, browser sessions, SSH keys, and future scoped agent credentials are separate credentials that resolve to it. Display handles and email addresses are never credentials.
 
+## Site roles, plans, and room ownership
+
+Site roles and room roles are independent:
+
+- A site `admin` may create rooms and rename or delete any room. The configured bootstrap owner receives this role.
+- A site `member` may create, rename, and delete rooms they own.
+- Every authenticated account receives one owned starter room named from its handle. Room names are globally unique URL slugs using 1–32 lowercase letters, numbers, and dashes.
+- A `free` account may own at most five rooms. The data model reserves a 25-room `pro` allowance, but no upgrade or billing path is enabled. Site admins retain a hard 100-room ceiling.
+
+Room deletion requires typing the current room's exact name. Its database records are removed, active clients are moved or disconnected, and its repository, SQLite database, scratch files, transcript, and deployment state are moved under `.data/.trash/rooms/` for operator recovery. Renaming atomically moves this complete room-owned state and updates HTTP/Wasm routing for the new URL.
+
 ## SSH enrollment
 
 The server verifies every SSH public-key signature. A known fingerprint resolves to its account; an unknown verified key receives a stable anonymous principal for that key. The read-only TUI renders a short-lived, clickable HTTPS link containing a random hashed-at-rest key-link token. The user signs into their canonical account in the browser and explicitly attaches that verified key. The live SSH session notices the completed link and adopts the account without reconnecting. Any number of keys can be attached to one account, and a key already owned by another account cannot be reassigned through this flow.
@@ -26,7 +37,7 @@ Prototype owner accounts that existed before OAuth can run `ssh -p 2222 serversi
 | Contributions | `members`, `admins`, `disabled` | Members means owner/admin/contributor; admins means owner/admin; disabled blocks normal chat for everyone. |
 | Agent | `passive`, `explicit`, `disabled` | Passive reviews permitted chat; explicit runs only for `/agent`; disabled rejects all agent invocation. |
 
-Owner and admin can inspect or change these controls with `/permissions`. Disabling contributions does not lock administrators out of the host policy commands.
+Room `owner` and room `admin` can inspect or change these controls with `/permissions`. Only a room owner or site admin can rename or delete a room. Disabling contributions does not lock administrators out of the host policy commands.
 
 ## Enforcement boundaries
 

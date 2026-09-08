@@ -5,6 +5,8 @@ import { Database } from "bun:sqlite";
 
 export type PrincipalKind = "user" | "anonymous" | "agent" | "system";
 export type RoomRole = "owner" | "admin" | "contributor" | "viewer";
+export type SiteRole = "admin" | "member";
+export type AccountPlan = "free" | "pro";
 export type RoomVisibility = "public" | "private";
 export type ContributionPolicy = "members" | "admins" | "disabled";
 export type AgentMode = "passive" | "explicit" | "disabled";
@@ -28,6 +30,13 @@ export interface RoomPolicy {
   visibility: RoomVisibility;
   contributions: ContributionPolicy;
   agentMode: AgentMode;
+}
+
+export interface AccountProfile {
+  siteRole: SiteRole;
+  plan: AccountPlan;
+  ownedRooms: number;
+  roomLimit: number;
 }
 
 export interface WebSession {
@@ -69,6 +78,8 @@ interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibil
 interface InviteRow { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number }
 
 const ROLE_WEIGHT: Record<RoomRole, number> = { viewer: 0, contributor: 1, admin: 2, owner: 3 };
+export const ACCOUNT_ROOM_LIMITS = { free: 5, pro: 25, siteAdmin: 100 } as const;
+const ROOM_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 export class AccountStore {
   private readonly db: Database;
@@ -83,6 +94,8 @@ export class AccountStore {
         handle TEXT NOT NULL UNIQUE COLLATE NOCASE,
         display_name TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')),
+        site_role TEXT NOT NULL DEFAULT 'member' CHECK(site_role IN ('admin','member')),
+        plan TEXT NOT NULL DEFAULT 'free' CHECK(plan IN ('free','pro')),
         created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS identities (
@@ -188,7 +201,14 @@ export class AccountStore {
         target TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS server_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
+    const userColumns = new Set((this.db.query("PRAGMA table_info(users)").all() as Array<{ name: string }>).map((column) => column.name));
+    if (!userColumns.has("site_role")) this.db.exec("ALTER TABLE users ADD COLUMN site_role TEXT NOT NULL DEFAULT 'member' CHECK(site_role IN ('admin','member'))");
+    if (!userColumns.has("plan")) this.db.exec("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free' CHECK(plan IN ('free','pro'))");
   }
 
   ensureLocalOwner(handle: string, displayName = handle): Principal {
@@ -203,10 +223,97 @@ export class AccountStore {
   }
 
   ensureRoom(name: string, owner: Principal, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">): RoomPolicy {
+    validateRoomName(name);
     this.db.query("INSERT OR IGNORE INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run(name, owner.id, defaults.visibility, defaults.contributions, defaults.agentMode, Date.now());
     this.db.query("INSERT OR IGNORE INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, 'owner', ?)").run(name, owner.id, Date.now());
     return this.roomPolicy(name)!;
+  }
+
+  seedRoomsOnce(owner: Principal, rooms: Array<{ name: string } & Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">>): void {
+    if (this.db.query("SELECT 1 AS found FROM server_settings WHERE key = 'rooms.seeded'").get()) return;
+    if (!this.listRooms().length) for (const { name, ...defaults } of rooms) this.ensureRoom(name, owner, defaults);
+    this.db.query("INSERT OR IGNORE INTO server_settings(key, value) VALUES ('rooms.seeded', '1')").run();
+  }
+
+  ensureSiteAdmin(principal: Principal): void {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("an authenticated account is required");
+    const result = this.db.query("UPDATE users SET site_role = 'admin' WHERE id = ? AND site_role != 'admin'").run(principal.id);
+    if (result.changes) this.audit(principal, undefined, "account.site-role", "admin");
+  }
+
+  accountProfile(principal: Principal): AccountProfile {
+    if (!principal.authenticated || principal.kind !== "user") return { siteRole: "member", plan: "free", ownedRooms: 0, roomLimit: 0 };
+    const row = this.db.query("SELECT site_role, plan FROM users WHERE id = ? AND status = 'active'").get(principal.id) as { site_role: SiteRole; plan: AccountPlan } | null;
+    if (!row) return { siteRole: "member", plan: "free", ownedRooms: 0, roomLimit: 0 };
+    const ownedRooms = this.ownedRoomCount(principal);
+    return { siteRole: row.site_role, plan: row.plan, ownedRooms, roomLimit: row.site_role === "admin" ? ACCOUNT_ROOM_LIMITS.siteAdmin : ACCOUNT_ROOM_LIMITS[row.plan] };
+  }
+
+  isSiteAdmin(principal: Principal): boolean {
+    if (!principal.authenticated || principal.kind !== "user") return false;
+    return Boolean(this.db.query("SELECT 1 AS found FROM users WHERE id = ? AND status = 'active' AND site_role = 'admin'").get(principal.id));
+  }
+
+  listRooms(): RoomPolicy[] {
+    const rows = this.db.query("SELECT name FROM rooms ORDER BY created_at, name").all() as Array<{ name: string }>;
+    return rows.map((row) => this.roomPolicy(row.name)!).filter(Boolean);
+  }
+
+  ownedRoomCount(principal: Principal): number {
+    if (!principal.authenticated || principal.kind !== "user") return 0;
+    return (this.db.query("SELECT COUNT(*) AS count FROM rooms WHERE owner_user_id = ?").get(principal.id) as { count: number }).count;
+  }
+
+  ownedRoomNames(principal: Principal): string[] {
+    if (!principal.authenticated || principal.kind !== "user") return [];
+    return (this.db.query("SELECT name FROM rooms WHERE owner_user_id = ? ORDER BY created_at, name").all(principal.id) as Array<{ name: string }>).map((row) => row.name);
+  }
+
+  createRoom(actor: Principal, name: string, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode"> = { visibility: "public", contributions: "members", agentMode: "passive" }): RoomPolicy {
+    if (!actor.authenticated || actor.kind !== "user") throw new Error("sign in before creating a room");
+    validateRoomName(name);
+    if (this.roomPolicy(name)) throw new Error("room name is already in use");
+    const profile = this.accountProfile(actor);
+    if (profile.ownedRooms >= profile.roomLimit) throw new Error(`${profile.plan} accounts can own at most ${profile.roomLimit} rooms`);
+    this.db.transaction(() => {
+      this.db.query("INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(name, actor.id, defaults.visibility, defaults.contributions, defaults.agentMode, Date.now());
+      this.db.query("INSERT INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, 'owner', ?)").run(name, actor.id, Date.now());
+    })();
+    this.audit(actor, name, "room.create");
+    return this.roomPolicy(name)!;
+  }
+
+  renameRoom(actor: Principal, oldName: string, newName: string): RoomPolicy {
+    validateRoomName(newName);
+    if (!this.canManageRoom(actor, oldName)) throw new Error("renaming a room requires its owner or a site admin");
+    if (this.roomPolicy(newName)) throw new Error("room name is already in use");
+    const current = this.roomPolicy(oldName);
+    if (!current) throw new Error("room not found");
+    this.db.transaction(() => {
+      this.db.query(`INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at)
+        SELECT ?, owner_user_id, visibility, contribution_policy, agent_mode, created_at FROM rooms WHERE name = ?`).run(newName, oldName);
+      this.db.query(`INSERT INTO room_memberships(room_name, user_id, role, created_at, revoked_at)
+        SELECT ?, user_id, role, created_at, revoked_at FROM room_memberships WHERE room_name = ?`).run(newName, oldName);
+      this.db.query("UPDATE invites SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("UPDATE agent_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("UPDATE audit_events SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("DELETE FROM rooms WHERE name = ?").run(oldName);
+    })();
+    this.audit(actor, newName, "room.rename", oldName);
+    return this.roomPolicy(newName)!;
+  }
+
+  deleteRoom(actor: Principal, name: string): void {
+    if (!this.canManageRoom(actor, name)) throw new Error("deleting a room requires its owner or a site admin");
+    if (!this.roomPolicy(name)) throw new Error("room not found");
+    this.audit(actor, name, "room.delete");
+    this.db.query("DELETE FROM rooms WHERE name = ?").run(name);
+  }
+
+  canManageRoom(principal: Principal, roomName: string): boolean {
+    return this.isSiteAdmin(principal) || this.roleFor(principal, roomName) === "owner";
   }
 
   roomPolicy(name: string): RoomPolicy | undefined {
@@ -432,6 +539,7 @@ export class AccountStore {
 
   canPromote(principal: Principal, roomName: string): boolean { return this.roleFor(principal, roomName) === "owner"; }
   isAdmin(principal: Principal, roomName: string): boolean {
+    if (this.isSiteAdmin(principal)) return true;
     const role = this.roleFor(principal, roomName);
     return Boolean(role && ROLE_WEIGHT[role] >= ROLE_WEIGHT.admin);
   }
@@ -555,6 +663,10 @@ function normalizeProvider(value: string): string {
   const provider = value.toLowerCase().trim();
   if (!/^[a-z0-9_-]{1,40}$/.test(provider)) throw new Error("identity provider is invalid");
   return provider;
+}
+
+function validateRoomName(value: string): void {
+  if (!ROOM_NAME.test(value)) throw new Error("room names use 1-32 lowercase letters, numbers, and dashes");
 }
 
 function tokenHash(value: string): string { return createHash("sha256").update(value).digest("hex"); }

@@ -1,5 +1,6 @@
 import type { AccountStore, AgentMode, ContributionPolicy, Principal, RoomRole, RoomVisibility } from "./auth";
 import { ROOM_LIMITS, type Message, type Room } from "./room";
+import type { RoomDirectory, RoomDirectoryEvent } from "./room-directory";
 
 export interface TuiStream {
   readonly destroyed: boolean;
@@ -39,6 +40,7 @@ export class TuiSession {
   private closed = false;
   private unsubscribe: () => void;
   private unsubscribeService: () => void;
+  private unsubscribeDirectory?: () => void;
   private lastWasCarriageReturn = false;
   private roomIndex = 0;
   private sidebarFocused = false;
@@ -67,6 +69,7 @@ export class TuiSession {
     private readonly signInUrl?: string,
     refreshPrincipal?: () => Principal | undefined,
     authenticatedRoom?: string,
+    private readonly directory?: RoomDirectory,
   ) {
     this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
     this.allRooms = rooms;
@@ -78,6 +81,7 @@ export class TuiSession {
     this.write("\x1b[?1049h\x1b[?25h");
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
+    this.unsubscribeDirectory = directory?.subscribe((event) => this.refreshRooms(event));
     this.room.join(this.username);
     stream.on("data", (data: Buffer) => this.onData(data));
     stream.on("close", () => this.close());
@@ -112,6 +116,7 @@ export class TuiSession {
         const result = this.handleEscape(token);
         dirty = result.dirty || dirty;
         inputChanged = result.inputChanged || inputChanged;
+        if (result.inputChanged) this.localNotice = "";
         continue;
       }
       for (const char of token) {
@@ -161,12 +166,12 @@ export class TuiSession {
         else if (char === "\x15") changed = this.deleteBeforeCursor();
         else if (char === "\x0b") changed = this.deleteAfterCursor();
         else if (!/[\x00-\x1f\x7f]/.test(char)) changed = this.insertAtCursor(char);
+        if (changed) this.localNotice = "";
         inputChanged = changed || inputChanged;
         dirty = changed || dirty;
       }
     }
     if (inputChanged && this.room.canContribute(this.principal)) this.room.setTyping(this.username, Boolean(this.input));
-    if (inputChanged) this.localNotice = "";
     if (dirty) this.render();
   }
 
@@ -357,9 +362,34 @@ export class TuiSession {
 
   private handleHostCommand(line: string): boolean {
     if (!this.accounts) return false;
-    const [command, field, value] = line.trim().split(/\s+/);
-    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem") return false;
+    const [command, field, value, ...extra] = line.trim().split(/\s+/);
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account") return false;
     try {
+      if (command === "/account") {
+        if (field) throw new Error("usage: /account");
+        const profile = this.accounts.accountProfile(this.principal);
+        this.localNotice = `@${this.username} · site ${profile.siteRole} · ${profile.plan} · rooms ${profile.ownedRooms}/${profile.roomLimit}`;
+        return true;
+      }
+      if (command === "/room") {
+        if (!this.directory) throw new Error("room management is unavailable");
+        if (extra.length || !value || (field !== "create" && field !== "rename" && field !== "delete")) throw new Error("usage: /room create|rename|delete <name>");
+        if (field === "create") {
+          const created = this.directory.createRoom(this.principal, value);
+          this.selectRoom(created);
+          this.localNotice = `created #${created.name}`;
+        } else if (field === "rename") {
+          const previous = this.room.name;
+          const renamed = this.directory.renameRoom(this.principal, previous, value);
+          this.selectRoom(renamed);
+          this.localNotice = `renamed #${previous} to #${renamed.name}`;
+        } else {
+          if (value !== this.room.name) throw new Error(`switch to #${value} before deleting it`);
+          this.directory.deleteRoom(this.principal, value);
+          this.localNotice = `deleted #${value} · data retained in server trash`;
+        }
+        return true;
+      }
       if (command === "/redeem") {
         if (!field || value) throw new Error("usage: /redeem <invite>");
         const redeemed = this.accounts.redeem(this.principal, field);
@@ -595,6 +625,7 @@ export class TuiSession {
     this.closed = true;
     this.unsubscribe();
     this.unsubscribeService();
+    this.unsubscribeDirectory?.();
     if (this.animationTimer) clearInterval(this.animationTimer);
     if (this.sidebarAnimationTimer) clearInterval(this.sidebarAnimationTimer);
     if (this.authenticationTimer) clearInterval(this.authenticationTimer);
@@ -632,6 +663,40 @@ export class TuiSession {
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
     this.room.join(this.username);
+  }
+
+  private refreshRooms(event: RoomDirectoryEvent): void {
+    if (this.closed) return;
+    const preferred = event.kind === "rename" && event.previousName === this.room.name ? event.name : this.room.name;
+    const visible = this.allRooms.filter((room) => room.canView(this.principal));
+    if (!visible.length) {
+      this.stream.end("No rooms are visible to this account.\r\n");
+      return;
+    }
+    this.rooms = visible;
+    const next = visible.find((room) => room.name === preferred) ?? visible[0]!;
+    if (next !== this.room) this.selectRoom(next);
+    else {
+      this.roomIndex = visible.indexOf(next);
+      this.render();
+    }
+  }
+
+  private selectRoom(room: Room): void {
+    if (room === this.room) return;
+    this.unsubscribe();
+    this.unsubscribeService();
+    this.room.setTyping(this.username, false);
+    this.room.leave(this.username);
+    this.room = room;
+    this.roomIndex = Math.max(0, this.rooms.findIndex((candidate) => candidate === room));
+    this.scrollOffset = 0;
+    this.messageCacheRoom = "";
+    this.messageCache.clear();
+    this.unsubscribe = room.subscribe(() => this.scheduleRender());
+    this.unsubscribeService = room.subscribeService(() => this.scheduleRender());
+    room.join(this.username);
+    this.render();
   }
 
   private agentIsActive(): boolean {
