@@ -6,7 +6,7 @@ import { Server, utils, type Connection, type ServerChannel, type Session } from
 import { AccountStore, type Principal } from "./auth";
 import { TuiSession } from "./tui";
 import { startWebServer } from "./web";
-import { FireworksAgent } from "./agent";
+import { FireworksAgent, FireworksGuideAgent } from "./agent";
 import { parseSshEntryCommand } from "./ssh-command";
 import { OAuthService, type OAuthProviderConfig } from "./oauth";
 import { RoomDirectory } from "./room-directory";
@@ -41,15 +41,22 @@ const roomDefaults = [
   { name: "build-log", visibility: "private", contributions: "admins", agentMode: "disabled" },
 ] as const;
 accounts.seedRoomsOnce(ownerPrincipal, [...roomDefaults]);
+accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contributions: "members", agentMode: "passive" });
 const fireworksKey = process.env.FIREWORKS_API_KEY;
 const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/glm-5p3-flash";
 let agent: FireworksAgent | undefined;
+let guideAgent: FireworksGuideAgent | undefined;
 if (fireworksKey) {
   const prompt = ["prompts/room-agent/system.md", "prompts/room-agent/context.md", "prompts/room-agent/project.md"]
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
   agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
+  guideAgent = new FireworksGuideAgent(fireworksKey, fireworksModel, readFileSync("prompts/lobby-agent/system.md", "utf8").trim());
 }
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
+  if (room.name === "lobby" && guideAgent) {
+    room.setAgentResponder((history, activity) => guideAgent.respond(history, activity));
+    return;
+  }
   if (agent) room.setAgentResponder(async (history, activity, request) => {
     try { return await agent.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit)); }
     finally { room.setVersionGraph(workspace.versionGraph()); }
@@ -95,8 +102,8 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
           stream.end("This command needs a terminal. Add -t to the ssh command.\r\n");
           return;
         }
-        const starter = directory.ensureStarterRoom(principal!);
-        if (!selectedRoom && starter) selectedRoom = starter.name;
+        directory.prepareAccount(principal!);
+        if (!selectedRoom) selectedRoom = "lobby";
         const visibleRooms = rooms.filter((room) => room.canView(principal!));
         if (!visibleRooms.length) {
           stream.end("No rooms are visible to this account. Ask a room owner for an invitation.\r\n");

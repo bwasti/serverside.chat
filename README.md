@@ -23,7 +23,7 @@ In another terminal:
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p 2222
 ```
 
-The browser version is served at `/`. It uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Anonymous sessions are read-only. The blue **sign in** text in the composer is a real link. Google and GitHub OAuth create or resolve the canonical account and issue a Secure, HttpOnly session cookie. Until provider credentials are configured, a conspicuously labeled development flow creates a temporary account for testing.
+The browser version is served at `/`. Both browser and SSH sessions open in the public `lobby`: a deliberately sparse landing chat with navigation hints and a terse, documentation-only guide agent. Press Tab to expand the room list, use Up/Down to choose, and press Enter to open a room. The browser uses the self-hosted open-source xterm.js renderer over a host-owned WebSocket and feeds the same `TuiSession` as SSH; it does not start or expose a system shell. Anonymous sessions are read-only. The blue **sign in** text in the composer is a real link. Google and GitHub OAuth create or resolve the canonical account and issue a Secure, HttpOnly session cookie. Until provider credentials are configured, a conspicuously labeled development flow creates a temporary account for testing.
 
 SSH can also deep-link into a room or redeem an invitation before opening the TUI:
 
@@ -64,7 +64,7 @@ Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_
 
 The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). The droplet deployment binds that application HTTP port to loopback and publishes it through Caddy with automatic HTTPS and WebSocket proxying. On wide terminals, the right HUD displays the version graph and a live service-log tail; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. Per-account rate limits, recovery, and user-facing credential management are not complete.
 
-Every authenticated account gets an owned starter room. Free accounts may own five rooms. The schema reserves a `pro` plan with a larger room allowance for later product work, but no billing or upgrade path is enabled. The configured bootstrap owner is the initial site admin and may manage up to 100 rooms; all room creation is bounded.
+Every authenticated account gets an owned starter room and contributor access to the host-managed lobby. The lobby is quota-free and cannot be renamed, deleted, or reconfigured by users. Free accounts may own five normal rooms. The schema reserves a `pro` plan with a larger room allowance for later product work, but no billing or upgrade path is enabled. The configured bootstrap owner is the initial site admin and may manage up to 100 rooms; all room creation is bounded.
 
 Seeded policies are intentionally varied: `mine` is public with member contributions and a passive agent; `general` is public with member contributions and explicit `/agent` invocation; `build-log` is private, admin-write, and has no agent.
 
@@ -82,7 +82,7 @@ Canonical history is strictly linear: promotion must be a fast-forward from `sta
 
 Every valid abbreviated or full commit hash in the room repository is lazily servable with `?__ref=<commit>`; it does not need a registered preview. Registered previews add a durable description and a row in the top deployment bar. The agent can archive a feature preview to remove that row without deleting its commit or direct URL. On rebase conflicts, the agent can inspect and edit conflicted files, continue until resolved, and then posts the resulting preview to chat for human feedback.
 
-Depending on room policy, the agent passively observes authenticated contributor chat, responds only to `/agent`, or is disabled. Anonymous text never enters the transcript or agent context. Its reviewable prompts live in [`prompts/room-agent/`](prompts/room-agent/). Routine thinking and tool activity appear in the status UI instead of generating chat messages.
+Depending on room policy, the agent passively observes authenticated contributor chat, responds only to `/agent`, or is disabled. Anonymous text never enters the transcript or agent context. Normal-room prompts live in [`prompts/room-agent/`](prompts/room-agent/). The separate [`prompts/lobby-agent/`](prompts/lobby-agent/) guide has no code or deployment tools and only answers questions about using the product. Routine thinking and tool activity appear in the status UI instead of generating chat messages.
 
 ## Security boundary (prototype)
 

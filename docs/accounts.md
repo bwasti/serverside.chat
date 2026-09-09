@@ -9,6 +9,7 @@ Site roles and room roles are independent:
 - A site `admin` may create rooms and rename or delete any room. The configured bootstrap owner receives this role.
 - A site `member` may create, rename, and delete rooms they own.
 - Every authenticated account receives one owned starter room named from its handle. Room names are globally unique URL slugs using 1–32 lowercase letters, numbers, and dashes.
+- `lobby` is a public, host-managed system room. It is the default landing room, every authenticated account receives contributor membership, and it does not consume an ownership slot. It cannot be renamed, deleted, or reconfigured through room commands.
 - A `free` account may own at most five rooms. The data model reserves a 25-room `pro` allowance, but no upgrade or billing path is enabled. Site admins retain a hard 100-room ceiling.
 
 Room deletion requires typing the current room's exact name. Its database records are removed, active clients are moved or disconnected, and its repository, SQLite database, scratch files, transcript, and deployment state are moved under `.data/.trash/rooms/` for operator recovery. Renaming atomically moves this complete room-owned state and updates HTTP/Wasm routing for the new URL.

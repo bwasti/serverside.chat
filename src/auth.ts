@@ -30,6 +30,7 @@ export interface RoomPolicy {
   visibility: RoomVisibility;
   contributions: ContributionPolicy;
   agentMode: AgentMode;
+  system: boolean;
 }
 
 export interface AccountProfile {
@@ -74,7 +75,7 @@ export interface OAuthFlow {
 }
 
 interface UserRow { id: string; handle: string; display_name: string; status: string }
-interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode }
+interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode; system: number }
 interface InviteRow { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number }
 
 const ROLE_WEIGHT: Record<RoomRole, number> = { viewer: 0, contributor: 1, admin: 2, owner: 3 };
@@ -122,6 +123,7 @@ export class AccountStore {
         visibility TEXT NOT NULL CHECK(visibility IN ('public','private')),
         contribution_policy TEXT NOT NULL CHECK(contribution_policy IN ('members','admins','disabled')),
         agent_mode TEXT NOT NULL CHECK(agent_mode IN ('passive','explicit','disabled')),
+        system INTEGER NOT NULL DEFAULT 0 CHECK(system IN (0,1)),
         created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS room_memberships (
@@ -209,6 +211,8 @@ export class AccountStore {
     const userColumns = new Set((this.db.query("PRAGMA table_info(users)").all() as Array<{ name: string }>).map((column) => column.name));
     if (!userColumns.has("site_role")) this.db.exec("ALTER TABLE users ADD COLUMN site_role TEXT NOT NULL DEFAULT 'member' CHECK(site_role IN ('admin','member'))");
     if (!userColumns.has("plan")) this.db.exec("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free' CHECK(plan IN ('free','pro'))");
+    const roomColumns = new Set((this.db.query("PRAGMA table_info(rooms)").all() as Array<{ name: string }>).map((column) => column.name));
+    if (!roomColumns.has("system")) this.db.exec("ALTER TABLE rooms ADD COLUMN system INTEGER NOT NULL DEFAULT 0 CHECK(system IN (0,1))");
   }
 
   ensureLocalOwner(handle: string, displayName = handle): Principal {
@@ -228,6 +232,27 @@ export class AccountStore {
       .run(name, owner.id, defaults.visibility, defaults.contributions, defaults.agentMode, Date.now());
     this.db.query("INSERT OR IGNORE INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, 'owner', ?)").run(name, owner.id, Date.now());
     return this.roomPolicy(name)!;
+  }
+
+  ensureSystemRoom(name: string, owner: Principal, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">): RoomPolicy {
+    validateRoomName(name);
+    this.db.transaction(() => {
+      this.db.query("INSERT OR IGNORE INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, system, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)")
+        .run(name, owner.id, defaults.visibility, defaults.contributions, defaults.agentMode, Date.now());
+      this.db.query("UPDATE rooms SET visibility = ?, contribution_policy = ?, agent_mode = ?, system = 1 WHERE name = ?")
+        .run(defaults.visibility, defaults.contributions, defaults.agentMode, name);
+      this.db.query("INSERT OR IGNORE INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, 'owner', ?)").run(name, owner.id, Date.now());
+    })();
+    return this.roomPolicy(name)!;
+  }
+
+  ensureSystemMembership(principal: Principal, roomName: string): void {
+    if (!principal.authenticated || principal.kind !== "user") return;
+    const policy = this.roomPolicy(roomName);
+    if (!policy?.system) throw new Error("system room not found");
+    this.db.query(`INSERT INTO room_memberships(room_name, user_id, role, created_at)
+      VALUES (?, ?, 'contributor', ?)
+      ON CONFLICT(room_name, user_id) DO UPDATE SET revoked_at = NULL`).run(roomName, principal.id, Date.now());
   }
 
   seedRoomsOnce(owner: Principal, rooms: Array<{ name: string } & Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">>): void {
@@ -256,18 +281,18 @@ export class AccountStore {
   }
 
   listRooms(): RoomPolicy[] {
-    const rows = this.db.query("SELECT name FROM rooms ORDER BY created_at, name").all() as Array<{ name: string }>;
+    const rows = this.db.query("SELECT name FROM rooms ORDER BY system DESC, created_at, name").all() as Array<{ name: string }>;
     return rows.map((row) => this.roomPolicy(row.name)!).filter(Boolean);
   }
 
   ownedRoomCount(principal: Principal): number {
     if (!principal.authenticated || principal.kind !== "user") return 0;
-    return (this.db.query("SELECT COUNT(*) AS count FROM rooms WHERE owner_user_id = ?").get(principal.id) as { count: number }).count;
+    return (this.db.query("SELECT COUNT(*) AS count FROM rooms WHERE owner_user_id = ? AND system = 0").get(principal.id) as { count: number }).count;
   }
 
   ownedRoomNames(principal: Principal): string[] {
     if (!principal.authenticated || principal.kind !== "user") return [];
-    return (this.db.query("SELECT name FROM rooms WHERE owner_user_id = ? ORDER BY created_at, name").all(principal.id) as Array<{ name: string }>).map((row) => row.name);
+    return (this.db.query("SELECT name FROM rooms WHERE owner_user_id = ? AND system = 0 ORDER BY created_at, name").all(principal.id) as Array<{ name: string }>).map((row) => row.name);
   }
 
   createRoom(actor: Principal, name: string, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode"> = { visibility: "public", contributions: "members", agentMode: "passive" }): RoomPolicy {
@@ -291,6 +316,7 @@ export class AccountStore {
     if (this.roomPolicy(newName)) throw new Error("room name is already in use");
     const current = this.roomPolicy(oldName);
     if (!current) throw new Error("room not found");
+    if (current.system) throw new Error("system rooms cannot be renamed");
     this.db.transaction(() => {
       this.db.query(`INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at)
         SELECT ?, owner_user_id, visibility, contribution_policy, agent_mode, created_at FROM rooms WHERE name = ?`).run(newName, oldName);
@@ -307,7 +333,9 @@ export class AccountStore {
 
   deleteRoom(actor: Principal, name: string): void {
     if (!this.canManageRoom(actor, name)) throw new Error("deleting a room requires its owner or a site admin");
-    if (!this.roomPolicy(name)) throw new Error("room not found");
+    const current = this.roomPolicy(name);
+    if (!current) throw new Error("room not found");
+    if (current.system) throw new Error("system rooms cannot be deleted");
     this.audit(actor, name, "room.delete");
     this.db.query("DELETE FROM rooms WHERE name = ?").run(name);
   }
@@ -317,16 +345,17 @@ export class AccountStore {
   }
 
   roomPolicy(name: string): RoomPolicy | undefined {
-    const room = this.db.query("SELECT name, owner_user_id, visibility, contribution_policy, agent_mode FROM rooms WHERE name = ?").get(name) as RoomRow | null;
+    const room = this.db.query("SELECT name, owner_user_id, visibility, contribution_policy, agent_mode, system FROM rooms WHERE name = ?").get(name) as RoomRow | null;
     if (!room) return undefined;
     const owner = this.db.query("SELECT id, handle, display_name, status FROM users WHERE id = ?").get(room.owner_user_id) as UserRow;
-    return { name: room.name, ownerId: room.owner_user_id, ownerHandle: owner.handle, visibility: room.visibility, contributions: room.contribution_policy, agentMode: room.agent_mode };
+    return { name: room.name, ownerId: room.owner_user_id, ownerHandle: owner.handle, visibility: room.visibility, contributions: room.contribution_policy, agentMode: room.agent_mode, system: room.system === 1 };
   }
 
   updateRoomPolicy(actor: Principal, roomName: string, changes: Partial<Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">>): RoomPolicy {
     if (!this.isAdmin(actor, roomName)) throw new Error("room administration requires an admin");
     const current = this.roomPolicy(roomName);
     if (!current) throw new Error("room not found");
+    if (current.system) throw new Error("system room policy is host-managed");
     const visibility = changes.visibility ?? current.visibility;
     const contributions = changes.contributions ?? current.contributions;
     const agentMode = changes.agentMode ?? current.agentMode;

@@ -64,7 +64,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
             const state = url.searchParams.get("state") ?? "";
             const browserToken = readCookie(request, OAUTH_COOKIE) ?? "";
             const result = await oauth.finish(provider, code, state, browserToken);
-            directory.ensureStarterRoom(result.principal);
+            directory.prepareAccount(result.principal);
             const headers = new Headers({ location: result.returnTo });
             headers.append("set-cookie", sessionCookie(result.session.sessionToken));
             headers.append("set-cookie", clearOAuthCookie());
@@ -85,7 +85,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
           const handle = typeof body.handle === "string" ? body.handle : "";
           if (!/^[a-zA-Z0-9_.-]{1,32}$/.test(handle)) return Response.json({ error: "choose a handle using letters, numbers, dot, dash, or underscore" }, { status: 400 });
           const created = accounts.createDevelopmentAccount(handle, typeof body.displayName === "string" ? body.displayName : undefined);
-          directory.ensureStarterRoom(created.principal);
+          directory.prepareAccount(created.principal);
           return Response.json({ authenticated: true, handle: created.principal.handle, temporaryProvider: true }, { headers: { "set-cookie": sessionCookie(created.session.sessionToken) } });
         } catch (error) {
           return Response.json({ error: error instanceof Error ? error.message : "could not create account" }, { status: 400 });
@@ -119,11 +119,11 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       if (url.pathname === "/_terminal/socket") {
         if (browserTuis.size >= MAX_BROWSER_TUIS) return new Response("browser terminal limit reached\n", { status: 503 });
         const principal = requestPrincipal;
-        directory.ensureStarterRoom(principal);
+        directory.prepareAccount(principal);
         const requestedRoom = url.searchParams.get("room") ?? undefined;
         const initialRoom = requestedRoom && directory.room(requestedRoom)?.canView(principal)
           ? requestedRoom
-          : accounts?.ownedRoomNames(principal)[0];
+          : directory.room("lobby")?.canView(principal) ? "lobby" : accounts?.ownedRoomNames(principal)[0];
         const cols = boundedDimension(url.searchParams.get("cols"), 80, 40, 300);
         const rows = boundedDimension(url.searchParams.get("rows"), 24, 10, 120);
         if (server.upgrade(request, { data: { kind: "tui", principal, initialRoom, cols, rows, windowStarted: Date.now(), messages: 0 } })) return;

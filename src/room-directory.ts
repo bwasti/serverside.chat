@@ -46,6 +46,12 @@ export class RoomDirectory {
     return this.createRoom(principal, name);
   }
 
+  prepareAccount(principal: Principal): Room | undefined {
+    if (!principal.authenticated || principal.kind !== "user") return undefined;
+    this.accounts.ensureSystemMembership(principal, "lobby");
+    return this.ensureStarterRoom(principal);
+  }
+
   createRoom(actor: Principal, name: string): Room {
     const policy = this.accounts.createRoom(actor, name);
     try {

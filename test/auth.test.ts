@@ -23,12 +23,37 @@ test("legacy account databases gain site-role and plan defaults", () => {
   legacy.exec(`CREATE TABLE users (
     id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE COLLATE NOCASE,
     display_name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL
+  );
+  CREATE TABLE rooms (
+    name TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL REFERENCES users(id),
+    visibility TEXT NOT NULL, contribution_policy TEXT NOT NULL,
+    agent_mode TEXT NOT NULL, created_at INTEGER NOT NULL
   )`);
   legacy.close();
 
   const accounts = new AccountStore(path);
   const principal = accounts.ensureLocalOwner("legacy");
   expect(accounts.accountProfile(principal)).toMatchObject({ siteRole: "member", plan: "free", roomLimit: 5 });
+  expect(accounts.ensureRoom("legacy-room", principal, { visibility: "public", contributions: "members", agentMode: "passive" }).system).toBe(false);
+  accounts.close();
+});
+
+test("the lobby is a reserved quota-free room that signed-in accounts can use", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-auth-lobby-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  const member = accounts.ensureLocalOwner("bob");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+
+  accounts.ensureSystemMembership(member, "lobby");
+  expect(accounts.roomPolicy("lobby")).toMatchObject({ system: true, visibility: "public", agentMode: "passive" });
+  expect(accounts.roleFor(member, "lobby")).toBe("contributor");
+  expect(accounts.canContribute(member, "lobby")).toBe(true);
+  expect(accounts.accountProfile(owner).ownedRooms).toBe(0);
+  expect(accounts.ownedRoomNames(owner)).toEqual([]);
+  expect(() => accounts.renameRoom(owner, "lobby", "welcome")).toThrow("system rooms cannot be renamed");
+  expect(() => accounts.deleteRoom(owner, "lobby")).toThrow("system rooms cannot be deleted");
+  expect(() => accounts.updateRoomPolicy(owner, "lobby", { visibility: "private" })).toThrow("host-managed");
   accounts.close();
 });
 

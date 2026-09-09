@@ -335,8 +335,13 @@ export class TuiSession {
 
   private mainWidth(): number {
     const sidebarWidth = Math.round(this.sidebarWidth);
-    const hudWidth = this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
+    const hudWidth = this.currentHudWidth();
     return this.width - sidebarWidth - hudWidth;
+  }
+
+  private currentHudWidth(): number {
+    if (this.room.name === "lobby") return 0;
+    return this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
   }
 
   private submit(): boolean {
@@ -434,7 +439,7 @@ export class TuiSession {
     }
     this.syncAnimation();
     const sidebarWidth = Math.round(this.sidebarWidth);
-    const hudWidth = this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
+    const hudWidth = this.currentHudWidth();
     const mainWidth = this.mainWidth();
     const pageLinks = this.pageLinkRows(mainWidth, Math.max(1, Math.min(5, this.height - 8)));
     const topStatus = this.topStatusRows(mainWidth, this.height);
@@ -519,6 +524,7 @@ export class TuiSession {
   }
 
   private pageLinkRows(width: number, _limit: number): string[] {
+    if (this.room.name === "lobby") return [];
     const links = [{ label: "main", url: this.room.pageUrl }];
     return links.map((link) => {
       const ref = compactUrl(link.url).replace(/^localhost:\d+\//, "");
@@ -531,6 +537,12 @@ export class TuiSession {
   }
 
   private topStatusRows(width: number, height: number): string[] {
+    if (this.room.name === "lobby") {
+      const intro = truncate("  serverside.chat  —  shared rooms where people and AI build live websites", width);
+      const keys = truncate("  TAB other pages   ↑↓ choose   ENTER open", width);
+      const guide = truncate("  Ask the guide how to use rooms, agents, invites, previews, or publishing.", width);
+      return height < 12 ? [intro, keys] : [intro, keys, guide];
+    }
     const active = this.agentIsActive();
     const spinner = active ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
     const sitePulse = Date.now() - this.room.lastRequestAt < 1_200 ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";

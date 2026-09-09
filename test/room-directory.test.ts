@@ -33,3 +33,18 @@ test("accounts receive a persistent starter room that owners can rename and reco
   expect(readdirSync(join(data, ".trash", "rooms")).some((name) => name.endsWith("-bob-site"))).toBe(true);
   accounts.close();
 });
+
+test("account preparation keeps the personal room but makes lobby usable", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-lobby-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  const member = accounts.ensureLocalOwner("bob");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+
+  expect(directory.prepareAccount(member)?.name).toBe("bob");
+  expect(accounts.roleFor(member, "lobby")).toBe("contributor");
+  expect(accounts.ownedRoomNames(member)).toEqual(["bob"]);
+  expect(directory.rooms.map((room) => room.name).slice(0, 2)).toEqual(["lobby", "bob"]);
+  accounts.close();
+});

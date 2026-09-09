@@ -99,7 +99,7 @@ export class Room {
   }
 
   get policy(): RoomPolicy {
-    return this.accounts?.roomPolicy(this.name) ?? { name: this.name, ownerId: "local:owner", ownerHandle: this.owner, visibility: "public", contributions: "members", agentMode: "passive" };
+    return this.accounts?.roomPolicy(this.name) ?? { name: this.name, ownerId: "local:owner", ownerHandle: this.owner, visibility: "public", contributions: "members", agentMode: "passive", system: false };
   }
 
   roleFor(actor: Principal | string): RoomRole | undefined {

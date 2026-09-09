@@ -115,6 +115,21 @@ test("wide version control HUD reserves its lower third for live service logs", 
   tui.stream.end();
 });
 
+test("lobby replaces the developer dashboard with a compact introduction", () => {
+  const lobby = new Room("lobby");
+  const tui = open(lobby);
+  tui.session.resize(120, 24);
+
+  const frame = tui.stream.writes.at(-1)!;
+  expect(frame).toContain("shared rooms where people and AI build live websites");
+  expect(frame).toContain("TAB other pages");
+  expect(frame).toContain("Ask the guide");
+  expect(frame).not.toContain("VERSION CONTROL");
+  expect(frame).not.toContain("LIVE LOGS");
+  expect(frame).not.toContain("SITE   ");
+  tui.stream.end();
+});
+
 test("CJK text uses terminal cell width for wrapping and cursor placement", () => {
   const layout = layoutComposer("你好, 世界", 6, 9);
   expect(layout.rows.map((row) => row.text)).toEqual(["  你好, ", "世界"]);

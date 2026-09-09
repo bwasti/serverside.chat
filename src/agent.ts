@@ -80,6 +80,43 @@ export class FireworksAgent {
 
 }
 
+export class FireworksGuideAgent {
+  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
+
+  async respond(history: Message[], activity: AgentActivity): Promise<string> {
+    const latest = [...history].reverse().find((message) => message.kind === "chat");
+    if (!latest || !shouldGuideRespond(latest.text)) return "[silent]";
+    activity("thinking", "answering a site question");
+    const messages: ChatMessage[] = [
+      { role: "system", content: this.systemPrompt },
+      ...history.filter((message) => message.kind === "chat" || message.kind === "agent").slice(-24).map((message) => ({
+        role: message.kind === "agent" ? "assistant" : "user",
+        content: message.kind === "agent" ? message.text : `${message.author}: ${message.text}`,
+      })),
+    ];
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: this.model, messages, max_tokens: 240, temperature: 0.1 }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = (await response.json()) as ApiResponse;
+    if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
+    const reply = body.choices?.[0]?.message?.content?.trim().replace(/\s+/g, " ") ?? "";
+    activity("working", reply && reply !== "[silent]" ? "answer ready" : "listening");
+    return !reply || reply === "[silent]" ? "[silent]" : reply.slice(0, 420);
+  }
+}
+
+export function shouldGuideRespond(value: string): boolean {
+  if (isTrivialSocialMessage(value)) return false;
+  const text = value.toLowerCase().replace(/^@room-agent\s*[:,]?\s*/, "").trim();
+  if (!text) return false;
+  return text.includes("?")
+    || /^(help|how|what|why|where|when|which|who|does|do|is|are|can|could|should|would)\b/.test(text)
+    || /\b(serverside(?:\.chat)?|room|page|site|agent|invite|publish|deploy|commit|preview|ssh|browser|sign[ -]?in|login|auth|permission|role|owner|admin|member|account|shortcut|hotkey|tab|enter|arrow|wasm|database|files|limit|url|history|git)\b/.test(text);
+}
+
 export function isTrivialSocialMessage(value: string): boolean {
   const text = value.toLowerCase().replace(/^@room-agent\s*[:,]?\s*/, "").replace(/[^a-z0-9' ]/g, " ").replace(/\s+/g, " ").trim();
   return /^(hi|hello|hey|hiya|yo|sup|good (morning|afternoon|evening)|thanks|thank you|thx|ok|okay|cool|nice|great|lol|bye|goodbye)( (all|everyone|folks|team|guys|alice|there))*$/.test(text);
