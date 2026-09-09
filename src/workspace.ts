@@ -1,9 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, relative, resolve, sep } from "node:path";
 
-const MAX_FILE_BYTES = 512 * 1024;
-const MAX_WORKSPACE_BYTES = 5 * 1024 * 1024;
+export const MAX_WORKSPACE_FILE_BYTES = 512 * 1024;
+export const MAX_WORKSPACE_BYTES = 5 * 1024 * 1024;
+const MAX_WORKSPACE_ENTRIES = 1_000;
 const MAX_PUBLISHED_CACHE_ENTRIES = 128;
 
 export class RoomWorkspace {
@@ -41,7 +43,7 @@ export class RoomWorkspace {
         if (entry.isSymbolicLink()) throw new Error("symbolic links are not supported");
         if (entry.isDirectory()) walk(absolute);
         else if (entry.isFile()) output.push({ path: relative(this.root, absolute), bytes: statSync(absolute).size });
-        if (output.length > 1_000) throw new Error("repository exceeds 1,000 file limit");
+        if (output.length > MAX_WORKSPACE_ENTRIES) throw new Error("repository exceeds 1,000 file limit");
       }
     };
     walk(this.root);
@@ -49,30 +51,112 @@ export class RoomWorkspace {
   }
 
   readFile(path: string): string {
+    return this.readFileBytes(path).toString("utf8");
+  }
+
+  readFileBytes(path: string): Buffer {
     const target = this.safePath(path);
-    if (!existsSync(target) || !statSync(target).isFile()) throw new Error("file not found");
-    if (statSync(target).size > MAX_FILE_BYTES) throw new Error("file is too large to read");
-    return readFileSync(target, "utf8");
+    if (!existsSync(target)) throw new Error("file not found");
+    const info = lstatSync(target);
+    if (info.isSymbolicLink()) throw new Error("symbolic links are not supported");
+    if (!info.isFile()) throw new Error("file not found");
+    if (info.size > MAX_WORKSPACE_FILE_BYTES) throw new Error("file is too large to read");
+    return readFileSync(target);
   }
 
   writeFile(path: string, content: string): { path: string; bytes: number } {
+    return this.writeFileBytes(path, Buffer.from(content));
+  }
+
+  writeFileBytes(path: string, content: Buffer, expectedRevision?: string | null): { path: string; bytes: number; revision: string } {
     const target = this.safePath(path);
-    const bytes = Buffer.byteLength(content);
-    if (bytes > MAX_FILE_BYTES) throw new Error("file exceeds 512 KiB limit");
+    const bytes = content.byteLength;
+    if (bytes > MAX_WORKSPACE_FILE_BYTES) throw new Error("file exceeds 512 KiB limit");
+    const currentRevision = this.fileRevision(path);
+    if (expectedRevision !== undefined && expectedRevision !== currentRevision) throw new Error("file changed since it was opened");
+    if (!existsSync(target)) this.assertEntryCapacityFor(target);
     const oldBytes = existsSync(target) ? statSync(target).size : 0;
     const total = this.listTree().reduce((sum, file) => sum + file.bytes, 0) - oldBytes + bytes;
     if (total > MAX_WORKSPACE_BYTES) throw new Error("repository working tree exceeds 5 MiB limit");
     mkdirSync(dirname(target), { recursive: true });
     this.assertNoSymlinkParents(target);
-    writeFileSync(target, content, { encoding: "utf8", mode: 0o644 });
-    return { path, bytes };
+    const temporary = resolve(dirname(target), `.${crypto.randomUUID()}.room-write`);
+    try {
+      writeFileSync(temporary, content, { mode: 0o644 });
+      renameSync(temporary, target);
+    } catch (error) {
+      if (existsSync(temporary)) unlinkSync(temporary);
+      throw error;
+    }
+    return { path, bytes, revision: contentRevision(content) };
   }
 
   deleteFile(path: string): { deleted: string } {
     const target = this.safePath(path);
-    if (!existsSync(target) || !statSync(target).isFile()) throw new Error("file not found");
+    if (!existsSync(target)) throw new Error("file not found");
+    const info = lstatSync(target);
+    if (info.isSymbolicLink()) throw new Error("symbolic links are not supported");
+    if (!info.isFile()) throw new Error("file not found");
     unlinkSync(target);
     return { deleted: path };
+  }
+
+  fileRevision(path: string): string | null {
+    const target = this.safePath(path);
+    if (!existsSync(target)) return null;
+    const info = lstatSync(target);
+    if (info.isSymbolicLink()) throw new Error("symbolic links are not supported");
+    if (!info.isFile()) throw new Error("path is not a file");
+    if (info.size > MAX_WORKSPACE_FILE_BYTES) throw new Error("file is too large to read");
+    return contentRevision(readFileSync(target));
+  }
+
+  stat(path = ""): { kind: "file" | "directory"; bytes: number; modifiedAt: number } {
+    const target = path ? this.safePath(path) : this.root;
+    if (!existsSync(target)) throw new Error("file not found");
+    const info = lstatSync(target);
+    if (info.isSymbolicLink()) throw new Error("symbolic links are not supported");
+    if (!info.isFile() && !info.isDirectory()) throw new Error("unsupported filesystem entry");
+    return { kind: info.isDirectory() ? "directory" : "file", bytes: info.isFile() ? info.size : 0, modifiedAt: info.mtimeMs };
+  }
+
+  listDirectory(path = ""): Array<{ name: string; kind: "file" | "directory"; bytes: number; modifiedAt: number }> {
+    const target = path ? this.safePath(path) : this.root;
+    if (!existsSync(target) || !lstatSync(target).isDirectory()) throw new Error("directory not found");
+    return readdirSync(target, { withFileTypes: true }).filter((entry) => entry.name !== ".git").map((entry) => {
+      const absolute = resolve(target, entry.name);
+      const info = lstatSync(absolute);
+      if (entry.isSymbolicLink()) throw new Error("symbolic links are not supported");
+      if (!entry.isFile() && !entry.isDirectory()) throw new Error("unsupported filesystem entry");
+      return { name: entry.name, kind: entry.isDirectory() ? "directory" as const : "file" as const, bytes: entry.isFile() ? info.size : 0, modifiedAt: info.mtimeMs };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  createDirectory(path: string): { path: string } {
+    const target = this.safePath(path);
+    if (existsSync(target)) throw new Error("file already exists");
+    if (this.entryCount() >= MAX_WORKSPACE_ENTRIES) throw new Error("repository exceeds 1,000 entry limit");
+    this.assertNoSymlinkParents(target);
+    mkdirSync(target);
+    return { path };
+  }
+
+  removeDirectory(path: string): { deleted: string } {
+    const target = this.safePath(path);
+    if (!existsSync(target) || !lstatSync(target).isDirectory()) throw new Error("directory not found");
+    rmdirSync(target);
+    return { deleted: path };
+  }
+
+  renamePath(oldPath: string, newPath: string): { oldPath: string; newPath: string } {
+    const source = this.safePath(oldPath);
+    const target = this.safePath(newPath);
+    if (!existsSync(source)) throw new Error("file not found");
+    if (lstatSync(source).isSymbolicLink()) throw new Error("symbolic links are not supported");
+    this.assertNoSymlinkParents(target);
+    if (!existsSync(dirname(target)) || !lstatSync(dirname(target)).isDirectory()) throw new Error("target directory not found");
+    renameSync(source, target);
+    return { oldPath, newPath };
   }
 
   status(): string { return this.git(["status", "--short", "--branch"]).stdout; }
@@ -121,10 +205,16 @@ export class RoomWorkspace {
   }
 
   commit(message: string, blurb = ""): { commit: string; title: string; blurb: string } {
+    return this.commitAs(message, blurb, "room-agent", "agent@serverside.chat");
+  }
+
+  commitAs(message: string, blurb: string, authorName: string, authorEmail: string): { commit: string; title: string; blurb: string } {
     const clean = message.replace(/[\r\n]/g, " ").trim().slice(0, 120) || "agent update";
     const detail = blurb.replace(/[\r\n]/g, " ").trim().slice(0, 240);
+    const name = authorName.replace(/[\r\n<>]/g, " ").trim().slice(0, 80) || "room contributor";
+    const email = /^[^\s<>@]+@[^\s<>@]+$/.test(authorEmail) ? authorEmail.slice(0, 120) : "contributor@serverside.chat";
     this.git(["add", "-A", "--", "."]);
-    const args = ["-c", "user.name=room-agent", "-c", "user.email=agent@localhost", "commit", "-q", "--allow-empty", "-m", clean];
+    const args = ["-c", `user.name=${name}`, "-c", `user.email=${email}`, "commit", "-q", "--allow-empty", "-m", clean];
     if (detail) args.push("-m", detail);
     this.git(args);
     return { commit: this.git(["rev-parse", "--short", "HEAD"]).stdout.trim(), title: clean, blurb: detail };
@@ -268,7 +358,31 @@ export class RoomWorkspace {
   }
 
   private git(args: string[], allowFailure = false) { return runGit(this.root, args, allowFailure); }
-  private head(): string { return this.git(["rev-parse", "--short", "HEAD"]).stdout.trim(); }
+  headCommit(): string { return this.git(["rev-parse", "--short", "HEAD"]).stdout.trim(); }
+  private head(): string { return this.headCommit(); }
+  private entryCount(): number {
+    let count = 0;
+    const walk = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (entry.name === ".git") continue;
+        count++;
+        if (count > MAX_WORKSPACE_ENTRIES) throw new Error("repository exceeds 1,000 entry limit");
+        if (entry.isSymbolicLink()) throw new Error("symbolic links are not supported");
+        if (entry.isDirectory()) walk(resolve(directory, entry.name));
+      }
+    };
+    walk(this.root);
+    return count;
+  }
+  private assertEntryCapacityFor(target: string): void {
+    let missing = 0;
+    let cursor = target;
+    while (cursor !== this.root) {
+      if (!existsSync(cursor)) missing++;
+      cursor = dirname(cursor);
+    }
+    if (this.entryCount() + missing > MAX_WORKSPACE_ENTRIES) throw new Error("repository exceeds 1,000 entry limit");
+  }
   private resolveDeploymentRef(ref?: string): string | undefined {
     if (!ref || ref === "stable") return this.activeCommit;
     if (ref === "head") return this.head();
@@ -279,6 +393,10 @@ export class RoomWorkspace {
     return resolved.ok ? resolved.stdout.trim() : undefined;
   }
   private limit(value: string): string { return value.length > 100_000 ? value.slice(0, 100_000) + "\n[truncated]" : value; }
+}
+
+function contentRevision(content: Buffer): string {
+  return createHash("sha256").update(content).digest("base64url");
 }
 
 function runGit(cwd: string | undefined, args: string[], allowFailure = false): { ok: boolean; stdout: string } {

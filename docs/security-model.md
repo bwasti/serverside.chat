@@ -40,8 +40,14 @@ Network policy and counters live in the host. Each operation is charged to `(roo
 
 Before outbound fetch is enabled, the host must enforce HTTPS, permitted ports, DNS resolution and revalidation, private/link-local/loopback/cloud-metadata denial, redirect limits, decompressed-response limits, header filtering, timeouts, and audit logs. The worker receives no raw socket capability.
 
+## Source editing capabilities
+
+An authenticated SSH key may request `shell <room>` or the SFTP subsystem. The host resolves that key to the canonical account before selecting visible rooms and granting read or contribution capabilities. The shell is a predefined command interpreter rather than an OS process. SFTP exposes a virtual room namespace rather than a host directory. Neither interface permits `.git`, traversal outside a room, symlinks, devices, arbitrary executables, environment access, or raw network access.
+
+The host remains the version authority. Clients invoke bounded operations such as status, commit, preview, rebase, and publish; only host-constructed argument arrays reach Git. All mutations are audited, files and trees remain quota-bound, long-lived file writes use optimistic revisions, promotion is owner-only, and canonical history remains fast-forward and merge-free. Website workers never receive source-editing or version capabilities.
+
 ## Current state
 
-QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, canonical accounts, Google/GitHub OAuth flows, browser sessions, browser-authorized multi-key SSH linking, durable room memberships, hashed invitations, and host-enforced chat/agent policies are implemented. Real OAuth buttons appear when provider credentials are configured. Agent credential issuance, outbound fetch, account recovery, and user-facing credential/membership management are not yet wired.
+QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, canonical accounts, Google/GitHub OAuth flows, browser sessions, browser-authorized multi-key SSH linking, durable room memberships, hashed invitations, host-enforced chat/agent policies, a constrained room shell, and virtual SFTP source access are implemented. Real OAuth buttons appear when provider credentials are configured. Per-user source overlays, agent credential issuance, outbound fetch, account recovery, and user-facing credential/membership management are not yet wired.
 
 The prototype currently enforces 128 aggregate live SSH/browser connections, 100 WebSockets, 32 concurrent HTTP executions, and 64 MiB of response egress per rolling hour per room. These room-wide limits will become outer ceilings once authenticated per-principal sub-budgets are implemented.

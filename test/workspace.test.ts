@@ -31,6 +31,16 @@ test("repository paths cannot escape or inspect git internals", () => {
   expect(() => workspace.readFile(".git/config")).toThrow("invalid repository path");
 });
 
+test("binary capability writes are atomic, quota-bounded, and optimistic", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
+  const workspace = new RoomWorkspace(data, "binary-room");
+  const created = workspace.writeFileBytes("assets/icon.bin", Buffer.from([0, 1, 2]), null);
+  expect(workspace.readFileBytes("assets/icon.bin")).toEqual(Buffer.from([0, 1, 2]));
+  expect(() => workspace.writeFileBytes("assets/icon.bin", Buffer.from([3]), null)).toThrow("changed since it was opened");
+  expect(workspace.writeFileBytes("assets/icon.bin", Buffer.from([3]), created.revision).bytes).toBe(1);
+  expect(() => workspace.writeFileBytes("large.bin", Buffer.alloc(512 * 1024 + 1))).toThrow("512 KiB");
+});
+
 test("version graph exposes concise commit stacks and refs", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "graph-room");

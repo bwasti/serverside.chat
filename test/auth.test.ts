@@ -49,6 +49,7 @@ test("the lobby is a reserved quota-free room that signed-in accounts can use", 
   expect(accounts.roomPolicy("lobby")).toMatchObject({ system: true, visibility: "public", agentMode: "passive" });
   expect(accounts.roleFor(member, "lobby")).toBe("contributor");
   expect(accounts.canContribute(member, "lobby")).toBe(true);
+  expect(accounts.canEditSource(member, "lobby")).toBe(false);
   expect(accounts.accountProfile(owner).ownedRooms).toBe(0);
   expect(accounts.ownedRoomNames(owner)).toEqual([]);
   expect(() => accounts.renameRoom(owner, "lobby", "welcome")).toThrow("system rooms cannot be renamed");
@@ -148,6 +149,7 @@ test("public visibility is independent from contribution and agent authority", (
   const invite = accounts.createInvite(owner, "public-room", "contributor");
   expect(accounts.redeemInvite(member, invite)).toEqual({ roomName: "public-room", role: "contributor" });
   expect(accounts.canContribute(member, "public-room")).toBe(true);
+  expect(accounts.canEditSource(member, "public-room")).toBe(true);
   expect(accounts.canInvokeAgent(member, "public-room")).toBe(true);
   expect(accounts.canPromote(member, "public-room")).toBe(false);
   expect(accounts.canPromote(owner, "public-room")).toBe(true);

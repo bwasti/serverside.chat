@@ -252,6 +252,14 @@ export class Room {
     this.post("system", "room", text.slice(0, 2_000));
   }
 
+  recordContributorCommit(principal: Principal, commit: string, title: string, detail = "", url?: string): void {
+    this.post("commit", principal.handle, `${commit} ${title}`.slice(0, 2_000), url, detail.slice(0, 240), principal);
+  }
+
+  recordCanonicalUpdate(principal: Principal, commit: string, url: string): void {
+    this.post("system", "trunk", `${commit} published by @${principal.handle} · ${url}`.slice(0, 2_000));
+  }
+
   agent(actor: Principal | string, prompt: string): boolean {
     const principal = this.resolvePrincipal(actor);
     if (!this.canInvokeAgent(principal)) return false;

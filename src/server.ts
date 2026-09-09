@@ -11,6 +11,8 @@ import { parseSshEntryCommand } from "./ssh-command";
 import { OAuthService, type OAuthProviderConfig } from "./oauth";
 import { RoomDirectory } from "./room-directory";
 import { AnonymousLobbyGate, FireworksLobbyModerator } from "./lobby-moderation";
+import { RoomCapabilitySession, RoomShellSession } from "./room-shell";
+import { attachRoomSftp } from "./room-sftp";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -101,6 +103,12 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         tui?.resize(info.cols, info.rows);
         acceptChange?.();
       });
+      session.on("sftp", (acceptSftp, rejectSftp) => {
+        if (!principal!.authenticated || principal!.kind !== "user") { rejectSftp(); return; }
+        directory.prepareAccount(principal!);
+        accounts.audit(principal!, undefined, "sftp.open");
+        attachRoomSftp(acceptSftp(), principal!, accounts, directory);
+      });
       const launch = (stream: ServerChannel, selectedRoom?: string, requirePty = false, inviteToken?: string) => {
         if (requirePty && !hasPty) {
           stream.end("This command needs a terminal. Add -t to the ssh command.\r\n");
@@ -141,6 +149,21 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
             const link = accounts.createAccountLink(principal!);
             stream.end(`${new URL(webBaseUrl).origin}/?account=${encodeURIComponent(link.code)}\r\n`);
           } else if (command.kind === "room") launch(stream, command.roomName, true);
+          else if (command.kind === "shell") {
+            if (!hasPty) { stream.end("This command needs a terminal. Add -t to the ssh command.\r\n"); return; }
+            if (!principal!.authenticated || principal!.kind !== "user") { stream.end("Sign in through the chat TUI and link this SSH key before opening a room shell.\r\n"); return; }
+            directory.prepareAccount(principal!);
+            const room = directory.room(command.roomName);
+            const workspace = directory.workspaces.get(command.roomName);
+            if (!room || !workspace || !accounts.canView(principal!, command.roomName)) { stream.end("That room does not exist or is not visible to this account.\r\n"); return; }
+            if (!room.join(principal!.handle)) { stream.end("That room has reached its connection limit.\r\n"); return; }
+            let left = false;
+            const leave = () => { if (!left) { left = true; room.leave(principal!.handle); } };
+            stream.on("close", leave);
+            stream.on("end", leave);
+            accounts.audit(principal!, command.roomName, "shell.open");
+            new RoomShellSession(stream, new RoomCapabilitySession(principal!, room, workspace, accounts));
+          }
           else if (!principal!.authenticated) launch(stream, undefined, true, command.token);
           else {
             const redeemed = accounts.redeem(principal!, command.token);

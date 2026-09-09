@@ -561,6 +561,11 @@ export class AccountStore {
     return policy.contributions === "admins" ? ROLE_WEIGHT[role] >= ROLE_WEIGHT.admin : ROLE_WEIGHT[role] >= ROLE_WEIGHT.contributor;
   }
 
+  canEditSource(principal: Principal, roomName: string): boolean {
+    const policy = this.roomPolicy(roomName);
+    return Boolean(policy && !policy.system && this.canContribute(principal, roomName));
+  }
+
   canInvokeAgent(principal: Principal, roomName: string): boolean {
     const policy = this.roomPolicy(roomName);
     return Boolean(policy && policy.agentMode !== "disabled" && this.canContribute(principal, roomName));

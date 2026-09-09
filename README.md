@@ -1,6 +1,6 @@
 # serverside.chat
 
-The executable room-service contract is documented in [`docs/service-api.md`](docs/service-api.md). The implemented account and room policy model is in [`docs/accounts.md`](docs/accounts.md); its security boundary is described in [`docs/security-model.md`](docs/security-model.md).
+The executable room-service contract is documented in [`docs/service-api.md`](docs/service-api.md). The constrained SSH editing environment and virtual SFTP filesystem are documented in [`docs/capability-shell.md`](docs/capability-shell.md). The implemented account and room policy model is in [`docs/accounts.md`](docs/accounts.md); its security boundary is described in [`docs/security-model.md`](docs/security-model.md).
 
 The versioned systemd deployment layout and release procedure are documented in [`docs/deployment.md`](docs/deployment.md).
 
@@ -32,6 +32,16 @@ ssh -t -p 2222 serverside.chat room mine
 ssh -t -p 2222 serverside.chat invite '<one-use-token>'
 ```
 
+Authenticated contributors can instead enter the room's constrained editing environment. This is a capability shell, not a system shell: it has predefined file, commit, preview, rebase, and owner-only publish commands but cannot run programs. The same endpoint serves a virtual SFTP filesystem for normal local editors:
+
+```sh
+ssh -t -p 2222 serverside.chat shell mine
+sftp -P 2222 serverside.chat
+sshfs -p 2222 serverside.chat:/mine ./mine
+```
+
+The virtual root lists only visible rooms, applies room contribution policy to writes, and never exposes host paths or `.git`. See [`docs/capability-shell.md`](docs/capability-shell.md) for commands, quotas, and the current shared-worktree limitation.
+
 An existing bootstrap account can attach its first canonical OAuth identity with:
 
 ```sh
@@ -40,7 +50,7 @@ ssh -p 2222 serverside.chat account
 
 Open the returned ten-minute HTTPS link and choose Google or GitHub. This migration command does not open a shell.
 
-The remote command parser accepts only the bounded `account`, `room <name>`, and `invite <token>` forms; it cannot execute shell commands. For an existing account, the invite form grants membership and opens the room. For a new SSH key, it displays a short-lived HTTPS sign-in link; OAuth creates the canonical account, the browser attaches the verified key and consumes the invite, and the live terminal upgrades without reconnecting. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
+The remote command parser accepts only the bounded `account`, `room <name>`, `shell <name>`, and `invite <token>` forms. `shell` selects our constrained interpreter; none of these forms can execute an operating-system command. For an existing account, the invite form grants membership and opens the room. For a new SSH key, it displays a short-lived HTTPS sign-in link; OAuth creates the canonical account, the browser attaches the verified key and consumes the invite, and the live terminal upgrades without reconnecting. Quote the token and remember that the local shell may retain the command in its history; successful tokens are single-use.
 
 Known public keys resolve to durable accounts. On first run, public keys in `~/.ssh/*.pub` are enrolled to the local room owner as a prototype migration path. An unknown but valid key enters public rooms as an anonymous principal and receives an HTTPS account/link URL; its requested SSH username has no authority. It can browse public rooms and use the moderated lobby, but cannot contribute elsewhere.
 
