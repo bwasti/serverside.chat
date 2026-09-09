@@ -18,7 +18,7 @@ Room roles govern participation:
 - `admin`: manage invitations and room policy; contribute under member/admin policy; cannot promote canonical.
 - `contributor`: chat and invoke the agent when contribution and agent policies allow it.
 - `viewer`: read a visible room; no chat or agent authority.
-- `anonymous`: browse public rooms and pages; no durable chat, typing presence, or agent visibility.
+- `anonymous`: browse public rooms and pages; no normal-room chat, typing presence, or builder-agent visibility. The host-managed lobby alone accepts bounded, rate-limited messages after a separate AI moderation decision.
 
 Room creation, rename, and deletion are host operations. Names are validated before database or filesystem access. Rename carries the database authority records and room-owned storage together. Delete removes live routing and authority records but moves storage to a server-owned trash directory so an operator can recover it. Active agent work blocks rename and delete.
 
@@ -28,7 +28,7 @@ Canonical promotion is owner-only and is granted to the agent only during an exp
 
 The canonical authority is an internal account ID. Google/GitHub identities, browser cookies, and SSH keys are credentials mapped to that account; handles and emails are not authentication factors. SSH public-key signatures are verified before lookup. Unknown verified keys receive anonymous authority and a random, expiring HTTPS link; only a browser authenticated to a canonical account can attach the key. A key cannot create an account or reassign itself from another account. The requested SSH username is never proof of identity.
 
-HTTP and WebSocket requests without a valid session receive anonymous authority. Public pages, service sockets, and the read-only browser TUI are available; private rooms return 404, and existing unauthorized sockets are closed if a room becomes private. The browser uses xterm.js only as a renderer connected directly to the constrained TUI—it never receives a PTY or system shell.
+HTTP and WebSocket requests without a valid session receive anonymous authority. Public pages and service sockets remain readable; private rooms return 404, and existing unauthorized sockets are closed if a room becomes private. The browser TUI permits anonymous composition only in `lobby`. Each message is capped at 600 bytes, checked against per-identity and global rate limits, and persisted or shown to the guide only after a fail-closed AI moderator returns exactly `ALLOW`. The browser uses xterm.js only as a renderer connected directly to the constrained TUI—it never receives a PTY or system shell.
 
 Google OpenID Connect and GitHub OAuth use exact callbacks, 256-bit state bound to a short-lived HttpOnly browser cookie, PKCE S256, and one-use database flow records. Google ID tokens are verified by signature, issuer, audience, and nonce. GitHub access tokens are used only for an immediate authenticated `/user` lookup and are not stored. Provider subjects resolve to canonical accounts and issue 256-bit browser sessions in Secure, HttpOnly, SameSite cookies; only session hashes are stored. OAuth identities are never merged by email or handle.
 

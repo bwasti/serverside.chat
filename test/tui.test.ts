@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerChannel } from "ssh2";
-import { AccountStore } from "../src/auth";
+import { AccountStore, anonymousPrincipal } from "../src/auth";
 import { Room } from "../src/room";
 import { RoomDirectory } from "../src/room-directory";
 import { layoutComposer, TuiSession } from "../src/tui";
@@ -217,6 +217,59 @@ test("room owners manage their rooms from the TUI", () => {
   expect((session as unknown as { room: Room }).room.name).toBe("mine");
   stream.emit("data", Buffer.from("/account\r"));
   expect(stream.writes.at(-1)).toContain("site member · free · rooms 1/5");
+
+  stream.end();
+  accounts.close();
+});
+
+test("the expanded room list offers creation when account quota allows", async () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-new-room-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+  directory.prepareAccount(owner);
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "lobby", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("\t"));
+  await Bun.sleep(350);
+  expect(stream.writes.at(-1)).toContain("+ new room");
+  stream.emit("data", Buffer.from("\x1b[A\r"));
+  expect((session as unknown as { input: string }).input).toBe("/room create ");
+  stream.emit("data", Buffer.from("project\r"));
+  expect((session as unknown as { room: Room }).room.name).toBe("project");
+
+  stream.end();
+  accounts.close();
+});
+
+test("anonymous lobby input is persisted only after the review callback allows it", async () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-anonymous-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+  const lobby = directory.room("lobby")!;
+  const guest = anonymousPrincipal("SHA256:tui-guest");
+  const stream = new FakeStream();
+  const reviewed: string[] = [];
+  new TuiSession(stream as unknown as ServerChannel, directory.rooms, guest, accounts, "lobby", "https://example.test/?signin=1", undefined, undefined, directory, async (_principal, text) => {
+    reviewed.push(text);
+    return text === "how do rooms work?" ? { allowed: true } : { allowed: false, reason: "message was not posted" };
+  });
+
+  expect(stream.writes.at(-1)).toContain("lobby messages are moderated");
+  expect(stream.writes.at(-1)).toContain("\x1b]8;;https://example.test/?signin=1");
+  stream.emit("data", Buffer.from("how do rooms work?\r"));
+  await Bun.sleep(1);
+  expect(reviewed).toEqual(["how do rooms work?"]);
+  expect(lobby.messages.at(-1)).toMatchObject({ author: guest.handle, text: "how do rooms work?", agentVisible: true });
+  const count = lobby.messages.length;
+  stream.emit("data", Buffer.from("unsafe\r"));
+  await Bun.sleep(1);
+  expect(lobby.messages).toHaveLength(count);
+  expect(stream.writes.at(-1)).toContain("message was not posted");
 
   stream.end();
   accounts.close();

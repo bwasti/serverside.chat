@@ -239,6 +239,15 @@ export class Room {
     return true;
   }
 
+  acceptModeratedAnonymousChat(principal: Principal, text: string): boolean {
+    if (this.name !== "lobby" || !this.policy.system || principal.authenticated || principal.kind !== "anonymous") return false;
+    const clean = text.trim().slice(0, 600);
+    if (!clean) return false;
+    this.post("chat", principal.handle, clean, undefined, undefined, principal, true);
+    if (this.policy.agentMode === "passive" && this.agentResponder) this.scheduleAgent(principal);
+    return true;
+  }
+
   notice(text: string): void {
     this.post("system", "room", text.slice(0, 2_000));
   }
@@ -310,8 +319,8 @@ export class Room {
     for (const listener of this.serviceListeners) listener();
   }
 
-  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal): void {
-    const message: Message = { id: this.nextId++, kind, author: stripTerminalControls(author), text: stripTerminalControls(text), at: new Date(), url, detail: detail ? stripTerminalControls(detail) : undefined, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: principal ? this.canInvokeAgent(principal) : kind !== "chat" };
+  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal, agentVisible?: boolean): void {
+    const message: Message = { id: this.nextId++, kind, author: stripTerminalControls(author), text: stripTerminalControls(text), at: new Date(), url, detail: detail ? stripTerminalControls(detail) : undefined, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: agentVisible ?? (principal ? this.canInvokeAgent(principal) : kind !== "chat") };
     this.messages.push(message);
     if (this.messages.length > this.historyLimit) this.messages.shift();
     this.saveState();

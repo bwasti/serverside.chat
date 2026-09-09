@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AccountStore, anonymousPrincipal } from "../src/auth";
 import { Room } from "../src/room";
 
 test("room broadcasts chat and agent presence", () => {
@@ -168,4 +169,23 @@ test("version graph commits link to immutable deployment URLs", () => {
   room.setVersionGraph(["● abc1234 Feature title  (feature)", "│ connector"]);
   expect(room.versionGraph[0]).toEqual({ text: "● abc1234 Feature title  (feature)", url: "http://example.test/mine?__ref=abc1234" });
   expect(room.versionGraph[1]).toEqual({ text: "│ connector", url: undefined });
+});
+
+test("only the system lobby accepts host-moderated anonymous messages", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-room-anonymous-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const lobby = new Room("lobby", 250, "https://example.test/lobby", owner.handle, undefined, accounts);
+  const mine = new Room("mine", 250, "https://example.test/mine", owner.handle, undefined, accounts);
+  const guest = anonymousPrincipal("SHA256:moderated-guest");
+
+  expect(lobby.chat(guest, "bypass moderation")).toBe(false);
+  expect(mine.acceptModeratedAnonymousChat(guest, "wrong room")).toBe(false);
+  expect(lobby.acceptModeratedAnonymousChat(guest, "approved question")).toBe(true);
+  expect(lobby.messages).toHaveLength(1);
+  expect(lobby.messages[0]).toMatchObject({ author: guest.handle, text: "approved question", authorId: guest.id, agentVisible: true });
+  expect(lobby.messages[0]?.authorRole).toBeUndefined();
+  accounts.close();
 });

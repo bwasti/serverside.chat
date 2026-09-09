@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { AccountStore, Principal } from "./auth";
 import { ServiceRuntime } from "./runtime";
-import { TuiSession, type TuiStream } from "./tui";
+import { TuiSession, type AnonymousLobbyReview, type TuiStream } from "./tui";
 import type { OAuthProvider, OAuthService } from "./oauth";
 import type { RoomDirectory } from "./room-directory";
 
@@ -24,7 +24,7 @@ const terminalAssets = new Map([
   ["/_terminal/addon-fit.js.map", { file: Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js.map"), type: "application/json; charset=utf-8" }],
 ]);
 
-export function startWebServer(directory: RoomDirectory, host: string, port: number, dataDir = ".data", accounts?: AccountStore, oauth?: OAuthService, developmentAuth = true) {
+export function startWebServer(directory: RoomDirectory, host: string, port: number, dataDir = ".data", accounts?: AccountStore, oauth?: OAuthService, developmentAuth = true, reviewAnonymousLobby?: AnonymousLobbyReview) {
   const rooms = directory.rooms;
   const workspaces = directory.workspaces;
   const runtimes = new Map<string, { room: Room; runtime: ServiceRuntime }>();
@@ -171,7 +171,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       open(ws) {
         if (ws.data.kind === "tui") {
           const stream = new BrowserTuiStream(ws);
-          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, ws.data.initialRoom, signInUrl, undefined, undefined, directory);
+          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, ws.data.initialRoom, signInUrl, undefined, undefined, directory, reviewAnonymousLobby);
           session.resize(ws.data.cols, ws.data.rows);
           browserTuis.set(ws, { stream, session });
           return;

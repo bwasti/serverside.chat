@@ -10,6 +10,7 @@ import { FireworksAgent, FireworksGuideAgent } from "./agent";
 import { parseSshEntryCommand } from "./ssh-command";
 import { OAuthService, type OAuthProviderConfig } from "./oauth";
 import { RoomDirectory } from "./room-directory";
+import { AnonymousLobbyGate, FireworksLobbyModerator } from "./lobby-moderation";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -46,12 +47,15 @@ const fireworksKey = process.env.FIREWORKS_API_KEY;
 const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/glm-5p3-flash";
 let agent: FireworksAgent | undefined;
 let guideAgent: FireworksGuideAgent | undefined;
+let anonymousLobbyGate: AnonymousLobbyGate | undefined;
 if (fireworksKey) {
   const prompt = ["prompts/room-agent/system.md", "prompts/room-agent/context.md", "prompts/room-agent/project.md"]
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
   agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
   guideAgent = new FireworksGuideAgent(fireworksKey, fireworksModel, readFileSync("prompts/lobby-agent/system.md", "utf8").trim());
+  anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()));
 }
+const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: string) => anonymousLobbyGate.review(principal, text) : undefined;
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
   if (room.name === "lobby" && guideAgent) {
     room.setAgentResponder((history, activity) => guideAgent.respond(history, activity));
@@ -63,7 +67,7 @@ const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, worksp
   });
 });
 const rooms = directory.rooms;
-const webServer = startWebServer(directory, webHost, webPort, dataDir, accounts, oauth, developmentAuth);
+const webServer = startWebServer(directory, webHost, webPort, dataDir, accounts, oauth, developmentAuth, reviewAnonymousLobby);
 const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection) => {
   let principal: Principal | undefined;
   client.on("authentication", (context) => {
@@ -125,7 +129,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
           const requestedHandle = principal!.requestedHandle;
           refreshPrincipal = () => accounts.principalForKey(algorithm, keyBlob, requestedHandle);
         }
-        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom, signInUrl, refreshPrincipal, authenticatedRoom, directory);
+        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom, signInUrl, refreshPrincipal, authenticatedRoom, directory, reviewAnonymousLobby);
         tui.resize(cols, rows);
       };
       session.on("shell", (acceptShell) => launch(acceptShell()));
