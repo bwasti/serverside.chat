@@ -73,6 +73,19 @@ test("room focus dims chat text after bold author names", () => {
   tui.stream.end();
 });
 
+test("room focus dims the version control and live-log HUD", () => {
+  const room = new Room("mine");
+  room.versionGraph.push({ text: "* abcdef0  head", url: "https://example.test/mine?__ref=abcdef0" });
+  const tui = open(room);
+  tui.session.resize(120, 24);
+  tui.stream.emit("data", Buffer.from("\t"));
+
+  const frame = tui.stream.writes.at(-1)!;
+  expect(frame).toContain("\x1b[2m\x1b[48;5;233m\x1b[38;5;244m  VERSION CONTROL");
+  expect(frame).toContain("\x1b[2m\x1b[48;5;233m\x1b[38;5;250m");
+  tui.stream.end();
+});
+
 test("TUI can open directly into a selected visible room", () => {
   const mine = new Room("mine");
   const general = new Room("general");
@@ -235,9 +248,23 @@ test("the expanded room list offers creation when account quota allows", async (
   stream.emit("data", Buffer.from("\t"));
   await Bun.sleep(350);
   expect(stream.writes.at(-1)).toContain("+ new room");
-  stream.emit("data", Buffer.from("\x1b[A\r"));
-  expect((session as unknown as { input: string }).input).toBe("/room create ");
-  stream.emit("data", Buffer.from("project\r"));
+  stream.emit("data", Buffer.from("\x1b[A"));
+  const selectedFrame = stream.writes.at(-1)!;
+  const selected = session as unknown as { input: string; createRoomFocused: boolean; creatingRoom: boolean };
+  expect(selected.createRoomFocused).toBe(true);
+  expect(selectedFrame).toContain("Create a new room");
+  expect(selectedFrame).toContain("\x1b[48;5;60m\x1b[38;5;255m  + new room");
+  expect(selectedFrame).not.toContain("\x1b[48;5;60m\x1b[38;5;255m  # lobby");
+  expect(selectedFrame).not.toContain("# lobby  public");
+  stream.emit("data", Buffer.from("\r"));
+  expect(selected.creatingRoom).toBe(true);
+  expect(selected.input).toBe("");
+  expect(stream.writes.at(-1)).toContain("type a room name, then press Enter");
+  stream.emit("data", Buffer.from("proj\t"));
+  await Bun.sleep(350);
+  stream.emit("data", Buffer.from("\t"));
+  expect(selected.input).toBe("proj");
+  stream.emit("data", Buffer.from("ect\r"));
   expect((session as unknown as { room: Room }).room.name).toBe("project");
 
   stream.end();

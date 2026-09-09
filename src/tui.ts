@@ -47,6 +47,7 @@ export class TuiSession {
   private roomIndex = 0;
   private sidebarFocused = false;
   private createRoomFocused = false;
+  private creatingRoom = false;
   private room: Room;
   private animationTimer?: ReturnType<typeof setInterval>;
   private sidebarAnimationTimer?: ReturnType<typeof setInterval>;
@@ -133,8 +134,14 @@ export class TuiSession {
           return;
         }
         if (char === "\t") {
-          this.sidebarFocused = !this.sidebarFocused;
-          if (!this.sidebarFocused) this.createRoomFocused = false;
+          if (this.sidebarFocused) {
+            this.sidebarFocused = false;
+            if (this.createRoomFocused) this.beginRoomCreation();
+            else this.createRoomFocused = false;
+          } else {
+            this.sidebarFocused = true;
+            this.createRoomFocused = this.creatingRoom && this.roomCreationAvailable;
+          }
           this.room.setTyping(this.username, false);
           this.animateSidebar();
           dirty = true;
@@ -147,13 +154,7 @@ export class TuiSession {
           }
           this.lastWasCarriageReturn = char === "\r";
           this.sidebarFocused = false;
-          if (this.createRoomFocused) {
-            this.createRoomFocused = false;
-            this.input = "/room create ";
-            this.cursorOffset = Array.from(this.input).length;
-            this.preferredCursorColumn = undefined;
-            this.localNotice = "type a room name, then press Enter";
-          }
+          if (this.createRoomFocused) this.beginRoomCreation();
           this.animateSidebar();
           dirty = true;
           continue;
@@ -188,7 +189,7 @@ export class TuiSession {
         dirty = changed || dirty;
       }
     }
-    if (inputChanged && this.room.canContribute(this.principal)) this.room.setTyping(this.username, Boolean(this.input));
+    if (inputChanged && !this.onCreateRoomScreen() && this.room.canContribute(this.principal)) this.room.setTyping(this.username, Boolean(this.input));
     if (dirty) this.render();
   }
 
@@ -225,10 +226,12 @@ export class TuiSession {
     const next = (current + offset + total) % total;
     if (hasCreate && next === 0) {
       this.createRoomFocused = true;
+      this.creatingRoom = false;
       this.render();
       return;
     }
     this.createRoomFocused = false;
+    this.creatingRoom = false;
     const nextRoom = next - (hasCreate ? 1 : 0);
     if (nextRoom === this.roomIndex) { this.render(); return; }
     this.unsubscribe();
@@ -367,7 +370,7 @@ export class TuiSession {
   }
 
   private currentHudWidth(): number {
-    if (this.room.name === "lobby") return 0;
+    if (this.room.name === "lobby" || this.onCreateRoomScreen()) return 0;
     return this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
   }
 
@@ -381,6 +384,20 @@ export class TuiSession {
     if (line === "/quit") {
       this.stream.end();
       return true;
+    }
+    if (this.creatingRoom) {
+      try {
+        if (!this.directory) throw new Error("room management is unavailable");
+        if (!line.trim()) throw new Error("room name is required");
+        const created = this.directory.createRoom(this.principal, line.trim());
+        this.creatingRoom = false;
+        this.createRoomFocused = false;
+        this.selectRoom(created);
+        this.localNotice = `created #${created.name}`;
+      } catch (error) {
+        this.localNotice = error instanceof Error ? error.message : "room creation failed";
+      }
+      return false;
     }
     if (this.handleHostCommand(line)) return false;
     if (this.canSubmitAnonymousLobby()) {
@@ -489,6 +506,11 @@ export class TuiSession {
     }
     this.syncAnimation();
     this.roomCreationAvailable = this.computeRoomCreationAvailability();
+    if (!this.roomCreationAvailable && this.onCreateRoomScreen()) {
+      this.createRoomFocused = false;
+      this.creatingRoom = false;
+    }
+    const createRoomScreen = this.onCreateRoomScreen();
     const sidebarWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.currentHudWidth();
     const mainWidth = this.mainWidth();
@@ -503,20 +525,27 @@ export class TuiSession {
           ? "read only · admins can contribute"
           : `read only · ask @${this.room.owner} for an invite`
       : "read only · sign in to contribute";
-    const inputLayout = layoutComposer(writable ? this.input : readOnlyText, writable ? this.cursorOffset : 0, mainWidth);
+    const composerValue = createRoomScreen
+      ? this.creatingRoom ? this.input : ""
+      : writable ? this.input : readOnlyText;
+    const inputLayout = layoutComposer(composerValue, this.creatingRoom || (!createRoomScreen && writable) ? this.cursorOffset : 0, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - 4));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
     if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
     if (inputLayout.cursorRow >= firstInputRow + maximumComposerRows) firstInputRow = inputLayout.cursorRow - maximumComposerRows + 1;
     const inputRows = inputLayout.rows.slice(firstInputRow, firstInputRow + maximumComposerRows).map((row) => row.text);
-    const bottomStatus = this.localNotice ? truncate(`  ${this.localNotice}`, mainWidth) : this.typingStatus(mainWidth);
+    const bottomStatus = this.localNotice
+      ? truncate(`  ${this.localNotice}`, mainWidth)
+      : createRoomScreen ? "" : this.typingStatus(mainWidth);
     const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0));
-    if (this.messageCacheRoom !== this.room.name || this.messageCacheWidth !== mainWidth) {
-      this.messageCacheRoom = this.room.name;
+    const messageCacheRoom = createRoomScreen ? "__new-room__" : this.room.name;
+    if (this.messageCacheRoom !== messageCacheRoom || this.messageCacheWidth !== mainWidth) {
+      this.messageCacheRoom = messageCacheRoom;
       this.messageCacheWidth = mainWidth;
       this.messageCache.clear();
     }
-    const messages = this.room.messages.flatMap((message) => {
+    const roomMessages = createRoomScreen ? [] : this.room.messages;
+    const messages = roomMessages.flatMap((message) => {
       let rows = this.messageCache.get(message.id);
       if (!rows) {
         rows = this.formatMessage(message, mainWidth);
@@ -524,8 +553,8 @@ export class TuiSession {
       }
       return rows.map((text) => ({ text, kind: message.kind }));
     });
-    if (this.messageCache.size > this.room.messages.length) {
-      const retained = new Set(this.room.messages.map((message) => message.id));
+    if (this.messageCache.size > roomMessages.length) {
+      const retained = new Set(roomMessages.map((message) => message.id));
       for (const id of this.messageCache.keys()) if (!retained.has(id)) this.messageCache.delete(id);
     }
     const maximumOffset = Math.max(0, messages.length - messageRows);
@@ -534,14 +563,14 @@ export class TuiSession {
     const visible = messages.slice(Math.max(0, end - messageRows), end);
     while (visible.length < messageRows) visible.unshift({ text: "", kind: "chat" });
 
-    const title = `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
-    const status = `${this.scrollOffset ? `↑${this.scrollOffset}  ` : ""}${this.room.members.size} online  `;
+    const title = createRoomScreen ? "  + new room" : `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
+    const status = createRoomScreen ? "name your room  " : `${this.scrollOffset ? `↑${this.scrollOffset}  ` : ""}${this.room.members.size} online  `;
     const headerGap = " ".repeat(Math.max(1, mainWidth - title.length - status.length));
     const sidebarHeader = sidebarWidth <= 3
       ? `${SIDEBAR_MUTED}${pad(" › ", sidebarWidth)}${RESET}`
       : `${SIDEBAR}${pad(truncate("  serverside.chat", sidebarWidth), sidebarWidth)}${RESET}`;
     const paneTone = this.sidebarFocused ? DIM : "";
-    const hudHeader = hudWidth ? `${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}` : "";
+    const hudHeader = hudWidth ? this.dimInactiveHud(`${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}`) : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const body = visible.map(({ text, kind }, index) => {
@@ -579,7 +608,7 @@ export class TuiSession {
   }
 
   private pageLinkRows(width: number, _limit: number): string[] {
-    if (this.room.name === "lobby") return [];
+    if (this.room.name === "lobby" || this.onCreateRoomScreen()) return [];
     const links = [{ label: "main", url: this.room.pageUrl }];
     return links.map((link) => {
       const ref = compactUrl(link.url).replace(/^localhost:\d+\//, "");
@@ -592,6 +621,12 @@ export class TuiSession {
   }
 
   private topStatusRows(width: number, height: number): string[] {
+    if (this.onCreateRoomScreen()) {
+      const title = truncate("  Create a new room", width);
+      const name = truncate("  Choose a short URL name using letters, numbers, or dashes.", width);
+      const keys = truncate("  ENTER create   TAB rooms", width);
+      return height < 12 ? [title, name] : [title, name, keys];
+    }
     if (this.room.name === "lobby") {
       const intro = truncate("  serverside.chat  —  shared rooms where people and AI build live websites", width);
       const keys = truncate("  TAB other pages   ↑↓ choose   ENTER open", width);
@@ -625,28 +660,37 @@ export class TuiSession {
   private hudRow(index: number, width: number): string {
     if (!width) return "";
     const logStart = Math.max(2, Math.floor((this.height - 1) * 2 / 3));
+    let rendered: string;
     if (index >= logStart) {
       if (index === logStart) {
         const live = Date.now() - this.room.lastRequestAt < 1_200;
         const pulse = live ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
-        return `${HUD_MUTED}${padAnsi(`  LIVE LOGS  ${live ? GREEN : MUTED}${pulse}${HUD_MUTED}`, width)}${RESET}`;
+        rendered = `${HUD_MUTED}${padAnsi(`  LIVE LOGS  ${live ? GREEN : MUTED}${pulse}${HUD_MUTED}`, width)}${RESET}`;
+        return this.dimInactiveHud(rendered);
       }
       const capacity = Math.max(0, this.height - 1 - logStart - 1);
       const logs = this.room.serviceLogs.slice(-capacity);
       const slot = index - logStart - 1;
       const log = logs[slot - (capacity - logs.length)];
-      return `${HUD}${padAnsi(log ? renderServiceLog(log) : "", width)}${RESET}`;
+      rendered = `${HUD}${padAnsi(log ? renderServiceLog(log) : "", width)}${RESET}`;
+      return this.dimInactiveHud(rendered);
     }
     const row = this.room.versionGraph[index];
-    if (!row) return `${HUD}${" ".repeat(width)}${RESET}`;
-    return `${HUD}${renderVersionRow(row.text, row.url, width)}${RESET}`;
+    rendered = row ? `${HUD}${renderVersionRow(row.text, row.url, width)}${RESET}` : `${HUD}${" ".repeat(width)}${RESET}`;
+    return this.dimInactiveHud(rendered);
+  }
+
+  private dimInactiveHud(value: string): string {
+    if (!this.sidebarFocused) return value;
+    return `${DIM}${value.replaceAll(RESET, `${RESET}${DIM}`)}${RESET}`;
   }
 
   private sidebarRow(index: number, width: number): string {
     if (width <= 3) {
       const roomIndex = index - 1;
-      const marker = roomIndex === this.roomIndex ? " ● " : roomIndex >= 0 && roomIndex < this.rooms.length ? " · " : "   ";
-      return `${roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR}${pad(marker, width)}${RESET}`;
+      const roomActive = !this.onCreateRoomScreen() && roomIndex === this.roomIndex;
+      const marker = roomActive ? " ● " : roomIndex >= 0 && roomIndex < this.rooms.length ? " · " : "   ";
+      return `${roomActive ? SIDEBAR_ACTIVE : SIDEBAR}${pad(marker, width)}${RESET}`;
     }
     if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS  ↑↓" : "  ROOMS", width), width)}${RESET}`;
     const hasCreate = this.roomCreationAvailable;
@@ -656,7 +700,7 @@ export class TuiSession {
     }
     const roomIndex = index - 1 - (hasCreate ? 1 : 0);
     if (roomIndex < this.rooms.length) {
-      const style = roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
+      const style = !this.onCreateRoomScreen() && roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
       return `${style}${pad(truncate(`  # ${this.rooms[roomIndex]!.name}`, width), width)}${RESET}`;
     }
     return `${SIDEBAR}${" ".repeat(width)}${RESET}`;
@@ -714,7 +758,8 @@ export class TuiSession {
   private get username(): string { return this.principal.handle; }
 
   private canUseComposer(): boolean {
-    return this.room.canContribute(this.principal)
+    return this.creatingRoom
+      || this.room.canContribute(this.principal)
       || this.canSubmitAnonymousLobby()
       || Boolean(this.accounts?.isAdmin(this.principal, this.room.name));
   }
@@ -729,6 +774,24 @@ export class TuiSession {
     return profile.ownedRooms < profile.roomLimit;
   }
 
+  private onCreateRoomScreen(): boolean {
+    return this.createRoomFocused || this.creatingRoom;
+  }
+
+  private beginRoomCreation(): void {
+    const alreadyCreating = this.creatingRoom;
+    this.createRoomFocused = false;
+    this.creatingRoom = true;
+    if (!alreadyCreating) {
+      this.input = "";
+      this.cursorOffset = 0;
+      this.preferredCursorColumn = undefined;
+    }
+    this.localNotice = "type a room name, then press Enter";
+    this.messageCacheRoom = "";
+    this.messageCache.clear();
+  }
+
   private adoptPrincipal(principal: Principal, preferredRoom: string): void {
     const oldUsername = this.username;
     this.unsubscribe();
@@ -737,6 +800,7 @@ export class TuiSession {
     this.room.leave(oldUsername);
     this.principal = principal;
     this.createRoomFocused = false;
+    this.creatingRoom = false;
     this.rooms = this.allRooms.filter((room) => room.canView(principal));
     if (!this.rooms.length) throw new Error("account cannot view any rooms");
     this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === preferredRoom));
@@ -759,7 +823,10 @@ export class TuiSession {
     }
     this.rooms = visible;
     this.roomCreationAvailable = this.computeRoomCreationAvailability();
-    if (!this.roomCreationAvailable) this.createRoomFocused = false;
+    if (!this.roomCreationAvailable) {
+      this.createRoomFocused = false;
+      this.creatingRoom = false;
+    }
     const next = visible.find((room) => room.name === preferred) ?? visible[0]!;
     if (next !== this.room) this.selectRoom(next);
     else {
@@ -769,6 +836,8 @@ export class TuiSession {
   }
 
   private selectRoom(room: Room): void {
+    this.createRoomFocused = false;
+    this.creatingRoom = false;
     if (room === this.room) return;
     this.unsubscribe();
     this.unsubscribeService();
