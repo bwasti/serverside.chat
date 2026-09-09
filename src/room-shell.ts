@@ -6,6 +6,7 @@ export interface RoomShellStream {
   readonly destroyed: boolean;
   write(value: string): boolean;
   end(value?: string): void;
+  exit?(status: number): void;
   on(event: "data", listener: (data: Buffer) => void): unknown;
   on(event: "close" | "end", listener: () => void): unknown;
 }
@@ -288,7 +289,13 @@ export class RoomShellSession {
   private output(value: string): void { this.write(`${safeTerminalText(value).replaceAll("\n", "\r\n")}\r\n`); }
   private error(error: unknown): void { this.write(`${ESC}38;5;203m${safeTerminalText(error instanceof Error ? error.message : "command failed")}${RESET}\r\n`); }
   private write(value: string): void { if (!this.closed && !this.stream.destroyed) this.stream.write(value); }
-  private close(): void { if (!this.closed) { this.closed = true; this.stream.end("\r\n"); } }
+  private close(): void {
+    if (!this.closed) {
+      this.closed = true;
+      this.stream.exit?.(0);
+      this.stream.end("\r\n");
+    }
+  }
 }
 
 function splitCommand(value: string): [string, string] {
