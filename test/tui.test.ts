@@ -235,7 +235,7 @@ test("room owners manage their rooms from the TUI", () => {
   accounts.close();
 });
 
-test("the expanded room list offers creation when account quota allows", async () => {
+test("room creation is a keyboard-only policy form", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-new-room-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
@@ -250,22 +250,33 @@ test("the expanded room list offers creation when account quota allows", async (
   expect(stream.writes.at(-1)).toContain("+ new room");
   stream.emit("data", Buffer.from("\x1b[A"));
   const selectedFrame = stream.writes.at(-1)!;
-  const selected = session as unknown as { input: string; createRoomFocused: boolean; creatingRoom: boolean };
+  const selected = session as unknown as { input: string; createRoomFocused: boolean; creatingRoom: boolean; createRoomField: number };
   expect(selected.createRoomFocused).toBe(true);
-  expect(selectedFrame).toContain("Create a new room");
+  expect(selectedFrame).toContain("Configure the room before entering it");
   expect(selectedFrame).toContain("\x1b[48;5;60m\x1b[38;5;255m  + new room");
   expect(selectedFrame).not.toContain("\x1b[48;5;60m\x1b[38;5;255m  # lobby");
   expect(selectedFrame).not.toContain("# lobby  public");
   stream.emit("data", Buffer.from("\r"));
   expect(selected.creatingRoom).toBe(true);
   expect(selected.input).toBe("");
-  expect(stream.writes.at(-1)).toContain("type a room name, then press Enter");
+  expect(stream.writes.at(-1)).toContain("Visibility");
+  expect(stream.writes.at(-1)).toContain("public");
+  expect(stream.writes.at(-1)).toContain("members");
+  expect(stream.writes.at(-1)).toContain("passive");
   stream.emit("data", Buffer.from("proj\t"));
   await Bun.sleep(350);
   stream.emit("data", Buffer.from("\t"));
   expect(selected.input).toBe("proj");
   stream.emit("data", Buffer.from("ect\r"));
+  expect(selected.createRoomField).toBe(1);
+  stream.emit("data", Buffer.from("\x1b[C\r"));
+  stream.emit("data", Buffer.from("\x1b[C\r"));
+  stream.emit("data", Buffer.from("\x1b[C\r"));
+  expect(selected.createRoomField).toBe(4);
+  expect(stream.writes.at(-1)).toContain("[ Create room ]");
+  stream.emit("data", Buffer.from("\r"));
   expect((session as unknown as { room: Room }).room.name).toBe("project");
+  expect(accounts.roomPolicy("project")).toMatchObject({ visibility: "private", contributions: "admins", agentMode: "explicit" });
 
   stream.end();
   accounts.close();

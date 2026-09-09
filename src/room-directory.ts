@@ -52,8 +52,12 @@ export class RoomDirectory {
     return this.ensureStarterRoom(principal);
   }
 
-  createRoom(actor: Principal, name: string): Room {
-    const policy = this.accounts.createRoom(actor, name);
+  createRoom(
+    actor: Principal,
+    name: string,
+    defaults?: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">,
+  ): Room {
+    const policy = this.accounts.createRoom(actor, name, defaults);
     try {
       const room = this.add(policy);
       this.emit({ kind: "create", name });
