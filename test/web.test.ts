@@ -6,6 +6,7 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain('<link rel="stylesheet" href="/_terminal/xterm.css">');
   expect(page).toContain('<script src="/_terminal/xterm.js"></script>');
   expect(page).toContain('<script src="/_terminal/addon-fit.js"></script>');
+  expect(page).toContain("attachCustomKeyEventHandler");
   expect(page).toContain("new WebSocket(scheme+'//'+location.host+'/_terminal/socket");
   expect(page).toContain('<button id="signin" hidden>sign in</button>');
   expect(page).toContain("fetch('/_auth/development',{method:'POST'");

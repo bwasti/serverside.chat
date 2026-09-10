@@ -59,3 +59,35 @@ test("argument parsing supports quoted paths but never expands shell syntax", ()
   expect(parseArguments("$(whoami) ; touch nope")).toEqual(["$(whoami)", ";", "touch", "nope"]);
   expect(() => parseArguments("'unfinished")).toThrow("unfinished quote");
 });
+
+test("familiar filesystem commands stay inside a virtual working directory", () => {
+  const { accounts, owner, workspace, room } = setup();
+  const shell = new RoomCapabilitySession(owner, room, workspace, accounts);
+  expect(shell.execute("pwd").output).toBe("/");
+  expect(shell.execute("ls").output).toContain("README.md");
+  shell.execute("mkdir src");
+  expect(shell.execute("cd src").output).toBe("/src");
+  shell.execute("touch empty.txt");
+  expect(shell.execute("ls -l").output).toContain("empty.txt");
+  expect(shell.execute("stat empty.txt").output).toContain("file 0B");
+  shell.execute("cp ../README.md copy.md");
+  expect(shell.execute("head -n 1 copy.md").output).toBe("# mine");
+  expect(shell.execute("wc copy.md").output).toContain("/src/copy.md");
+  expect(shell.execute("tree /").output).toContain("src/");
+  shell.execute("cd ../../../../");
+  expect(shell.execute("pwd").output).toBe("/");
+  expect(() => shell.execute("cat .git/config")).toThrow("invalid repository path");
+  accounts.close();
+});
+
+test("the shell editor can save and create a room preview", () => {
+  const { accounts, owner, workspace, room } = setup();
+  const shell = new RoomCapabilitySession(owner, room, workspace, accounts);
+  const editor = shell.execute("edit README.md").editor!;
+  editor.handleData(Buffer.from("edited "));
+  editor.handleData(Buffer.from("\x10"));
+  expect(workspace.readFile("README.md").startsWith("edited ")).toBe(true);
+  expect(workspace.visiblePreviews()).toHaveLength(1);
+  expect(room.messages.some((message) => message.kind === "commit" && message.author === "alice")).toBe(true);
+  accounts.close();
+});

@@ -235,6 +235,26 @@ test("room owners manage their rooms from the TUI", () => {
   accounts.close();
 });
 
+test("room contributors open the same Wasm editor inside the chat TUI", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-editor-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("/edit README.md\r"));
+  expect(stream.writes.at(-1)).toContain("Wasm buffer");
+  expect(stream.writes.at(-1)).toContain("README.md");
+  stream.emit("data", Buffer.from("X\x13\x11"));
+  expect(directory.workspaces.get("mine")!.readFile("README.md").startsWith("X")).toBe(true);
+  expect((session as unknown as { editor?: unknown }).editor).toBeUndefined();
+
+  stream.end();
+  accounts.close();
+});
+
 test("room creation is a keyboard-only policy form", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-new-room-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));

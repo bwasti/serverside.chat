@@ -407,6 +407,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#0d1117',foreground:'#d8dee9',cursor:'#d8dee9'},linkHandler:{activate:activateLink}});
     const fit = new FitAddon.FitAddon();
     terminal.loadAddon(fit); terminal.open(document.getElementById('terminal')); fit.fit(); terminal.focus();
+    terminal.attachCustomKeyEventHandler(event=>{if(event.type==='keydown'&&event.ctrlKey&&['s','p','q'].includes(event.key.toLowerCase()))event.preventDefault();return true});
     let socket, retry=250, resizeFrame;
     const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
     const connect = () => {

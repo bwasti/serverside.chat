@@ -1,6 +1,8 @@
 import type { AccountStore, Principal } from "./auth";
+import { posix } from "node:path";
 import type { Room } from "./room";
 import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_BYTES, type RoomWorkspace } from "./workspace";
+import { RoomEditor, type EditorSaveResult } from "./editor";
 
 export interface RoomShellStream {
   readonly destroyed: boolean;
@@ -16,6 +18,7 @@ export interface CapabilityResult {
   close?: boolean;
   clear?: boolean;
   write?: { path: string; expectedRevision: string | null };
+  editor?: RoomEditor;
 }
 
 const MAX_COMMAND_BYTES = 2_048;
@@ -27,6 +30,8 @@ const MUTED = `${ESC}38;5;244m`;
 
 /** Host-owned capabilities used by the terminal adapter. No input reaches a system shell. */
 export class RoomCapabilitySession {
+  private cwd = "";
+
   constructor(
     readonly principal: Principal,
     readonly room: Room,
@@ -45,37 +50,47 @@ export class RoomCapabilitySession {
       case "help": return { output: HELP };
       case "exit": case "quit": return { close: true };
       case "clear": return { clear: true };
+      case "pwd": return { output: this.workingDirectory };
+      case "cd": return { output: this.changeDirectory(remainder) };
       case "whoami": return { output: `@${this.principal.handle} · ${this.accounts.roleFor(this.principal, this.room.name) ?? "viewer"} · ${this.room.name}` };
       case "limits": return { output: `source ${formatBytes(this.workspace.listTree().reduce((sum, file) => sum + file.bytes, 0))}/${formatBytes(MAX_WORKSPACE_BYTES)} · file ${formatBytes(MAX_WORKSPACE_FILE_BYTES)} max · 1,000 entries` };
-      case "files": return { output: this.files(optionalArgument(remainder, "usage: files [path]")) };
-      case "cat": return { output: this.workspace.readFile(oneArgument(remainder, "usage: cat <path>")) };
+      case "files": return { output: this.list(optionalArgument(remainder, "usage: files [path]"), true, true) };
+      case "ls": return { output: this.ls(remainder, false) };
+      case "ll": return { output: this.ls(remainder, true) };
+      case "tree": return { output: this.tree(optionalArgument(remainder, "usage: tree [path]")) };
+      case "cat": return { output: this.workspace.readFile(this.pathArgument(remainder, "usage: cat <path>")) };
+      case "head": return { output: this.fileWindow(remainder, "head") };
+      case "tail": return { output: this.fileWindow(remainder, "tail") };
+      case "wc": return { output: this.wordCount(remainder) };
+      case "stat": return { output: this.fileStat(remainder) };
+      case "edit": return { editor: this.openEditor(this.pathArgument(remainder, "usage: edit <path>")) };
       case "status": return { output: this.workspace.status().trimEnd() || "clean" };
       case "diff": return { output: this.workspace.diff().trimEnd() || "no changes" };
       case "history": case "log": return { output: this.workspace.log().trimEnd() };
       case "versions": return { output: this.workspace.versionGraph(12).join("\n") };
       case "write": {
         this.requireWrite();
-        const path = oneArgument(remainder, "usage: write <path>");
+        const path = this.pathArgument(remainder, "usage: write <path>");
         const revision = this.workspace.fileRevision(path);
         return { output: "enter replacement text; finish with .save on its own line or cancel with .abort", write: { path, expectedRevision: revision } };
       }
       case "mkdir": {
         this.requireWrite();
-        const path = oneArgument(remainder, "usage: mkdir <path>");
+        const path = this.pathArgument(remainder, "usage: mkdir <path>");
         this.workspace.createDirectory(path);
         this.audit("source.mkdir", path);
         return { output: `created ${path}` };
       }
       case "rm": {
         this.requireWrite();
-        const path = oneArgument(remainder, "usage: rm <path>");
+        const path = this.pathArgument(remainder, "usage: rm <path>");
         this.workspace.deleteFile(path);
         this.audit("source.remove", path);
         return { output: `removed ${path}` };
       }
       case "rmdir": {
         this.requireWrite();
-        const path = oneArgument(remainder, "usage: rmdir <empty-directory>");
+        const path = this.pathArgument(remainder, "usage: rmdir <empty-directory>");
         this.workspace.removeDirectory(path);
         this.audit("source.rmdir", path);
         return { output: `removed ${path}` };
@@ -84,9 +99,32 @@ export class RoomCapabilitySession {
         this.requireWrite();
         const [from, to, extra] = parseArguments(remainder);
         if (!from || !to || extra) throw new Error("usage: mv <old-path> <new-path>");
-        this.workspace.renamePath(from, to);
-        this.audit("source.rename", `${from} -> ${to}`);
-        return { output: `renamed ${from} -> ${to}` };
+        const source = this.resolvePath(from);
+        const target = this.resolvePath(to);
+        this.workspace.renamePath(source, target);
+        this.audit("source.rename", `${source} -> ${target}`);
+        return { output: `renamed ${this.displayPath(source)} -> ${this.displayPath(target)}` };
+      }
+      case "touch": {
+        this.requireWrite();
+        const path = this.pathArgument(remainder, "usage: touch <path>");
+        const revision = this.workspace.fileRevision(path);
+        const content = revision === null ? Buffer.alloc(0) : this.workspace.readFileBytes(path);
+        this.workspace.writeFileBytes(path, content, revision);
+        this.audit("source.touch", path);
+        return {};
+      }
+      case "cp": {
+        this.requireWrite();
+        const [from, to, extra] = parseArguments(remainder);
+        if (!from || !to || extra) throw new Error("usage: cp <source> <destination>");
+        const source = this.resolvePath(from);
+        const target = this.resolvePath(to);
+        const content = this.workspace.readFileBytes(source);
+        const revision = this.workspace.fileRevision(target);
+        this.workspace.writeFileBytes(target, content, revision);
+        this.audit("source.copy", `${source} -> ${target}`);
+        return { output: `copied ${this.displayPath(source)} -> ${this.displayPath(target)}` };
       }
       case "commit": {
         this.requireWrite();
@@ -154,12 +192,148 @@ export class RoomCapabilitySession {
     return `wrote ${path} · ${result.bytes} bytes`;
   }
 
-  private files(path: string): string {
-    const base = path.trim();
-    const entries = this.workspace.listDirectory(base);
-    if (!entries.length) return "empty directory";
-    return entries.map((entry) => `${entry.kind === "directory" ? "d" : "-"} ${entry.name}${entry.kind === "directory" ? "/" : `  ${entry.bytes}B`}`).join("\n");
+  private openEditor(path: string): RoomEditor {
+    const revision = this.workspace.fileRevision(path);
+    if (revision === null && !this.accounts.canEditSource(this.principal, this.room.name)) throw new Error("file not found");
+    const content = revision === null ? Buffer.alloc(0) : this.workspace.readFileBytes(path);
+    return new RoomEditor(path, content, revision, {
+      readOnly: !this.accounts.canEditSource(this.principal, this.room.name),
+      save: (bytes, expected) => this.saveEditor(path, bytes, expected),
+      preview: (bytes, expected) => this.previewEditor(path, bytes, expected),
+    });
   }
+
+  private saveEditor(path: string, content: Buffer, expectedRevision: string | null): EditorSaveResult {
+    this.requireWrite();
+    const result = this.workspace.writeFileBytes(path, content, expectedRevision);
+    this.audit("source.editor-save", `${path} ${result.bytes}B`);
+    return { revision: result.revision, message: `saved ${this.displayPath(path)} · ${result.bytes}B` };
+  }
+
+  private previewEditor(path: string, content: Buffer, expectedRevision: string | null): EditorSaveResult {
+    const saved = this.saveEditor(path, content, expectedRevision);
+    if (this.workspace.hasChanges()) {
+      const title = `Edit ${posix.basename(path)}`;
+      const commit = this.workspace.commitAs(title, `Updated ${this.displayPath(path)} in the shared room editor.`, this.principal.displayName, `${this.principal.handle}@users.serverside.chat`);
+      this.room.recordContributorCommit(this.principal, commit.commit, commit.title, commit.blurb, `${this.room.pageUrl}?__ref=${commit.commit}`);
+      this.audit("version.commit", commit.commit);
+    }
+    const preview = this.workspace.createPreview(`Edit ${posix.basename(path)}`);
+    const url = `${this.room.pageUrl}?__ref=${preview.id}`;
+    this.room.addAgentLink(preview.description, url);
+    this.refreshVersions();
+    this.audit("version.preview", preview.id);
+    return { revision: saved.revision, message: `preview ${preview.id} · ${url}` };
+  }
+
+  get workingDirectory(): string { return this.cwd ? `/${this.cwd}` : "/"; }
+
+  promptText(): string { return `${this.room.name}:${this.workingDirectory} ${this.workspace.headCommit()}> `; }
+
+  private changeDirectory(value: string): string {
+    const input = value.trim() ? oneArgument(value, "usage: cd [path]") : "/";
+    const target = this.resolvePath(input, true);
+    if (target) {
+      const info = this.workspace.stat(target);
+      if (info.kind !== "directory") throw new Error("not a directory");
+    }
+    this.cwd = target;
+    return this.workingDirectory;
+  }
+
+  private ls(value: string, forceLong: boolean): string {
+    const args = parseArguments(value);
+    let long = forceLong;
+    let all = false;
+    let path = "";
+    let options = true;
+    for (const argument of args) {
+      if (options && argument === "--") { options = false; continue; }
+      if (options && argument.startsWith("-") && argument !== "-") {
+        for (const flag of argument.slice(1)) {
+          if (flag === "l") long = true;
+          else if (flag === "a") all = true;
+          else throw new Error(`ls: unsupported option -${flag}`);
+        }
+      } else if (!path) path = argument;
+      else throw new Error("usage: ls [-la] [path]");
+    }
+    return this.list(path, long, all);
+  }
+
+  private list(path: string, long: boolean, all: boolean): string {
+    const base = this.resolvePath(path || ".", true);
+    const entries = this.workspace.listDirectory(base);
+    const visible = all ? entries : entries.filter((entry) => !entry.name.startsWith("."));
+    if (!visible.length) return "empty directory";
+    return visible.map((entry) => long
+      ? `${entry.kind === "directory" ? "d" : "-"} ${String(entry.bytes).padStart(7)}  ${entry.name}${entry.kind === "directory" ? "/" : ""}`
+      : `${entry.name}${entry.kind === "directory" ? "/" : ""}`).join("\n");
+  }
+
+  private tree(path: string): string {
+    const base = this.resolvePath(path || ".", true);
+    const output = [this.displayPath(base)];
+    let count = 0;
+    let limited = false;
+    const walk = (directory: string, prefix: string, depth: number) => {
+      if (limited) return;
+      if (depth > 20) { output.push(`${prefix}… depth limit`); return; }
+      const entries = this.workspace.listDirectory(directory);
+      for (let index = 0; index < entries.length; index++) {
+        if (count++ >= 200) { output.push(`${prefix}… output limited to 200 entries`); limited = true; return; }
+        const entry = entries[index]!;
+        const last = index === entries.length - 1;
+        output.push(`${prefix}${last ? "└──" : "├──"} ${entry.name}${entry.kind === "directory" ? "/" : ""}`);
+        if (entry.kind === "directory") walk(posix.join(directory, entry.name), `${prefix}${last ? "    " : "│   "}`, depth + 1);
+      }
+    };
+    walk(base, "", 0);
+    return output.join("\n");
+  }
+
+  private fileWindow(value: string, direction: "head" | "tail"): string {
+    const args = parseArguments(value);
+    let lines = 10;
+    if (args[0] === "-n") {
+      const parsed = Number(args[1]);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) throw new Error(`usage: ${direction} [-n 1..200] <path>`);
+      lines = parsed;
+      args.splice(0, 2);
+    }
+    if (args.length !== 1) throw new Error(`usage: ${direction} [-n 1..200] <path>`);
+    const content = this.workspace.readFile(this.resolvePath(args[0]!));
+    const parts = content.split("\n");
+    return (direction === "head" ? parts.slice(0, lines) : parts.slice(-lines)).join("\n");
+  }
+
+  private wordCount(value: string): string {
+    const path = this.pathArgument(value, "usage: wc <path>");
+    const content = this.workspace.readFileBytes(path);
+    const text = content.toString("utf8");
+    const lines = (text.match(/\n/g) ?? []).length;
+    const words = text.trim() ? text.trim().split(/\s+/u).length : 0;
+    return `${lines} ${words} ${content.length} ${this.displayPath(path)}`;
+  }
+
+  private fileStat(value: string): string {
+    const path = this.pathArgument(value, "usage: stat <path>", true);
+    const info = this.workspace.stat(path);
+    return `${info.kind} ${info.bytes}B ${new Date(info.modifiedAt).toISOString()} ${this.displayPath(path)}`;
+  }
+
+  private pathArgument(value: string, usage: string, allowRoot = false): string {
+    return this.resolvePath(oneArgument(value, usage), allowRoot);
+  }
+
+  private resolvePath(value: string, allowRoot = false): string {
+    const absolute = posix.resolve("/", this.cwd, value || ".");
+    const relative = absolute === "/" ? "" : absolute.slice(1);
+    if (!relative && !allowRoot) throw new Error("operation is not permitted on the room root");
+    return relative;
+  }
+
+  private displayPath(path: string): string { return path ? `/${path}` : "/"; }
 
   private requireWrite(): void {
     if (!this.accounts.canEditSource(this.principal, this.room.name)) throw new Error("this account has read-only access to the room source");
@@ -176,6 +350,9 @@ export class RoomShellSession {
   private historyIndex = 0;
   private closed = false;
   private lastWasCarriageReturn = false;
+  private editor?: RoomEditor;
+  private width = 80;
+  private height = 24;
   private writeMode?: { path: string; expectedRevision: string | null; lines: string[]; bytes: number };
 
   constructor(private readonly stream: RoomShellStream, private readonly capabilities: RoomCapabilitySession) {
@@ -187,6 +364,16 @@ export class RoomShellSession {
   }
 
   private onData(data: Buffer): void {
+    if (this.editor) {
+      const action = this.editor.handleData(data);
+      if (action.closed) {
+        this.editor = undefined;
+        this.write("\x1b[2J\x1b[H");
+        if (action.notice) this.output(action.notice);
+        this.prompt();
+      } else this.renderEditor();
+      return;
+    }
     const tokens = data.toString("utf8").match(/\x1b(?:\[[0-?]*[ -/]*[@-~]|O[HF]|[^\x1b])|[^\x1b]+/gs) ?? [];
     for (const token of tokens) {
       if (token.startsWith("\x1b")) { this.escape(token); continue; }
@@ -261,6 +448,7 @@ export class RoomShellSession {
       if (result.clear) this.write("\x1b[2J\x1b[H");
       if (result.output) this.output(result.output);
       if (result.write) this.writeMode = { ...result.write, lines: [], bytes: 0 };
+      if (result.editor) { this.editor = result.editor; this.renderEditor(); return; }
     } catch (error) { this.error(error); }
     this.prompt();
   }
@@ -277,7 +465,7 @@ export class RoomShellSession {
     while (this.cursor > 0 && !/\s/u.test(this.input[this.cursor - 1]!)) this.input.splice(--this.cursor, 1);
   }
 
-  private promptText(): string { return this.writeMode ? `${this.writeMode.path}> ` : `${this.capabilities.room.name}:${this.capabilities.workspace.headCommit()}> `; }
+  private promptText(): string { return this.writeMode ? `${this.writeMode.path}> ` : this.capabilities.promptText(); }
   private prompt(): void { if (!this.closed) this.write(`${GREEN}${this.promptText()}${RESET}`); }
   private redraw(): void {
     if (this.closed) return;
@@ -289,6 +477,12 @@ export class RoomShellSession {
   private output(value: string): void { this.write(`${safeTerminalText(value).replaceAll("\n", "\r\n")}\r\n`); }
   private error(error: unknown): void { this.write(`${ESC}38;5;203m${safeTerminalText(error instanceof Error ? error.message : "command failed")}${RESET}\r\n`); }
   private write(value: string): void { if (!this.closed && !this.stream.destroyed) this.stream.write(value); }
+  resize(width: number, height: number): void {
+    this.width = Math.max(30, width || 80);
+    this.height = Math.max(8, height || 24);
+    if (this.editor) this.renderEditor();
+  }
+  private renderEditor(): void { if (this.editor) this.write(`\x1b[?25l\x1b[H\x1b[2J${this.editor.render(this.width, this.height)}`); }
   private close(): void {
     if (!this.closed) {
       this.closed = true;
@@ -347,9 +541,20 @@ function safeTerminalText(value: string): string {
 function formatBytes(value: number): string { return value < 1024 ? `${value}B` : `${(value / (1024 * 1024)).toFixed(1)}MiB`; }
 
 const HELP = `filesystem
-  files [path]              list a directory
+  pwd                       show the virtual working directory
+  cd [path]                 change virtual working directory
+  ls [-la] [path]           list a directory (ll is ls -l)
+  files [path]              detailed directory listing
+  tree [path]               show up to 200 entries
   cat <path>                read a text file
+  head [-n count] <path>    read the first lines
+  tail [-n count] <path>    read the last lines
+  wc <path>                 line, word, and byte counts
+  stat <path>               show virtual metadata
+  edit <path>               open the reusable Wasm editor
   write <path>              replace a text file; .save or .abort
+  touch <path>              create an empty file
+  cp <source> <destination> copy a file
   mkdir <path>              create a directory
   rm <path>                 remove a file
   rmdir <path>              remove an empty directory

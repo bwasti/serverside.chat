@@ -160,6 +160,7 @@ export class RoomWorkspace {
   }
 
   status(): string { return this.git(["status", "--short", "--branch"]).stdout; }
+  hasChanges(): boolean { return Boolean(this.git(["status", "--porcelain"]).stdout.trim()); }
   diff(): string { return this.limit(this.git(["diff", "--", "."]).stdout); }
   log(): string { return this.git(["log", "-12", "--oneline", "--decorate"]).stdout; }
   versionGraph(limit = 8): string[] {

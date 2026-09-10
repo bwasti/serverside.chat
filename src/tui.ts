@@ -1,6 +1,8 @@
 import type { AccountStore, AgentMode, ContributionPolicy, Principal, RoomRole, RoomVisibility } from "./auth";
 import { ROOM_LIMITS, type Message, type Room } from "./room";
 import type { RoomDirectory, RoomDirectoryEvent } from "./room-directory";
+import { parseArguments, RoomCapabilitySession } from "./room-shell";
+import type { RoomEditor } from "./editor";
 
 export interface TuiStream {
   readonly destroyed: boolean;
@@ -69,6 +71,7 @@ export class TuiSession {
   private localNotice = "";
   private anonymousSubmissionPending = false;
   private roomCreationAvailable = false;
+  private editor?: RoomEditor;
 
   constructor(
     private readonly stream: TuiStream,
@@ -119,6 +122,15 @@ export class TuiSession {
   }
 
   private onData(data: Buffer): void {
+    if (this.editor) {
+      const action = this.editor.handleData(data);
+      if (action.closed) {
+        this.editor = undefined;
+        this.localNotice = action.notice ?? "closed editor";
+      }
+      this.render();
+      return;
+    }
     // SSH is a byte stream: a packet may contain one key, many keys, or pasted lines.
     // Walk escape and text tokens in order so pasted text and navigation can share a packet.
     let dirty = false;
@@ -483,9 +495,23 @@ export class TuiSession {
 
   private handleHostCommand(line: string): boolean {
     if (!this.accounts) return false;
-    const [command, field, value, ...extra] = line.trim().split(/\s+/);
-    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account") return false;
+    const trimmed = line.trim();
+    const [command, field, value, ...extra] = trimmed.split(/\s+/);
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account" && command !== "/edit") return false;
     try {
+      if (command === "/edit") {
+        const [path, unexpected] = parseArguments(trimmed.slice(command.length).trim());
+        if (!path || unexpected) throw new Error("usage: /edit <path>");
+        if (!this.directory) throw new Error("room editing is unavailable");
+        const workspace = this.directory.workspaces.get(this.room.name);
+        if (!workspace) throw new Error("room source is unavailable");
+        const result = new RoomCapabilitySession(this.principal, this.room, workspace, this.accounts).execute(`edit ${JSON.stringify(path)}`);
+        if (!result.editor) throw new Error("unable to open editor");
+        this.editor = result.editor;
+        this.localNotice = "";
+        this.lastFrame = "";
+        return true;
+      }
       if (command === "/account") {
         if (field) throw new Error("usage: /account");
         const profile = this.accounts.accountProfile(this.principal);
@@ -547,6 +573,14 @@ export class TuiSession {
     if (this.closed) return;
     if (!this.room.canView(this.principal)) {
       this.stream.end("Room access changed. Reconnect after receiving an invitation.\r\n");
+      return;
+    }
+    if (this.editor) {
+      const frame = this.editor.render(this.width, this.height);
+      if (frame !== this.lastFrame) {
+        this.lastFrame = frame;
+        this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
+      }
       return;
     }
     if (this.renderTimer) {

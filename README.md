@@ -32,7 +32,7 @@ ssh -t -p 2222 serverside.chat room mine
 ssh -t -p 2222 serverside.chat invite '<one-use-token>'
 ```
 
-Authenticated contributors can instead enter the room's constrained editing environment. This is a capability shell, not a system shell: it has predefined file, commit, preview, rebase, and owner-only publish commands but cannot run programs. The same endpoint serves a virtual SFTP filesystem for normal local editors:
+Authenticated contributors can instead enter the room's constrained editing environment. This is a capability shell, not a system shell: it has familiar room-relative commands such as `pwd`, `cd`, `ls`, `tree`, `cat`, `head`, `tail`, `touch`, and `cp`, plus predefined commit, preview, rebase, and owner-only publish operations, but cannot run programs. `edit <path>` opens a Wasm-backed syntax-colored editor; `/edit <path>` opens the same editor inside either browser or SSH chat. `Ctrl-S` saves and `Ctrl-P` creates a commit and immutable preview. The same endpoint serves a virtual SFTP filesystem for normal local editors:
 
 ```sh
 ssh -t -p 2222 serverside.chat shell mine

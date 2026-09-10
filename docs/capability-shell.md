@@ -6,16 +6,28 @@ The room shell is not an operating-system shell. It is an SSH terminal adapter o
 ssh -t -p 2222 serverside.chat shell mine
 ```
 
-The first implementation is TypeScript running in the existing server process. Its capability boundary is intentionally independent of the terminal frontend so a small Wasm command interpreter can replace the parser later without receiving filesystem paths, Git metadata, credentials, or ambient host functions.
+The command interpreter is TypeScript running in the existing server process. Its capability boundary is intentionally independent of the terminal frontend so it can later move into Wasm without receiving filesystem paths, Git metadata, credentials, or ambient host functions. The reusable editor already uses a tiny import-free Wasm core for its document buffer and mutations.
 
 ## Commands
 
 The shell supports cursor movement, command history, `Ctrl-A`, `Ctrl-E`, `Ctrl-B`, `Ctrl-F`, `Ctrl-U`, `Ctrl-K`, `Ctrl-W`, `Ctrl-C`, and `Ctrl-D`.
 
 ```text
+pwd
+cd [path]
+ls [-la] [path]
+ll [path]
 files [path]                 list one virtual directory
+tree [path]
 cat <path>                   read a bounded text file
+head [-n count] <path>
+tail [-n count] <path>
+wc <path>
+stat <path>
+edit <path>                  open the Wasm editor
 write <path>                 replace text; finish with .save or .abort
+touch <path>
+cp <source> <destination>
 mkdir <path>
 rm <path>
 rmdir <empty-directory>
@@ -42,6 +54,24 @@ exit
 There are no executable programs, environment variables, globbing, command substitution, redirection, pipes, sockets, devices, or host absolute paths. Quoting only groups arguments. For example, `$(whoami)` is inert text and `sh` is an unknown command.
 
 Files are capped at 512 KiB, the source tree at 5 MiB, commands at 2 KiB, open SFTP handles at 16 per session, and aggregate open-file buffers at 2 MiB per session. Symlinks and special files are rejected. Writes use a sibling temporary file followed by atomic rename. A long-lived editor handle records the original content revision and rejects its close if another participant changed that file in the meantime.
+
+## Reusable Wasm editor
+
+Run `edit <path>` in the capability shell, or `/edit <path>` from an authenticated contributor's main chat composer. Because the browser and SSH chat frontends both drive `TuiSession`, the same full-screen editor works in either interface.
+
+The editor's fixed 512 KiB UTF-8 buffer, cursor, insertion, deletion, and code-point movement live in [`editor-core.wasm`](../src/editor-core.wasm), built from the checked-in [`editor-core.wat`](../src/editor-core.wat). The module imports nothing. The host adapter provides terminal rendering and lightweight syntax coloring for JavaScript, TypeScript, JSON, HTML, CSS, and Markdown; it alone holds the authorized save and version capabilities.
+
+```text
+Arrow keys     move
+Home/End       line start/end
+Page Up/Down   move by a screen
+Ctrl-A/E/B/F   familiar cursor movement
+Ctrl-S         atomically save the working file
+Ctrl-P         save, commit, and create an immutable preview
+Ctrl-Q         close; press twice to discard unsaved changes
+```
+
+`Ctrl-P` creates the normal formatted room commit event and preview URL. It does not publish canonical; owner-only promotion remains separate. In the current shared-worktree prototype it may include other pending room changes, so per-user overlays remain the next concurrency hardening step.
 
 ## SFTP and local editors
 

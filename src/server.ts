@@ -93,6 +93,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
       let rows = 24;
       let hasPty = false;
       let tui: TuiSession | undefined;
+      let roomShell: RoomShellSession | undefined;
       session.on("pty", (acceptPty, _reject, info) => {
         hasPty = true;
         cols = info.cols;
@@ -101,6 +102,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
       });
       session.on("window-change", (acceptChange, _reject, info) => {
         tui?.resize(info.cols, info.rows);
+        roomShell?.resize(info.cols, info.rows);
         acceptChange?.();
       });
       session.on("sftp", (acceptSftp, rejectSftp) => {
@@ -162,7 +164,8 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
             stream.on("close", leave);
             stream.on("end", leave);
             accounts.audit(principal!, command.roomName, "shell.open");
-            new RoomShellSession(stream, new RoomCapabilitySession(principal!, room, workspace, accounts));
+            roomShell = new RoomShellSession(stream, new RoomCapabilitySession(principal!, room, workspace, accounts));
+            roomShell.resize(cols, rows);
           }
           else if (!principal!.authenticated) launch(stream, undefined, true, command.token);
           else {
