@@ -1,4 +1,4 @@
-import type { AccountStore, AgentMode, ContributionPolicy, Principal, RoomRole, RoomVisibility } from "./auth";
+import type { AccountStore, AgentMode, ContributionPolicy, MountCredential, Principal, RoomRole, RoomVisibility } from "./auth";
 import { ROOM_LIMITS, type Message, type Room } from "./room";
 import type { RoomDirectory, RoomDirectoryEvent } from "./room-directory";
 import { parseArguments, RoomCapabilitySession } from "./room-shell";
@@ -72,6 +72,7 @@ export class TuiSession {
   private anonymousSubmissionPending = false;
   private roomCreationAvailable = false;
   private editor?: RoomEditor;
+  private mountPanel?: { credential: MountCredential; scroll: number };
 
   constructor(
     private readonly stream: TuiStream,
@@ -122,6 +123,10 @@ export class TuiSession {
   }
 
   private onData(data: Buffer): void {
+    if (this.mountPanel) {
+      this.handleMountPanelData(data);
+      return;
+    }
     if (this.editor) {
       const action = this.editor.handleData(data);
       if (action.closed) {
@@ -497,8 +502,22 @@ export class TuiSession {
     if (!this.accounts) return false;
     const trimmed = line.trim();
     const [command, field, value, ...extra] = trimmed.split(/\s+/);
-    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account" && command !== "/edit") return false;
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account" && command !== "/edit" && command !== "/mount") return false;
     try {
+      if (command === "/mount") {
+        if (value || extra.length || (field && field !== "revoke")) throw new Error("usage: /mount [revoke]");
+        if (field === "revoke") {
+          const revoked = this.accounts.revokeMountCredentials(this.principal, this.room.name);
+          this.localNotice = revoked ? "Finder mount credential revoked" : "no active Finder mount credential";
+          return true;
+        }
+        const credential = this.accounts.createMountCredential(this.principal, this.room.name);
+        this.mountPanel = { credential, scroll: 0 };
+        this.localNotice = "";
+        this.lastFrame = "";
+        this.room.setTyping(this.username, false);
+        return true;
+      }
       if (command === "/edit") {
         const [path, unexpected] = parseArguments(trimmed.slice(command.length).trim());
         if (!path || unexpected) throw new Error("usage: /edit <path>");
@@ -569,6 +588,90 @@ export class TuiSession {
     return true;
   }
 
+  private handleMountPanelData(data: Buffer): void {
+    const value = data.toString("utf8");
+    if (value.includes("\x03") || value.includes("\x04")) {
+      this.stream.end();
+      return;
+    }
+    if (value.includes("\r") || value.includes("\n") || value === "q" || value === "Q" || value === "\x1b") {
+      this.mountPanel = undefined;
+      this.lastFrame = "";
+      this.render();
+      return;
+    }
+    let movement = 0;
+    for (const match of value.matchAll(/\x1b\[([AB56])~?/g)) {
+      if (match[1] === "A") movement--;
+      else if (match[1] === "B") movement++;
+      else if (match[1] === "5") movement -= Math.max(1, this.height - 4);
+      else if (match[1] === "6") movement += Math.max(1, this.height - 4);
+    }
+    if (movement && this.mountPanel) {
+      this.mountPanel.scroll = Math.max(0, this.mountPanel.scroll + movement);
+      this.render();
+    }
+  }
+
+  private renderMountPanel(): void {
+    if (!this.mountPanel) return;
+    const width = this.width;
+    const bodyHeight = Math.max(1, this.height - 2);
+    const rows = this.mountInstructionRows(width);
+    const maximumScroll = Math.max(0, rows.length - bodyHeight);
+    this.mountPanel.scroll = Math.min(this.mountPanel.scroll, maximumScroll);
+    const visible = rows.slice(this.mountPanel.scroll, this.mountPanel.scroll + bodyHeight);
+    while (visible.length < bodyHeight) visible.push("");
+    const title = `  MOUNT  #${this.mountPanel.credential.roomName}`;
+    const position = maximumScroll ? `  ${this.mountPanel.scroll + 1}-${Math.min(rows.length, this.mountPanel.scroll + bodyHeight)}/${rows.length}` : "";
+    const header = `${HEADER}${pad(`${truncate(title, Math.max(1, width - position.length))}${position}`, width)}${RESET}`;
+    const body = visible.map((line) => {
+      const section = /^(SFTP|SSHFS|FINDER \/ WEBDAV)/.test(line.trimStart());
+      const secret = /^\s*(username|password):/.test(line);
+      const tone = section ? CYAN : secret ? YELLOW : CHAT;
+      return `${tone}${pad(truncate(line, width), width)}${RESET}`;
+    });
+    const footerText = maximumScroll ? "  ↑↓ scroll   ENTER/Q close   /mount revoke disables Finder" : "  ENTER/Q close   /mount rotates   /mount revoke disables Finder";
+    const footer = `${COMPOSER}${pad(truncate(footerText, width), width)}${RESET}`;
+    const frame = `${[header, ...body, footer].join("\r\n")}${ESC}?25l`;
+    if (frame === this.lastFrame) return;
+    this.lastFrame = frame;
+    this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
+  }
+
+  private mountInstructionRows(width: number): string[] {
+    if (!this.mountPanel) return [];
+    const credential = this.mountPanel.credential;
+    const page = new URL(this.room.pageUrl);
+    const host = page.hostname;
+    const davUrl = `${page.origin}/_dav/${encodeURIComponent(this.room.name)}/`;
+    const local = `./${this.room.name}`;
+    const access = credential.readOnly ? "read only" : "read + write";
+    const raw = [
+      `  Room source · ${access} · 5 MiB workspace · credential expires ${new Date(credential.expiresAt).toISOString().slice(0, 10)}`,
+      "",
+      "  SFTP · built into macOS · interactive transfer",
+      `    sftp -P 2222 ${host}:${this.room.name}`,
+      "    Uses your linked SSH key. Try: ls, get worker.js, put worker.js",
+      "",
+      "  SSHFS · mounted folder · requires macFUSE/SSHFS",
+      `    mkdir -p ${local}`,
+      `    sshfs -p 2222 ${host}:/${this.room.name} ${local}`,
+      "    Uses your linked SSH key.",
+      "",
+      "  FINDER / WEBDAV · built into macOS",
+      `    Press ⌘K in Finder and enter ${davUrl}`,
+      `    username: ${credential.username}`,
+      `    password: ${credential.password}`,
+      "    Save the credential in Keychain. It is shown only on this screen.",
+      "",
+      "  Running /mount again rotates the Finder credential for this room.",
+      "  /mount revoke disables it immediately. Room permissions always apply.",
+    ];
+    const lineWidth = Math.max(12, width - 2);
+    return raw.flatMap((line) => line ? wrap(line, lineWidth) : [""]);
+  }
+
   private render(): void {
     if (this.closed) return;
     if (!this.room.canView(this.principal)) {
@@ -581,6 +684,10 @@ export class TuiSession {
         this.lastFrame = frame;
         this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
       }
+      return;
+    }
+    if (this.mountPanel) {
+      this.renderMountPanel();
       return;
     }
     if (this.renderTimer) {
@@ -848,6 +955,7 @@ export class TuiSession {
     if (this.renderTimer) clearTimeout(this.renderTimer);
     this.room.setTyping(this.username, false);
     this.room.leave(this.username);
+    this.mountPanel = undefined;
     this.write("\x1b[?25h\x1b[?1049l");
   }
 
@@ -947,6 +1055,7 @@ export class TuiSession {
     this.room.setTyping(oldUsername, false);
     this.room.leave(oldUsername);
     this.principal = principal;
+    this.mountPanel = undefined;
     this.createRoomFocused = false;
     this.creatingRoom = false;
     this.rooms = this.allRooms.filter((room) => room.canView(principal));
@@ -986,6 +1095,7 @@ export class TuiSession {
   private selectRoom(room: Room): void {
     this.createRoomFocused = false;
     this.creatingRoom = false;
+    this.mountPanel = undefined;
     if (room === this.room) return;
     this.unsubscribe();
     this.unsubscribeService();

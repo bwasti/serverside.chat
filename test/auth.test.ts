@@ -83,6 +83,21 @@ test("provider identity creates the canonical account and web sessions are revoc
   accounts.close();
 });
 
+test("room mount credentials resolve to canonical accounts and rotate independently", () => {
+  const { accounts, owner } = setup();
+  const first = accounts.createMountCredential(owner, "public-room", 60_000);
+  expect(first).toMatchObject({ roomName: "public-room", readOnly: false });
+  expect(accounts.principalForMountCredential(first.username, first.password, "public-room")).toMatchObject({ id: owner.id, handle: "alice" });
+  expect(accounts.principalForMountCredential(first.username, first.password, "private-room")).toBeUndefined();
+
+  const replacement = accounts.createMountCredential(owner, "public-room", 60_000);
+  expect(accounts.principalForMountCredential(first.username, first.password, "public-room")).toBeUndefined();
+  expect(accounts.principalForMountCredential(replacement.username, replacement.password, "public-room")).toMatchObject({ id: owner.id });
+  expect(accounts.revokeMountCredentials(owner, "public-room")).toBe(1);
+  expect(accounts.principalForMountCredential(replacement.username, replacement.password, "public-room")).toBeUndefined();
+  accounts.close();
+});
+
 test("temporary development login creates a canonical account without making a credential out of its handle", () => {
   const { accounts } = setup();
   const first = accounts.createDevelopmentAccount("alice", "Another Alice");

@@ -30,6 +30,12 @@ OAuth identities from different providers are never merged by matching email or 
 
 Prototype owner accounts that existed before OAuth can run `ssh -p 2222 serverside.chat account`. The server returns a random, hashed-at-rest, single-use HTTPS link valid for ten minutes. Choosing Google or GitHub consumes that bootstrap token, binds the verified provider subject to the existing internal account, and issues the normal browser session. This is a migration path, not the routine browser sign-in flow.
 
+## Room mount credentials
+
+`/mount` uses the already-authenticated canonical account to create a WebDAV app credential for the current room. It does not reuse or disclose a GitHub access token, browser cookie, or SSH private key. The random username locates the credential record and the independent 256-bit password is stored only as a hash. Issuing a replacement revokes and removes the previous active credential for that account and room; `/mount revoke` disables it explicitly. Credentials expire after 90 days.
+
+Finder sends the credential through HTTP Basic authentication only over the existing HTTPS origin. The WebDAV request then resolves to the internal user ID and re-evaluates the current room policy for every filesystem operation. The credential is therefore a scoped transport credential, not a durable room role. SFTP and SSHFS use a linked SSH public key instead, but converge on the same user ID and capability checks.
+
 ## Independent room controls
 
 | Control | Values | Effect |
@@ -47,6 +53,6 @@ Room `owner` and room `admin` can inspect or change these controls with `/permis
 - The model receives only messages the host marked agent-visible at insertion time.
 - Agent invocation requires both contribution authority and a non-disabled agent policy.
 - Canonical promotion requires the owner identity and an explicit `/agent` run; prompt text cannot grant it.
-- Policy changes, logins, invitation creation, and redemption are written to `audit_events`.
+- Policy changes, logins, invitation creation and redemption, mount credential lifecycle, and remote filesystem mutations are written to `audit_events`.
 
 Before pairing, the browser TUI uses a stable source-IP principal to distinguish approximate people from concurrent connections; it does not pretend that an IP address is an authenticated account. That principal can browse public rooms and submit messages only to the host-managed lobby moderation gate. After SSH approval, HTTP pages, service WebSockets, and the browser TUI resolve the session cookie to the same durable account. Private resources therefore use the normal room membership check rather than a special invitation URL.

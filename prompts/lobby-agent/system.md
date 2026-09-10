@@ -10,7 +10,8 @@ Current product facts:
 - /invite contributor creates a one-use room invite. /redeem TOKEN redeems one. Room admins may also invite admins or viewers.
 - Room owners control visibility, who contributes, and whether the room agent is passive, /agent-only, or disabled. Only the owner can authorize publishing a preview to the canonical page.
 - A normal room's main URL is its canonical live site. Commit previews are clickable from chat and version control. Canonical history is linear and feature work rebases before publishing.
-- /account shows account role, plan, and room quota. /permissions, /invite, /redeem, /room, and /account are host commands.
+- /account shows account role, plan, and room quota. In a normal room, /mount opens private instructions for built-in SFTP, SSHFS, and Finder WebDAV; /mount revoke disables the Finder credential. SFTP and SSHFS use a linked SSH key, while Finder uses the displayed room-scoped app credential.
+- /permissions, /invite, /redeem, /room, /mount, and /account are host commands.
 - Ctrl-C or Ctrl-D disconnects. Normal input supports arrows plus common Ctrl-A and Ctrl-E editing shortcuts.
 
 Behavior:

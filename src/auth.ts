@@ -45,6 +45,14 @@ export interface WebSession {
   expiresAt: number;
 }
 
+export interface MountCredential {
+  username: string;
+  password: string;
+  roomName: string;
+  expiresAt: number;
+  readOnly: boolean;
+}
+
 export interface SshPairing {
   code: string;
   expiresAt: number;
@@ -195,6 +203,16 @@ export class AccountStore {
         expires_at INTEGER NOT NULL,
         revoked_at INTEGER
       );
+      CREATE TABLE IF NOT EXISTS mount_credentials (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        room_name TEXT NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER
+      );
       CREATE TABLE IF NOT EXISTS audit_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room_name TEXT,
@@ -324,6 +342,7 @@ export class AccountStore {
         SELECT ?, user_id, role, created_at, revoked_at FROM room_memberships WHERE room_name = ?`).run(newName, oldName);
       this.db.query("UPDATE invites SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE agent_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("UPDATE mount_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE audit_events SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("DELETE FROM rooms WHERE name = ?").run(oldName);
     })();
@@ -611,6 +630,45 @@ export class AccountStore {
     if (/^[a-zA-Z0-9_-]{40,64}$/.test(sessionToken)) this.db.query("UPDATE web_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL").run(Date.now(), tokenHash(sessionToken));
   }
 
+  createMountCredential(principal: Principal, roomName: string, ttlMs = 90 * 24 * 60 * 60 * 1_000): MountCredential {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in before creating a mount credential");
+    const policy = this.roomPolicy(roomName);
+    if (!policy || !this.canView(principal, roomName)) throw new Error("room not found");
+    if (policy.system) throw new Error("system rooms do not expose source mounts");
+    const now = Date.now();
+    const expiresAt = now + Math.max(60_000, Math.min(365 * 24 * 60 * 60 * 1_000, ttlMs));
+    const id = randomBytes(12).toString("base64url");
+    const username = `mount-${id}`;
+    const password = `ssc_${randomBytes(32).toString("base64url")}`;
+    this.db.transaction(() => {
+      this.db.query("UPDATE mount_credentials SET revoked_at = ? WHERE user_id = ? AND room_name = ? AND revoked_at IS NULL").run(now, principal.id, roomName);
+      this.db.query("DELETE FROM mount_credentials WHERE expires_at <= ? OR (user_id = ? AND room_name = ? AND revoked_at IS NOT NULL)").run(now, principal.id, roomName);
+      this.db.query("INSERT INTO mount_credentials(id, user_id, room_name, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(id, principal.id, roomName, tokenHash(password), now, expiresAt);
+    })();
+    this.audit(principal, roomName, "mount.credential.rotate", username);
+    return { username, password, roomName, expiresAt, readOnly: !this.canEditSource(principal, roomName) };
+  }
+
+  principalForMountCredential(username: string, password: string, roomName: string): Principal | undefined {
+    const match = username.match(/^mount-([a-zA-Z0-9_-]{16})$/);
+    if (!match || !/^ssc_[a-zA-Z0-9_-]{43}$/.test(password)) return undefined;
+    const row = this.db.query(`SELECT u.id, u.handle, u.display_name, u.status
+      FROM mount_credentials m JOIN users u ON u.id = m.user_id
+      WHERE m.id = ? AND m.room_name = ? AND m.token_hash = ?
+        AND m.revoked_at IS NULL AND m.expires_at > ?`).get(match[1]!, roomName, tokenHash(password), Date.now()) as UserRow | null;
+    if (!row || row.status !== "active") return undefined;
+    this.db.query("UPDATE mount_credentials SET last_used_at = ? WHERE id = ?").run(Date.now(), match[1]!);
+    return userPrincipal(row);
+  }
+
+  revokeMountCredentials(principal: Principal, roomName: string): number {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in before revoking mount credentials");
+    const result = this.db.query("UPDATE mount_credentials SET revoked_at = ? WHERE user_id = ? AND room_name = ? AND revoked_at IS NULL").run(Date.now(), principal.id, roomName);
+    this.audit(principal, roomName, "mount.credential.revoke", String(result.changes));
+    return result.changes;
+  }
+
   linkIdentity(userId: string, provider: string, subject: string, email?: string): void {
     this.db.query("INSERT INTO identities(provider, provider_subject, user_id, email, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(provider.slice(0, 40), subject.slice(0, 255), userId, email?.slice(0, 320) ?? null, Date.now());
@@ -639,6 +697,7 @@ export class AccountStore {
       + count("SELECT COUNT(*) AS count FROM room_memberships WHERE user_id = ? AND revoked_at IS NULL")
       + count("SELECT COUNT(*) AS count FROM ssh_keys WHERE user_id = ?")
       + count("SELECT COUNT(*) AS count FROM agent_credentials WHERE owner_user_id = ?")
+      + count("SELECT COUNT(*) AS count FROM mount_credentials WHERE user_id = ?")
       + Math.max(0, count("SELECT COUNT(*) AS count FROM identities WHERE user_id = ?") - 1);
     if (established) throw new Error("this identity is already linked to another account and cannot be merged automatically");
 

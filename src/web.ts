@@ -7,6 +7,7 @@ import { ServiceRuntime } from "./runtime";
 import { TuiSession, type AnonymousLobbyReview, type TuiStream } from "./tui";
 import type { OAuthProvider, OAuthService } from "./oauth";
 import type { RoomDirectory } from "./room-directory";
+import { handleWebDavRequest } from "./webdav";
 
 interface ServiceSocketData { kind: "service"; room: string; principal: Principal; windowStarted: number; messages: number }
 interface TuiSocketData { kind: "tui"; principal: Principal; initialRoom?: string; cols: number; rows: number; windowStarted: number; messages: number }
@@ -110,6 +111,10 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       if (url.pathname === "/_auth/logout" && request.method === "POST") {
         if (accounts && sessionToken) accounts.revokeWebSession(sessionToken);
         return Response.json({ authenticated: false }, { headers: { "set-cookie": clearSessionCookie() } });
+      }
+      if (url.pathname.startsWith("/_dav/")) {
+        if (!accounts) return new Response("account storage is unavailable\n", { status: 503 });
+        return handleWebDavRequest(request, accounts, directory);
       }
       if (request.method === "GET" && url.pathname === "/") {
         return new Response(browserTuiHtml(oauth?.available() ?? [], developmentAuth), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });

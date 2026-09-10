@@ -94,6 +94,18 @@ The requested SSH username is cosmetic; the verified SSH key resolves to the can
 
 The virtual server implements bounded file reads and writes, directory listing and mutation, rename, stat, and normalized metadata. It deliberately rejects symlinks, readlink, arbitrary extensions, ownership changes, and executable modes. `.git` is unaddressable at every directory level.
 
+## Finder and WebDAV
+
+Enter `/mount` in a normal room's browser or SSH chat. It opens a local-only, scrollable instruction screen with ready-to-use SFTP and SSHFS commands plus a newly rotated Finder credential. Press `Command-K` in Finder and enter the displayed URL, normally:
+
+```text
+https://serverside.chat/_dav/<room>/
+```
+
+The username identifies a random mount credential; the password is a separately random 256-bit secret displayed only when created. Only its SHA-256 hash is stored. The credential expires after 90 days, is scoped to one room, and resolves to the same canonical account as OAuth and linked SSH keys. Running `/mount` again rotates it; `/mount revoke` invalidates it immediately. SFTP and SSHFS continue to authenticate with the linked SSH key and do not use this password.
+
+The WebDAV adapter supports bounded discovery, reads, writes, directory creation and removal, copy, move, and five-minute exclusive write locks. Finder receives Class 2 WebDAV discovery and can store the credential in Keychain. Every request rechecks current room visibility and contribution policy, so a credential cannot preserve write authority after policy or membership changes. All mutations use the same protected `RoomWorkspace` operations, quotas, path checks, normalized metadata, and audit log as SFTP. Cross-room moves, symlinks, `.git`, unbounded request bodies, and infinite-depth traversal are rejected.
+
 ## Protected version backend
 
 Git remains the current host implementation, but clients receive a product-level version API rather than Git execution. Commits, rebases, preview registration, immutable commit URLs, and fast-forward-only publication call predefined `RoomWorkspace` methods. The host constructs every Git argument array itself; no client string becomes an option or program.

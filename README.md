@@ -40,7 +40,7 @@ sftp -P 2222 serverside.chat
 sshfs -p 2222 serverside.chat:/mine ./mine
 ```
 
-The virtual root lists only visible rooms, applies room contribution policy to writes, and never exposes host paths or `.git`. See [`docs/capability-shell.md`](docs/capability-shell.md) for commands, quotas, and the current shared-worktree limitation.
+The virtual root lists only visible rooms, applies room contribution policy to writes, and never exposes host paths or `.git`. In a normal room, `/mount` opens a private instruction screen for built-in SFTP, SSHFS, and Finder's built-in WebDAV mount; `/mount revoke` disables that room's Finder credential. See [`docs/capability-shell.md`](docs/capability-shell.md) for commands, quotas, and the current shared-worktree limitation.
 
 An existing bootstrap account can attach its first canonical OAuth identity with:
 
@@ -57,6 +57,7 @@ Known public keys resolve to durable accounts. On first run, public keys in `~/.
 Commands inside the room:
 
 - `/account` shows the canonical handle, site role, plan, and owned-room usage
+- `/mount` shows SFTP, SSHFS, and Finder WebDAV setup; `/mount revoke` disables the Finder credential
 - `/room create <name>` creates and enters an owned room
 - `/room rename <name>` renames the current room (owner or site admin)
 - `/room delete <current-name>` recoverably deletes the current room (owner or site admin; the exact name is required)

@@ -343,7 +343,7 @@ export class RoomWorkspace {
   }
 
   private safePath(path: string): string {
-    if (!path || path.includes("\0") || path.split(/[\\/]/).includes(".git")) throw new Error("invalid repository path");
+    if (!path || path.includes("\0") || path.split(/[\\/]/).some((segment) => segment.toLowerCase() === ".git")) throw new Error("invalid repository path");
     const target = resolve(this.root, path);
     if (!target.startsWith(this.root + sep)) throw new Error("path escapes repository");
     this.assertNoSymlinkParents(target);

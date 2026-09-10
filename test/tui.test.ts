@@ -255,6 +255,33 @@ test("room contributors open the same Wasm editor inside the chat TUI", () => {
   accounts.close();
 });
 
+test("mount command shows keyboard-first SFTP, SSHFS, and Finder WebDAV instructions", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-mount-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("/mount\r"));
+  const frame = stream.writes.at(-1)!;
+  expect(frame).toContain("SFTP");
+  expect(frame).toContain("sftp -P 2222 serverside.chat:mine");
+  expect(frame).toContain("sshfs -p 2222 serverside.chat:/mine ./mine");
+  expect(frame).toContain("Press ⌘K in Finder");
+  expect(frame).toContain("https://serverside.chat/_dav/mine/");
+  expect(frame).toMatch(/username: mount-[a-zA-Z0-9_-]{16}/);
+  expect(frame).toMatch(/password: ssc_[a-zA-Z0-9_-]{43}/);
+
+  stream.emit("data", Buffer.from("\r"));
+  expect((session as unknown as { mountPanel?: unknown }).mountPanel).toBeUndefined();
+  stream.emit("data", Buffer.from("/mount revoke\r"));
+  expect(stream.writes.at(-1)).toContain("Finder mount credential revoked");
+  stream.end();
+  accounts.close();
+});
+
 test("room creation is a keyboard-only policy form", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-new-room-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
