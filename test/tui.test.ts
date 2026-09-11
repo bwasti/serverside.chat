@@ -58,6 +58,25 @@ test("empty composer shows a Zenburn command hint beside its arrow", () => {
   tui.stream.end();
 });
 
+test("telemetry and composer have dark breathing room without growing the frame", () => {
+  const tui = open();
+  tui.session.resize(80, 15);
+  const lines = tui.stream.writes.at(-1)!.split("\r\n");
+  const visible = (line: string) => line
+    .replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+
+  expect(lines).toHaveLength(15);
+  expect(visible(lines[5]!).slice(3).trim()).toBe("");
+  expect(lines[5]).toContain("\x1b[48;5;235m");
+  expect(visible(lines[12]!).slice(3).trim()).toBe("");
+  expect(lines[12]).toContain("\x1b[48;5;239m");
+  expect(lines[13]).toContain("type / to see commands");
+  expect(visible(lines[14]!).slice(3).trim()).toBe("");
+  expect(lines[14]).toContain("\x1b[48;5;239m");
+  tui.stream.end();
+});
+
 test("main chat canvas uses the same darkest Zenburn background as version control", () => {
   const room = new Room("mine");
   room.chat("alice", "dark canvas");

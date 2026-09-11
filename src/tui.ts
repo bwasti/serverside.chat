@@ -997,23 +997,23 @@ export class TuiSession {
     const composerValue = createRoomScreen
       ? createRoomFooter
       : writable ? this.input : readOnlyText;
+    const bottomStatus = this.localNotice
+      ? truncate(`  ${this.localNotice}`, mainWidth)
+      : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
     const inputLayout = layoutComposer(composerValue, !createRoomScreen && writable ? this.cursorOffset : 0, mainWidth);
-    const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - 4));
+    const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - (bottomStatus ? 1 : 0) - 5));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
     if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
     if (inputLayout.cursorRow >= firstInputRow + maximumComposerRows) firstInputRow = inputLayout.cursorRow - maximumComposerRows + 1;
     const inputRows = inputLayout.rows.slice(firstInputRow, firstInputRow + maximumComposerRows).map((row) => row.text);
-    const bottomStatus = this.localNotice
-      ? truncate(`  ${this.localNotice}`, mainWidth)
-      : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
     const commandMatches = writable ? this.commandMatches() : [];
-    const commandCapacity = Math.max(0, Math.min(8, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - 3));
+    const commandCapacity = Math.max(0, Math.min(8, this.height - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - 5));
     const maximumCommandStart = Math.max(0, commandMatches.length - commandCapacity);
     const commandStart = Math.min(maximumCommandStart, Math.max(0, this.commandSelection - Math.floor(commandCapacity / 2)));
     const commandChoices = commandCapacity
       ? commandMatches.slice(commandStart, commandStart + commandCapacity).map((command, offset) => ({ command, index: commandStart + offset }))
       : [];
-    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - commandChoices.length);
+    const messageRows = Math.max(1, this.height - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - commandChoices.length - 4);
     const messageCacheRoom = createRoomScreen ? "__new-room__" : this.room.name;
     if (this.messageCacheRoom !== messageCacheRoom || this.messageCacheWidth !== mainWidth) {
       this.messageCacheRoom = messageCacheRoom;
@@ -1066,9 +1066,11 @@ export class TuiSession {
     const hudHeader = hudWidth ? this.dimInactiveHud(`${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}`) : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${padAnsi(linkedTitle, titleWidth)}${status}${RESET}${hudHeader}`;
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
+    const statusSpacerRow = topRows.length;
+    const statusSpacer = `${this.sidebarRow(statusSpacerRow, sidebarWidth)}${paneTone}${CHAT}${" ".repeat(mainWidth)}${RESET}${this.hudRow(statusSpacerRow, hudWidth)}`;
     const body = visible.map(({ text, kind }, index) => {
       const color = kind === "system" ? CHAT_MUTED : CHAT;
-      const columnRow = index + topRows.length;
+      const columnRow = index + topRows.length + 1;
       const rendered = padAnsi(text, mainWidth);
       const renderedText = this.sidebarFocused ? rendered.replaceAll(`${ESC}22m`, `${ESC}22m${DIM}`) : rendered;
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
@@ -1077,25 +1079,21 @@ export class TuiSession {
       ? (() => {
           const padded = pad(bottomStatus, mainWidth);
           const rendered = !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, `${ESC}3m${MUTED}`) : padded;
-          return [`${this.sidebarRow(topRows.length + visible.length, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${rendered}${ESC}23m${RESET}${this.hudRow(topRows.length + visible.length, hudWidth)}`];
+          const columnRow = topRows.length + 1 + visible.length;
+          return [`${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${rendered}${ESC}23m${RESET}${this.hudRow(columnRow, hudWidth)}`];
         })()
       : [];
     const commandMenu = commandChoices.map(({ command, index }, offset) => {
-      const columnRow = topRows.length + visible.length + typing.length + offset;
+      const columnRow = topRows.length + 1 + visible.length + typing.length + offset;
       const selected = index === this.commandSelection;
       const style = selected ? COMMAND_ACTIVE : COMMAND;
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${style}${renderSlashCommand(command, selected, mainWidth)}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
+    const composerSpacerRow = topRows.length + 1 + visible.length + typing.length + commandMenu.length;
+    const composerSpacer = `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}${paneTone}${COMPOSER}${" ".repeat(mainWidth)}${RESET}${this.hudRow(composerSpacerRow, hudWidth)}`;
     const composer = inputRows.map((inputText, index) => {
-      const last = index === inputRows.length - 1;
-      const sidebarFooter = last
-        ? createRoomScreen
-          ? `${SIDEBAR}${pad(sidebarWidth <= 3 ? " + " : "  setup", sidebarWidth)}${RESET}`
-          : sidebarWidth <= 3
-            ? `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
-            : `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`
-        : `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
-      const columnRow = topRows.length + visible.length + typing.length + commandMenu.length + index;
+      const sidebarComposer = `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
+      const columnRow = composerSpacerRow + 1 + index;
       const firstVisibleInputRow = firstInputRow + index === 0;
       const displayText = firstVisibleInputRow && writable && !this.input && !createRoomScreen
         ? `  type / to see commands`
@@ -1107,14 +1105,21 @@ export class TuiSession {
           ? `${CYAN}›${COMPOSER} ${MUTED}${pad(truncate("type / to see commands", Math.max(0, mainWidth - 2)), Math.max(0, mainWidth - 2))}`
           : `${CYAN}›${COMPOSER}${renderedInput.slice(1)}`;
       }
-      return `${sidebarFooter}${paneTone}${COMPOSER}${renderedInput}${RESET}${this.hudRow(columnRow, hudWidth)}`;
+      return `${sidebarComposer}${paneTone}${COMPOSER}${renderedInput}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
+    const sidebarFooter = createRoomScreen
+      ? `${SIDEBAR}${pad(sidebarWidth <= 3 ? " + " : "  setup", sidebarWidth)}${RESET}`
+      : sidebarWidth <= 3
+        ? `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
+        : `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`;
+    const composerFooterRow = composerSpacerRow + 1 + inputRows.length;
+    const composerFooter = `${sidebarFooter}${paneTone}${COMPOSER}${" ".repeat(mainWidth)}${RESET}${this.hudRow(composerFooterRow, hudWidth)}`;
     const composerCursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);
-    const composerCursorRow = this.height - inputRows.length + 1 + inputLayout.cursorRow - firstInputRow;
+    const composerCursorRow = this.height - inputRows.length + inputLayout.cursorRow - firstInputRow;
     const formNamePrefix = "  › " + pad("Name", 16) + " ";
     const formCursorColumn = sidebarWidth + visibleLength(formNamePrefix) + terminalWidth(Array.from(this.input).slice(0, this.cursorOffset).join("")) + 1;
-    const formCursorRow = topRows.length + 2;
-    const screen = [header, ...statusHeaders, ...body, ...typing, ...commandMenu, ...composer].join("\r\n");
+    const formCursorRow = topRows.length + 3;
+    const screen = [header, ...statusHeaders, statusSpacer, ...body, ...typing, ...commandMenu, composerSpacer, ...composer, composerFooter].join("\r\n");
     const cursor = this.sidebarFocused || !writable || (createRoomScreen && (!this.creatingRoom || this.createRoomField !== 0))
       ? `${ESC}?25l`
       : createRoomScreen
