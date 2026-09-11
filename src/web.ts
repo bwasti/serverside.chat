@@ -455,7 +455,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const connect = () => {
       state.textContent='connecting…'; state.hidden=false;
       const scheme=location.protocol==='https:'?'wss:':'ws:';
-      const roomMatch=location.pathname.match(/^\/room\/([a-z0-9][a-z0-9-]{0,31})\/?$/);const requestedRoom=new URL(location.href).searchParams.get('room')||(roomMatch&&roomMatch[1]);
+      const pathParts=location.pathname.split('/').filter(Boolean);const pathRoom=pathParts.length===2&&pathParts[0]==='room'&&/^[a-z0-9][a-z0-9-]{0,31}$/.test(pathParts[1])?pathParts[1]:null;const requestedRoom=new URL(location.href).searchParams.get('room')||pathRoom;
       socket=new WebSocket(scheme+'//'+location.host+'/_terminal/socket?cols='+terminal.cols+'&rows='+terminal.rows+(requestedRoom?'&room='+encodeURIComponent(requestedRoom):''));
       socket.onopen=()=>{retry=250;state.hidden=true;send({type:'resize',cols:terminal.cols,rows:terminal.rows})};
       socket.onmessage=event=>{try{const message=JSON.parse(event.data);if(message.type==='output')terminal.write(message.data)}catch{}};
