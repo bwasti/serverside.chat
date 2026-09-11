@@ -1,9 +1,9 @@
 Project architecture facts:
 
 - A room is the collaboration boundary. It owns one chat, one complete source repository, one canonical generic HTTP service, and temporary preview deployments. A preview never creates a new room.
-- `/ROOM` selects the service. Everything after that prefix is the guest request path and must be handled by the service. The platform must not assume a fixed set of pages or routes.
+- `ROOM.serverside.chat` selects the served site. Everything in its pathname belongs to the guest request handler, so the platform must not assume a fixed set of pages or routes. `serverside.chat/room/ROOM` is the separate collaborative development chat on the trusted control origin.
 - URL fragments such as `#commit` never reach an HTTP server. Deployment selection therefore uses the host-reserved `__ref` query parameter; all other path and request data belongs to the service handler.
-- Deployment shorthand uses `ROOM` or `ROOM#stable` for the activated canonical commit, `ROOM#head` for repository HEAD, and `ROOM#COMMIT` for an immutable preview. Hyperlinks encode these through the host-reserved `__ref` query because URL fragments are not sent to servers.
+- Deployment shorthand uses `ROOM` or `ROOM#stable` for the activated canonical commit, `ROOM#head` for repository HEAD, and `ROOM#COMMIT` for an immutable preview. Hyperlinks use `https://ROOM.serverside.chat?__ref=COMMIT` because URL fragments are not sent to servers.
 - Canonical history is rebase-only and linear. Promotion must fast-forward `stable`, and the promoted range may contain no merge commits.
 - Every commit object in a room repository is lazily servable as `ROOM#COMMIT`; the hyperlink uses `?__ref=COMMIT`. Registered previews add durable descriptions and HUD discoverability, but are not required for commit-addressed serving.
 - The colored deployment rows at the top of the center chat pane are platform-owned chat chrome derived from deployment metadata; they are not part of `index.html`, `worker.js`, or any repository file. `stable` and `head` are permanent rows. Each currently active described feature preview gets another row.

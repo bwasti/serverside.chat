@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { browserTuiHtml } from "../src/web";
+import { browserTuiHtml, guestRequestHeaders, secureGuestResponseHeaders } from "../src/web";
 
 test("browser terminal is self-hosted and connects to the constrained TUI socket", async () => {
   const page = browserTuiHtml(["google", "github"]);
@@ -13,6 +13,7 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain("fetch('/_auth/ssh/link',{method:'POST'");
   expect(page).toContain("linkHandler:{activate:activateLink}");
   expect(page).toContain("registerOscHandler(777");
+  expect(page).toContain("location.pathname.match");
   expect(page).toContain('data-provider="google"');
   expect(page).toContain('data-provider="github"');
   expect(browserTuiHtml([], false)).not.toContain('id="devwarning"');
@@ -20,4 +21,27 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(await Bun.file("node_modules/@xterm/xterm/lib/xterm.js.map").exists()).toBe(true);
   expect(await Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js").exists()).toBe(true);
   expect(await Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js.map").exists()).toBe(true);
+});
+
+test("untrusted services receive only origin-appropriate credentials", () => {
+  const source = new Headers({
+    authorization: "Bearer room-token",
+    cookie: "room_session=abc",
+    forwarded: "for=private",
+    "x-forwarded-for": "10.0.0.1",
+    "x-real-ip": "10.0.0.1",
+    "x-client": "safe",
+  });
+  expect(guestRequestHeaders(source, false)).toEqual({ "x-client": "safe" });
+  expect(guestRequestHeaders(source, true)).toEqual({ authorization: "Bearer room-token", cookie: "room_session=abc", "x-client": "safe" });
+
+  const legacy = { "set-cookie": "central=stolen", "content-type": "text/plain" };
+  secureGuestResponseHeaders(legacy, false);
+  expect(legacy["set-cookie"]).toBeUndefined();
+  const isolated = { "set-cookie": "room=ok; Path=/", "content-type": "text/plain" };
+  secureGuestResponseHeaders(isolated, true);
+  expect(isolated["set-cookie"]).toBe("room=ok; Path=/");
+  const parentDomain = { "set-cookie": "room=bad; Domain=serverside.chat" };
+  secureGuestResponseHeaders(parentDomain, true);
+  expect(parentDomain["set-cookie"]).toBeUndefined();
 });

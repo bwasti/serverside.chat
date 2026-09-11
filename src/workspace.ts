@@ -311,7 +311,7 @@ export class RoomWorkspace {
 
   private seed(): void {
     if (!existsSync(resolve(this.root, "index.html"))) writeFileSync(resolve(this.root, "index.html"), defaultPage(this.roomName));
-    if (!existsSync(resolve(this.root, "worker.js"))) writeFileSync(resolve(this.root, "worker.js"), `export default {\n  async fetch(request, env) {\n    env.log.info("request", { method: request.method, path: request.path });\n    return { status: 200, headers: { "content-type": "text/plain" }, body: "Hello world\\n" };\n  },\n};\n`);
+    if (!existsSync(resolve(this.root, "worker.js"))) writeFileSync(resolve(this.root, "worker.js"), `export default {\n  async fetch(request, env) {\n    env.log.info("request", { method: request.method, path: request.path });\n    return env.assets.fetch(request);\n  },\n};\n`);
     if (!existsSync(resolve(this.root, "README.md"))) writeFileSync(resolve(this.root, "README.md"), `# ${this.roomName}\n\nRoom service source.\n`);
   }
 

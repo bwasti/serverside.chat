@@ -15,6 +15,7 @@ Environment=HOST=0.0.0.0
 Environment=PORT=2222
 Environment=WEB_HOST=127.0.0.1
 Environment=WEB_PORT=3000
+Environment=ROOM_SITE_DOMAIN=serverside.chat
 ExecStart=/usr/local/bin/bun src/server.ts
 Restart=on-failure
 RestartSec=2s

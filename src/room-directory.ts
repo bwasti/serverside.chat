@@ -15,6 +15,9 @@ type ConfigureRoom = (room: Room, workspace: RoomWorkspace) => void;
 export class RoomDirectory {
   readonly rooms: Room[] = [];
   readonly workspaces = new Map<string, RoomWorkspace>();
+  readonly controlOrigin: string;
+  readonly controlHostname: string;
+  readonly roomSiteDomain?: string;
   private readonly listeners = new Set<(event: RoomDirectoryEvent) => void>();
 
   constructor(
@@ -22,11 +25,30 @@ export class RoomDirectory {
     private readonly dataDir: string,
     private readonly webBaseUrl: string,
     private readonly configureRoom: ConfigureRoom = () => {},
+    roomSiteDomain?: string,
   ) {
+    const control = new URL(webBaseUrl);
+    this.controlOrigin = control.origin;
+    this.controlHostname = control.hostname.toLowerCase();
+    this.roomSiteDomain = roomSiteDomain?.trim().toLowerCase().replace(/^\*\./, "").replace(/\.$/, "") || undefined;
+    if (this.roomSiteDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(this.roomSiteDomain)) throw new Error("ROOM_SITE_DOMAIN must be a DNS hostname");
     for (const policy of accounts.listRooms()) this.add(policy);
   }
 
   room(name: string): Room | undefined { return this.rooms.find((room) => room.name === name); }
+
+  chatUrl(name: string): string { return `${this.controlOrigin}/room/${encodeURIComponent(name)}`; }
+
+  roomNameForSiteHostname(hostname: string): string | undefined {
+    if (!this.roomSiteDomain) return undefined;
+    const suffix = `.${this.roomSiteDomain}`;
+    const normalized = hostname.toLowerCase().replace(/\.$/, "");
+    if (!normalized.endsWith(suffix)) return undefined;
+    const label = normalized.slice(0, -suffix.length);
+    return /^[a-z0-9][a-z0-9-]{0,31}$/.test(label) && this.room(label) && !this.room(label)!.policy.system ? label : undefined;
+  }
+
+  isControlHostname(hostname: string): boolean { return hostname.toLowerCase().replace(/\.$/, "") === this.controlHostname; }
 
   subscribe(listener: (event: RoomDirectoryEvent) => void): () => void {
     this.listeners.add(listener);
@@ -126,7 +148,7 @@ export class RoomDirectory {
   }
 
   private materialize(policy: RoomPolicy): Room {
-    const room = new Room(policy.name, 250, `${this.webBaseUrl}/${encodeURIComponent(policy.name)}`, policy.ownerHandle, `${this.dataDir}/rooms/${policy.name}/room-state.json`, this.accounts);
+    const room = new Room(policy.name, 250, this.pageUrl(policy), policy.ownerHandle, `${this.dataDir}/rooms/${policy.name}/room-state.json`, this.accounts);
     const workspace = new RoomWorkspace(this.dataDir, policy.name);
     this.workspaces.set(policy.name, workspace);
     room.setVersionGraph(workspace.versionGraph());
@@ -134,6 +156,14 @@ export class RoomDirectory {
     for (const preview of workspace.visiblePreviews()) room.addAgentLink(preview.description, `${room.pageUrl}?__ref=${preview.id}`);
     this.configureRoom(room, workspace);
     return room;
+  }
+
+  private pageUrl(policy: RoomPolicy): string {
+    if (policy.system) return this.chatUrl(policy.name);
+    if (!this.roomSiteDomain) return `${this.webBaseUrl}/${encodeURIComponent(policy.name)}`;
+    const control = new URL(this.controlOrigin);
+    const port = control.port ? `:${control.port}` : "";
+    return `${control.protocol}//${policy.name}.${this.roomSiteDomain}${port}`;
   }
 
   private roomDataPath(name: string): string { return resolve(this.dataDir, "rooms", name); }

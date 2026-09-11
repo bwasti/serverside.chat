@@ -48,3 +48,20 @@ test("account preparation keeps the personal room but makes lobby usable", () =>
   expect(directory.rooms.map((room) => room.name).slice(0, 2)).toEqual(["lobby", "bob"]);
   accounts.close();
 });
+
+test("normal rooms use isolated site origins while system rooms stay on the control plane", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-origins-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("hello-world", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat", undefined, "serverside.chat");
+
+  expect(directory.room("hello-world")?.pageUrl).toBe("https://hello-world.serverside.chat");
+  expect(directory.room("lobby")?.pageUrl).toBe("https://serverside.chat/room/lobby");
+  expect(directory.chatUrl("hello-world")).toBe("https://serverside.chat/room/hello-world");
+  expect(directory.roomNameForSiteHostname("HELLO-WORLD.serverside.chat.")).toBe("hello-world");
+  expect(directory.roomNameForSiteHostname("missing.serverside.chat")).toBeUndefined();
+  expect(directory.roomNameForSiteHostname("lobby.serverside.chat")).toBeUndefined();
+  accounts.close();
+});

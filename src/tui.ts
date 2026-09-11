@@ -297,6 +297,7 @@ export class TuiSession {
     this.room.leave(this.username);
     this.roomIndex = nextRoom;
     this.room = this.rooms[nextRoom]!;
+    this.write(`\x1b]777;room:${encodeURIComponent(this.room.name)}\x07`);
     this.scrollOffset = 0;
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
@@ -716,7 +717,8 @@ export class TuiSession {
         if (this.principal.authenticated) {
           if (!this.accounts) throw new Error("account storage is unavailable");
           const link = this.accounts.createAccountLink(this.principal);
-          this.accountPanel.linkUrl = `${new URL(this.room.pageUrl).origin}/?account=${encodeURIComponent(link.code)}`;
+          const controlOrigin = new URL(this.signInUrl ?? this.room.pageUrl).origin;
+          this.accountPanel.linkUrl = `${controlOrigin}/?account=${encodeURIComponent(link.code)}`;
         } else if (this.signInUrl) this.accountPanel.linkUrl = this.signInUrl;
       }
       if (!this.accountPanel.linkUrl) throw new Error("sign in is unavailable in this session");
@@ -832,9 +834,9 @@ export class TuiSession {
   private mountInstructionRows(width: number): string[] {
     if (!this.mountPanel) return [];
     const credential = this.mountPanel.credential;
-    const page = new URL(this.room.pageUrl);
-    const host = page.hostname;
-    const davUrl = `${page.origin}/_dav/${encodeURIComponent(this.room.name)}/`;
+    const control = new URL(this.signInUrl ?? this.room.pageUrl);
+    const host = control.hostname;
+    const davUrl = `${control.origin}/_dav/${encodeURIComponent(this.room.name)}/`;
     const local = `./${this.room.name}`;
     const access = credential.readOnly ? "read only" : "read + write";
     const raw = [
@@ -1308,6 +1310,7 @@ export class TuiSession {
     this.room.setTyping(this.username, false);
     this.room.leave(this.username);
     this.room = room;
+    this.write(`\x1b]777;room:${encodeURIComponent(room.name)}\x07`);
     this.roomIndex = Math.max(0, this.rooms.findIndex((candidate) => candidate === room));
     this.scrollOffset = 0;
     this.messageCacheRoom = "";

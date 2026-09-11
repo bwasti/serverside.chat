@@ -37,7 +37,7 @@ Authenticated contributors can instead enter the room's constrained editing envi
 ```sh
 ssh -t -p 2222 serverside.chat shell mine
 sftp -P 2222 serverside.chat
-sshfs -p 2222 serverside.chat:/mine ./mine
+sshfs -p 2222 serverside.chat:/hello-world ./hello-world
 ```
 
 The virtual root lists only visible rooms, applies room contribution policy to writes, and never exposes host paths or `.git`. In a normal room, `/mount` opens a private instruction screen for built-in SFTP, SSHFS, and Finder's built-in WebDAV mount; `/mount revoke` disables that room's Finder credential. See [`docs/capability-shell.md`](docs/capability-shell.md) for commands, quotas, and the current shared-worktree limitation.
@@ -71,13 +71,13 @@ Commands inside the room:
 - `/quit` disconnects
 - `Ctrl-C` or `Ctrl-D` disconnects
 
-Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_DIR` (default `.data`), `WEB_BASE_URL` (default `http://Brams-MacBook-Air.local:3000`), optional colon-delimited `SSH_BOOTSTRAP_KEYS`, and optional `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, and `GITHUB_CLIENT_SECRET`. Set `DEVELOPMENT_AUTH=false` after real providers are configured. Production callbacks are `https://serverside.chat/_auth/google/callback` and `https://serverside.chat/_auth/github/callback`. The server creates an Ed25519 host key on first launch. Room and sign-in URLs are OSC 8 links; supported terminals let you open them with the usual modifier-click gesture.
+Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_DIR` (default `.data`), `WEB_BASE_URL` (the trusted chat/control origin), optional `ROOM_SITE_DOMAIN` (the DNS suffix for isolated room sites), optional colon-delimited `SSH_BOOTSTRAP_KEYS`, and optional `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, and `GITHUB_CLIENT_SECRET`. Set `DEVELOPMENT_AUTH=false` after real providers are configured. Production callbacks are `https://serverside.chat/_auth/google/callback` and `https://serverside.chat/_auth/github/callback`. The server creates an Ed25519 host key on first launch. Room and sign-in URLs are OSC 8 links; supported terminals let you open them with the usual modifier-click gesture.
 
 The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). The droplet deployment binds that application HTTP port to loopback and publishes it through Caddy with automatic HTTPS and WebSocket proxying. On wide terminals, the right HUD displays the version graph and a live service-log tail; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. Per-account rate limits, recovery, and user-facing credential management are not complete.
 
 Every authenticated account gets an owned starter room and contributor access to the host-managed lobby. The lobby is quota-free and cannot be renamed, deleted, or reconfigured by users. Free accounts may own five normal rooms. The schema reserves a `pro` plan with a larger room allowance for later product work, but no billing or upgrade path is enabled. The configured bootstrap owner is the initial site admin and may manage up to 100 rooms; all room creation is bounded.
 
-Seeded policies are intentionally varied: `mine` is public with member contributions and a passive agent; `general` is public with member contributions and explicit `/agent` invocation; `build-log` is private, admin-write, and has no agent.
+Fresh installations seed one public development room, `hello-world`, with member contributions and a passive agent. The host-managed `lobby` remains separate.
 
 ## Room agent
 
@@ -85,7 +85,7 @@ Set `FIREWORKS_API_KEY` to enable the real room agent. It uses `accounts/firewor
 
 Each room has an isolated Git repository under `.data/rooms/<room>/repo`. The agent can operate across the complete working tree through bounded file and predefined Git tools, but receives no shell access and cannot inspect `.git` internals. Working-tree files are capped at 512 KiB each and 5 MiB total.
 
-The canonical service is selected by `/<room>` and everything after that prefix belongs to its generic request handler. Human-facing deployment shorthand is `room`/`room#stable` for canonical, `room#head` for repository HEAD, and `room#commit` for a preview. Hyperlinks encode the selector using the host-reserved `__ref` query because fragments never reach HTTP servers. The repository's movable `stable` Git tag mirrors the activated commit. Promoting a preview requires an explicit human request in chat.
+The canonical service is selected by the isolated origin `https://<room>.serverside.chat`; everything in its path belongs to its generic request handler. The corresponding development chat is `https://serverside.chat/room/<room>`. Human-facing deployment shorthand is `room`/`room#stable` for canonical, `room#head` for repository HEAD, and `room#commit` for a preview. Hyperlinks encode the selector using the host-reserved `__ref` query because fragments never reach HTTP servers. The repository's movable `stable` Git tag mirrors the activated commit. Promoting a preview requires an explicit human request in chat.
 
 Every canonical promotion is also recorded as a host-generated `trunk` system message in room chat with its commit and canonical URL.
 

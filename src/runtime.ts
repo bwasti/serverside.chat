@@ -30,7 +30,7 @@ export class ServiceRuntime {
     this.filesystemBytes = this.scratchFiles().reduce((sum, file) => sum + file.bytes, 0);
   }
 
-  async fetch(request: Request, deploymentRef: string | undefined, servicePath: string, publish?: (payload: string) => void): Promise<GuestResponse> {
+  async fetch(request: Request, deploymentRef: string | undefined, servicePath: string, publish?: (payload: string) => void, requestHeaders?: Record<string, string>): Promise<GuestResponse> {
     const body = await boundedBody(request);
     const logs: string[] = [];
     const db = new Database(this.databasePath, { create: true, strict: true });
@@ -69,7 +69,7 @@ export class ServiceRuntime {
         const loaded = vm.evalCode(`${guestPrelude()}\n${source}`, "worker.js");
         if (loaded.error) { const error = vm.dump(loaded.error); loaded.error.dispose(); throw new Error(String(error?.message ?? error)); }
         loaded.value.dispose();
-        const invocation = JSON.stringify({ method: request.method, url: `http://service.local${servicePath}`, headers: Object.fromEntries(request.headers), body });
+        const invocation = JSON.stringify({ method: request.method, url: `http://service.local${servicePath}`, headers: requestHeaders ?? Object.fromEntries(request.headers), body });
         const invocationResult = vm.evalCode(`__invoke(${JSON.stringify(invocation)})`, "invoke.js");
         if (invocationResult.error) { const error = vm.dump(invocationResult.error); invocationResult.error.dispose(); throw new Error(String(error?.message ?? error)); }
         const evaluated = invocationResult.value;

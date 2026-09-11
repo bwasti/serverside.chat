@@ -1,3 +1,9 @@
+{
+	on_demand_tls {
+		ask http://127.0.0.1:3000/_internal/tls-allow
+	}
+}
+
 serverside.chat {
 	encode zstd gzip
 
@@ -7,4 +13,23 @@ serverside.chat {
 	}
 
 	reverse_proxy 127.0.0.1:3000
+}
+
+# A room hostname is issued a certificate only after the application confirms
+# that the room exists. This avoids turning on-demand TLS into an open issuer.
+https:// {
+	tls {
+		on_demand
+	}
+
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+	reverse_proxy 127.0.0.1:3000
+}
+
+http:// {
+	redir https://{host}{uri} permanent
 }

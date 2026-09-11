@@ -12,7 +12,7 @@ export default {
 
 ## Request
 
-`request.method`, `request.url`, `request.path`, `request.headers`, and the bounded body string are available. `await request.text()` returns the body and `await request.json()` parses it. Bodies are limited to 64 KiB. The URL path is relative to the room: an external request for `/mine/api/items` reaches the worker as `/api/items`. The host consumes only `__ref`; other paths and query parameters belong to the service.
+`request.method`, `request.url`, `request.path`, `request.headers`, and the bounded body string are available. `await request.text()` returns the body and `await request.json()` parses it. Bodies are limited to 64 KiB. A request for `https://hello-world.serverside.chat/api/items` reaches that room's worker as `/api/items`. The host consumes only `__ref`; other paths and query parameters belong to the service. Room sites have isolated origins and may use their own host-only cookies or authorization headers. The host strips proxy identity headers, rejects parent-domain cookies, and never forwards serverside.chat control-plane credentials through the legacy path route.
 
 ## Response
 

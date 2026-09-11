@@ -33,15 +33,24 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
   const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
   const browserTuis = new Map<ServerWebSocket<SocketData>, { stream: BrowserTuiStream; session: TuiSession }>();
   const authAttempts = new Map<string, { windowStarted: number; count: number }>();
-  const signInUrl = `${rooms[0] ? new URL(rooms[0].pageUrl).origin : `http://${host}:${port}`}/?signin=1`;
+  const signInUrl = `${directory.controlOrigin}/?signin=1`;
   const webServer = Bun.serve<SocketData>({
     hostname: host,
     port,
     async fetch(request, server) {
       const started = performance.now();
       const url = new URL(request.url);
-      const sessionToken = readSessionCookie(request);
+      if (url.pathname === "/_internal/tls-allow" && request.method === "GET") {
+        if (request.headers.has("x-forwarded-for")) return new Response(null, { status: 404 });
+        const domain = url.searchParams.get("domain") ?? "";
+        return new Response(null, { status: directory.roomNameForSiteHostname(domain) ? 204 : 404 });
+      }
+      const siteRoomName = directory.roomNameForSiteHostname(url.hostname);
+      const controlRequest = directory.isControlHostname(url.hostname) || !directory.roomSiteDomain;
+      if (!controlRequest && !siteRoomName) return new Response("site not found\n", { status: 404 });
+      const sessionToken = controlRequest ? readSessionCookie(request) : undefined;
       const requestPrincipal = accounts?.principalForWebSession(sessionToken ?? "") ?? anonymousWebPrincipal(request);
+      if (controlRequest) {
       const oauthRoute = url.pathname.match(/^\/_auth\/(google|github)\/(start|callback)$/);
       if (oauthRoute && oauth) {
         const provider = oauthRoute[1] as OAuthProvider;
@@ -116,7 +125,9 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         if (!accounts) return new Response("account storage is unavailable\n", { status: 503 });
         return handleWebDavRequest(request, accounts, directory);
       }
-      if (request.method === "GET" && url.pathname === "/") {
+      const roomRoute = url.pathname.match(/^\/room\/([a-z0-9][a-z0-9-]{0,31})\/?$/);
+      if (request.method === "GET" && (url.pathname === "/" || roomRoute)) {
+        if (roomRoute && (!directory.room(roomRoute[1]!) || (accounts && !accounts.canView(requestPrincipal, roomRoute[1]!)))) return new Response("room not found\n", { status: 404 });
         return new Response(browserTuiHtml(oauth?.available() ?? [], developmentAuth), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       const asset = terminalAssets.get(url.pathname);
@@ -134,13 +145,21 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         if (server.upgrade(request, { data: { kind: "tui", principal, initialRoom, cols, rows, windowStarted: Date.now(), messages: 0 } })) return;
         return new Response("websocket upgrade required\n", { status: 426 });
       }
+      }
       const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
-      const name = parts[0] ?? "";
+      const name = siteRoomName ?? parts[0] ?? "";
       const room = directory.room(name);
       if (!room) return new Response("room not found\n", { status: 404 });
       const principal = requestPrincipal;
       if (accounts && !accounts.canView(principal, name)) return new Response("room not found\n", { status: 404 });
-      if (parts.slice(1).join("/") === SOCKET_PATH) {
+      const serviceParts = siteRoomName ? parts : parts.slice(1);
+      if (!siteRoomName && directory.roomSiteDomain) {
+        const target = new URL(room.pageUrl);
+        target.pathname = `/${serviceParts.map(encodeURIComponent).join("/")}`;
+        target.search = url.search;
+        return Response.redirect(target, 308);
+      }
+      if (serviceParts.join("/") === SOCKET_PATH) {
         if ((socketCounts.get(name) ?? 0) >= MAX_ROOM_SOCKETS || room.connectionCount >= ROOM_LIMITS.connections) return new Response("room socket limit reached\n", { status: 503 });
         if (server.upgrade(request, { data: { kind: "service", room: name, principal, windowStarted: Date.now(), messages: 0 } })) return;
         return new Response("websocket upgrade required\n", { status: 426 });
@@ -149,16 +168,17 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       const workspace = workspaces.get(name)!;
       // Query metadata belongs to the host. The remaining pathname belongs to
       // the service and will be passed through unchanged by the Wasm gateway.
-      const deploymentRef = url.searchParams.get("__ref") ?? url.searchParams.get("__preview") ?? (parts[1] === "~preview" ? parts[2] : undefined);
+      const deploymentRef = url.searchParams.get("__ref") ?? url.searchParams.get("__preview") ?? (serviceParts[0] === "~preview" ? serviceParts[1] : undefined);
       try {
-        const servicePath = `/${parts.slice(1).map(encodeURIComponent).join("/")}${url.search ? `?${[...url.searchParams].filter(([key]) => key !== "__ref" && key !== "__preview").map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&")}` : ""}`.replace(/\?$/, "");
+        const servicePath = `/${serviceParts.map(encodeURIComponent).join("/")}${url.search ? `?${[...url.searchParams].filter(([key]) => key !== "__ref" && key !== "__preview").map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&")}` : ""}`.replace(/\?$/, "");
         const existingRuntime = runtimes.get(name);
         const runtime = existingRuntime?.room === room
           ? existingRuntime.runtime
           : new ServiceRuntime(workspaces.get(name)!, room, dataDir);
         if (existingRuntime?.room !== room) runtimes.set(name, { room, runtime });
-        const result = await runtime.fetch(request, deploymentRef, servicePath, (payload) => server.publish(`room:${name}`, payload));
-        if ((result.headers["content-type"] ?? "").startsWith("text/html")) result.body = injectRealtimeClient(result.body, name);
+        const result = await runtime.fetch(request, deploymentRef, servicePath, (payload) => server.publish(`room:${name}`, payload), guestRequestHeaders(request.headers, Boolean(siteRoomName)));
+        secureGuestResponseHeaders(result.headers, Boolean(siteRoomName));
+        if ((result.headers["content-type"] ?? "").startsWith("text/html")) result.body = injectRealtimeClient(result.body, name, Boolean(siteRoomName));
         const bytes = Buffer.byteLength(result.body);
         if (!room.canSendResponse(bytes)) { room.recordRequest(request.method, url.pathname, 429, performance.now() - started, 25); return new Response("hourly byte limit reached\n", { status: 429 }); }
         room.recordRequest(request.method, url.pathname, result.status, performance.now() - started, bytes);
@@ -318,9 +338,28 @@ function authErrorRedirect(_request: Request, error: unknown): Response {
   return new Response(null, { status: 302, headers });
 }
 
-function injectRealtimeClient(html: string, room: string): string {
-  const script = `<script data-room-runtime>!function(){let s,t=100;function c(){s=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/${encodeURIComponent(room)}/${SOCKET_PATH}');window.roomSocket=s;s.onopen=function(){t=100;window.dispatchEvent(new CustomEvent('roomopen'))};s.onmessage=function(e){let d=e.data;try{d=JSON.parse(d)}catch(_){}window.dispatchEvent(new CustomEvent('roommessage',{detail:d}))};s.onclose=function(){window.dispatchEvent(new CustomEvent('roomclose'));setTimeout(c,t);t=Math.min(t*2,5000)}}c()}();</script>`;
+function injectRealtimeClient(html: string, room: string, roomOrigin: boolean): string {
+  const socketPath = roomOrigin ? `/${SOCKET_PATH}` : `/${encodeURIComponent(room)}/${SOCKET_PATH}`;
+  const script = `<script data-room-runtime>!function(){let s,t=100;function c(){s=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'${socketPath}');window.roomSocket=s;s.onopen=function(){t=100;window.dispatchEvent(new CustomEvent('roomopen'))};s.onmessage=function(e){let d=e.data;try{d=JSON.parse(d)}catch(_){}window.dispatchEvent(new CustomEvent('roommessage',{detail:d}))};s.onclose=function(){window.dispatchEvent(new CustomEvent('roomclose'));setTimeout(c,t);t=Math.min(t*2,5000)}}c()}();</script>`;
   return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${script}</body>`) : `${html}${script}`;
+}
+
+export function guestRequestHeaders(headers: Headers, roomOrigin: boolean): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of headers) {
+    const normalized = key.toLowerCase();
+    if (normalized === "host" || normalized === "forwarded" || normalized === "proxy-authorization" || normalized === "proxy-authenticate" || normalized.startsWith("x-forwarded-") || normalized === "x-real-ip") continue;
+    if (!roomOrigin && (normalized === "cookie" || normalized === "authorization")) continue;
+    output[normalized] = value;
+  }
+  return output;
+}
+
+export function secureGuestResponseHeaders(headers: Record<string, string>, roomOrigin: boolean): void {
+  const cookie = headers["set-cookie"];
+  if (cookie && (!roomOrigin || /(?:^|;)\s*domain\s*=/i.test(cookie))) delete headers["set-cookie"];
+  delete headers["proxy-authenticate"];
+  headers["x-content-type-options"] = "nosniff";
 }
 
 class BrowserTuiStream extends EventEmitter implements TuiStream {
@@ -409,14 +448,14 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#0d1117',foreground:'#d8dee9',cursor:'#d8dee9'},linkHandler:{activate:activateLink}});
     const fit = new FitAddon.FitAddon();
     terminal.loadAddon(fit); terminal.open(document.getElementById('terminal')); fit.fit(); terminal.focus();
-    terminal.parser.registerOscHandler(777,value=>{if(value==='signin'){showSignIn();return true}if(value.startsWith('open:')){try{const target=new URL(decodeURIComponent(value.slice(5)),location.href);if(target.origin===location.origin){location.href=target.href;return true}}catch{}return true}return false});
+    terminal.parser.registerOscHandler(777,value=>{if(value==='signin'){showSignIn();return true}if(value.startsWith('room:')){try{const room=decodeURIComponent(value.slice(5));if(/^[a-z0-9][a-z0-9-]{0,31}$/.test(room))history.replaceState({},'',room==='lobby'?'/':'/room/'+encodeURIComponent(room))}catch{}return true}if(value.startsWith('open:')){try{const target=new URL(decodeURIComponent(value.slice(5)),location.href);if(target.origin===location.origin){location.href=target.href;return true}}catch{}return true}return false});
     terminal.attachCustomKeyEventHandler(event=>{if(event.type==='keydown'&&event.ctrlKey&&['s','p','q'].includes(event.key.toLowerCase()))event.preventDefault();return true});
     let socket, retry=250, resizeFrame;
     const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
     const connect = () => {
       state.textContent='connecting…'; state.hidden=false;
       const scheme=location.protocol==='https:'?'wss:':'ws:';
-      const requestedRoom=new URL(location.href).searchParams.get('room');
+      const roomMatch=location.pathname.match(/^\/room\/([a-z0-9][a-z0-9-]{0,31})\/?$/);const requestedRoom=new URL(location.href).searchParams.get('room')||(roomMatch&&roomMatch[1]);
       socket=new WebSocket(scheme+'//'+location.host+'/_terminal/socket?cols='+terminal.cols+'&rows='+terminal.rows+(requestedRoom?'&room='+encodeURIComponent(requestedRoom):''));
       socket.onopen=()=>{retry=250;state.hidden=true;send({type:'resize',cols:terminal.cols,rows:terminal.rows})};
       socket.onmessage=event=>{try{const message=JSON.parse(event.data);if(message.type==='output')terminal.write(message.data)}catch{}};

@@ -18,6 +18,7 @@ const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
 const dataDir = process.env.DATA_DIR ?? ".data";
 const webBaseUrl = (process.env.WEB_BASE_URL ?? "http://Brams-MacBook-Air.local:3000").replace(/\/$/, "");
+const roomSiteDomain = process.env.ROOM_SITE_DOMAIN;
 const webHost = process.env.WEB_HOST ?? host;
 const webPort = Number(process.env.WEB_PORT ?? 3000);
 const developmentAuth = process.env.DEVELOPMENT_AUTH !== "false";
@@ -39,9 +40,7 @@ const ownerPrincipal = accounts.ensureLocalOwner(roomOwner, roomOwner);
 accounts.ensureSiteAdmin(ownerPrincipal);
 enrollBootstrapKeys(accounts, ownerPrincipal);
 const roomDefaults = [
-  { name: "mine", visibility: "public", contributions: "members", agentMode: "passive" },
-  { name: "general", visibility: "public", contributions: "members", agentMode: "explicit" },
-  { name: "build-log", visibility: "private", contributions: "admins", agentMode: "disabled" },
+  { name: "hello-world", visibility: "public", contributions: "members", agentMode: "passive" },
 ] as const;
 accounts.seedRoomsOnce(ownerPrincipal, [...roomDefaults]);
 accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contributions: "members", agentMode: "passive" });
@@ -67,7 +66,7 @@ const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, worksp
     try { return await agent.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit)); }
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
-});
+}, roomSiteDomain);
 const rooms = directory.rooms;
 const webServer = startWebServer(directory, webHost, webPort, dataDir, accounts, oauth, developmentAuth, reviewAnonymousLobby);
 const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection) => {
