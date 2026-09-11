@@ -49,6 +49,8 @@ Paths are always relative to an opaque room root. Traversal, absolute paths, sym
 
 `await env.assets.fetch(request)` reads a file from the same immutable deployment. `/` maps to `index.html`. Paths remain repository-relative and inherit the repository's traversal, symlink, file-size, and commit-selection protections.
 
+Missing files, directories, invalid deployment paths, and protected paths such as `.git` return a plain `404 Not found` response; they do not throw into the worker or become platform 500s. The host records 4xx traffic in the live request log but only 5xx responses increment the SITE error counter.
+
 ## `env.log`
 
 Use `env.log.info(event, fields)`, `.warn`, or `.error`. `env.log(event, fields)` is an alias for info. Events must be structured and must not include secrets or sensitive bodies. The host accepts at most 20 events and 4 KiB per event per request. Host request/error/latency/byte telemetry is always recorded independently and cannot be disabled by guest code.

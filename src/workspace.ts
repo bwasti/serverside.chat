@@ -309,6 +309,23 @@ export class RoomWorkspace {
     return content;
   }
 
+  readPublishedAsset(path: string, ref?: string): string | undefined {
+    const commit = this.resolveDeploymentRef(ref);
+    if (!commit) return undefined;
+    let safe: string;
+    try { safe = relative(this.root, this.safePath(path)); }
+    catch { return undefined; }
+    const key = `${commit}:${safe}`;
+    const cached = this.publishedCache.get(key);
+    if (cached !== undefined) return cached;
+    const type = this.git(["cat-file", "-t", key], true);
+    if (!type.ok || type.stdout.trim() !== "blob") return undefined;
+    const content = this.limit(this.git(["show", key]).stdout);
+    this.publishedCache.set(key, content);
+    if (this.publishedCache.size > MAX_PUBLISHED_CACHE_ENTRIES) this.publishedCache.delete(this.publishedCache.keys().next().value!);
+    return content;
+  }
+
   private seed(): void {
     if (!existsSync(resolve(this.root, "index.html"))) writeFileSync(resolve(this.root, "index.html"), defaultPage(this.roomName));
     if (!existsSync(resolve(this.root, "worker.js"))) writeFileSync(resolve(this.root, "worker.js"), `export default {\n  async fetch(request, env) {\n    env.log.info("request", { method: request.method, path: request.path });\n    return env.assets.fetch(request);\n  },\n};\n`);

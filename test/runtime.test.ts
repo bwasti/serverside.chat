@@ -23,6 +23,20 @@ test("QuickJS service shares durable room-scoped SQLite across fresh requests", 
   expect(JSON.parse(fetched.body)).toEqual({ notes: [{ text: "shared" }] });
 }, 20_000);
 
+test("default static services return 404 for unknown and protected asset paths", async () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-assets-"));
+  const workspace = new RoomWorkspace(data, "static-room");
+  const runtime = new ServiceRuntime(workspace, new Room("static-room"), data);
+  const root = await runtime.fetch(new Request("http://service/"), "stable", "/");
+  const missing = await runtime.fetch(new Request("http://service/actuator/configprops"), "stable", "/actuator/configprops");
+  const protectedPath = await runtime.fetch(new Request("http://service/.git/config"), "stable", "/.git/config");
+  const malformedPath = await runtime.fetch(new Request("http://service/"), "stable", "/%E0%A4%A");
+  expect(root.status).toBe(200);
+  expect(missing).toMatchObject({ status: 404, body: "Not found\n" });
+  expect(protectedPath).toMatchObject({ status: 404, body: "Not found\n" });
+  expect(malformedPath).toMatchObject({ status: 404, body: "Not found\n" });
+});
+
 test("database capability rejects cross-tenant and administrative SQL", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
   const workspace = new RoomWorkspace(data, "mine");

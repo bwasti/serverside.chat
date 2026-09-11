@@ -28,6 +28,7 @@ export interface AgentRequest {
 }
 
 export const ROOM_LIMITS = { connections: 128, concurrentRequests: 32, egressBytesPerHour: 64 * 1024 * 1024, databaseBytes: 5 * 1024 * 1024, filesystemBytes: 5 * 1024 * 1024 } as const;
+const TELEMETRY_VERSION = 2;
 
 export class Room {
   readonly name: string;
@@ -152,7 +153,7 @@ export class Room {
 
   recordRequest(method: string, path: string, status: number, latencyMs = 0, responseBytes = 0): void {
     this.serviceRequests++;
-    if (status >= 400) this.serviceErrors++;
+    if (status >= 500) this.serviceErrors++;
     this.serviceResponseBytes += responseBytes;
     this.serviceTotalLatencyMs += latencyMs;
     this.lastRequestAt = Date.now();
@@ -351,7 +352,7 @@ export class Room {
         this.nextId = Math.max(this.nextId, item.id + 1);
       }
       this.serviceRequests = finiteNumber(state.serviceRequests);
-      this.serviceErrors = finiteNumber(state.serviceErrors);
+      this.serviceErrors = state.telemetryVersion === TELEMETRY_VERSION ? finiteNumber(state.serviceErrors) : 0;
       this.serviceResponseBytes = finiteNumber(state.serviceResponseBytes);
       this.serviceTotalLatencyMs = finiteNumber(state.serviceTotalLatencyMs);
       this.databaseBytes = finiteNumber(state.databaseBytes);
@@ -378,7 +379,7 @@ export class Room {
     if (!this.statePath) return;
     mkdirSync(dirname(this.statePath), { recursive: true });
     const temporary = `${this.statePath}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, egressSamples: this.egressSamples, agentState: { events: this.agentState.events, links: this.agentState.links } }, null, 2));
+    writeFileSync(temporary, JSON.stringify({ telemetryVersion: TELEMETRY_VERSION, messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, egressSamples: this.egressSamples, agentState: { events: this.agentState.events, links: this.agentState.links } }, null, 2));
     renameSync(temporary, this.statePath);
   }
 

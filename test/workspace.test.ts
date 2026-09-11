@@ -30,6 +30,9 @@ test("repository paths cannot escape or inspect git internals", () => {
   expect(() => workspace.readFile("../../etc/passwd")).toThrow("escapes repository");
   expect(() => workspace.readFile(".git/config")).toThrow("invalid repository path");
   expect(() => workspace.readFile(".GIT/config")).toThrow("invalid repository path");
+  expect(workspace.readPublishedAsset("missing.txt")).toBeUndefined();
+  expect(workspace.readPublishedAsset(".git/config")).toBeUndefined();
+  expect(workspace.readPublishedAsset("index.html")).toContain("Hello world");
 });
 
 test("binary capability writes are atomic, quota-bounded, and optimistic", () => {

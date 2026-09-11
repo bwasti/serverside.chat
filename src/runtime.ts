@@ -110,8 +110,11 @@ export class ServiceRuntime {
   }
 
   private assetCall(pathname: string, ref?: string): GuestResponse {
-    const path = pathname === "/" ? "index.html" : decodeURIComponent(pathname.replace(/^\/+/, ""));
-    const body = this.workspace.readPublished(path, ref);
+    let path: string;
+    try { path = pathname === "/" ? "index.html" : decodeURIComponent(pathname.replace(/^\/+/, "")); }
+    catch { return { status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: "Not found\n" }; }
+    const body = this.workspace.readPublishedAsset(path, ref);
+    if (body === undefined) return { status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: "Not found\n" };
     return { status: 200, headers: { "content-type": MIME[extname(path).toLowerCase()] ?? "application/octet-stream" }, body };
   }
 

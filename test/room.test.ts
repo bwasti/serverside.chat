@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountStore, anonymousPrincipal } from "../src/auth";
@@ -76,6 +76,25 @@ test("rolling response-byte ceiling is enforced", () => {
   expect(room.canSendResponse(64 * 1024 * 1024)).toBe(true);
   room.recordRequest("GET", "/large", 200, 1, 64 * 1024 * 1024);
   expect(room.canSendResponse(1)).toBe(false);
+});
+
+test("client 404s remain telemetry without marking the site unhealthy", () => {
+  const room = new Room("mine");
+  room.recordRequest("GET", "/missing", 404, 1, 10);
+  expect(room.serviceRequests).toBe(1);
+  expect(room.serviceErrors).toBe(0);
+  expect(room.serviceLogs.at(-1)).toContain("404 1.0ms GET /missing");
+  room.recordRequest("GET", "/broken", 500, 2, 10);
+  expect(room.serviceErrors).toBe(1);
+});
+
+test("legacy cumulative client-error totals do not poison the new server-error counter", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-legacy-telemetry-"));
+  const statePath = join(data, "room-state.json");
+  writeFileSync(statePath, JSON.stringify({ serviceRequests: 162, serviceErrors: 135, serviceStartedAt: new Date().toISOString() }));
+  const room = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath);
+  expect(room.serviceRequests).toBe(162);
+  expect(room.serviceErrors).toBe(0);
 });
 
 test("room bounds messages and input", () => {
