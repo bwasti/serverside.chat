@@ -231,15 +231,27 @@ test("agent failures render as distinct live-log entries", () => {
   expect(rendered).toContain("provider returned no usable completion");
 });
 
-test("lobby replaces the developer dashboard with a compact introduction", () => {
+test("lobby replaces the developer dashboard with a padded, concise introduction", () => {
   const lobby = new Room("lobby");
   const tui = open(lobby);
   tui.session.resize(120, 24);
 
   const frame = tui.stream.writes.at(-1)!;
-  expect(frame).toContain("shared rooms where people and AI build live websites");
-  expect(frame).toContain("TAB other pages");
-  expect(frame).toContain("Ask the guide");
+  const lines = frame.split("\r\n");
+  const visibleMain = (line: string) => line
+    .replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .slice(3)
+    .trim();
+  expect(frame).toContain("serverside.chat");
+  expect(frame).toContain("build live software together");
+  expect(visibleMain(lines[1]!)).toBe("");
+  expect(visibleMain(lines[3]!)).toBe("chat  →  commit  →  live preview");
+  expect(visibleMain(lines[4]!)).toBe("");
+  expect(visibleMain(lines[5]!)).toContain("TAB rooms");
+  expect(visibleMain(lines[5]!)).toContain("/ commands");
+  expect(visibleMain(lines[5]!)).toContain("ask here for help");
+  expect(visibleMain(lines[6]!)).toBe("");
   expect(frame).not.toContain("VERSION CONTROL");
   expect(frame).not.toContain("LIVE LOGS");
   expect(frame).not.toContain("SITE   ");

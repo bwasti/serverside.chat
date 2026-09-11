@@ -1138,10 +1138,10 @@ export class TuiSession {
       return height < 12 ? [title] : [title, defaults];
     }
     if (this.room.name === "lobby") {
-      const intro = truncate("  serverside.chat  —  shared rooms where people and AI build live websites", width);
-      const keys = truncate("  TAB other pages   ↑↓ choose   ENTER open", width);
-      const guide = truncate("  Ask the guide how to use rooms, agents, invites, previews, or publishing.", width);
-      return height < 12 ? [intro, keys] : [intro, keys, guide];
+      const intro = `    ${CYAN}${ESC}1mserverside.chat${ESC}22m${STATUS}   build live software together`;
+      const flow = `    ${GREEN}chat${STATUS}  →  ${YELLOW}commit${STATUS}  →  ${CYAN}live preview${STATUS}`;
+      const keys = `    ${MUTED}TAB${STATUS} rooms     ${MUTED}/${STATUS} commands     ask here for help`;
+      return height < 13 ? [intro, keys] : ["", intro, flow, "", keys, ""];
     }
     const active = this.agentIsActive();
     const spinner = active ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
