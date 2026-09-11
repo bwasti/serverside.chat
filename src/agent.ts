@@ -10,12 +10,14 @@ export type AgentActivity = (status: string, detail: string, link?: { label: str
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export const ROOM_AGENT_PROVIDER_TIMEOUT_MS = 5 * 60_000;
+export const ROOM_AGENT_MAX_TURNS = 64;
 const ROOM_AGENT_PROVIDER_ATTEMPTS = 2;
 
 export interface FireworksAgentOptions {
   baseUrl?: string;
   timeoutMs?: number;
   attempts?: number;
+  maxTurns?: number;
   retryDelayMs?: number;
   fetcher?: Fetcher;
 }
@@ -47,6 +49,7 @@ export class FireworksAgent {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly attempts: number;
+  private readonly maxTurns: number;
   private readonly retryDelayMs: number;
   private readonly fetcher: Fetcher;
 
@@ -54,6 +57,7 @@ export class FireworksAgent {
     this.baseUrl = options.baseUrl ?? "https://api.fireworks.ai/inference/v1";
     this.timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? ROOM_AGENT_PROVIDER_TIMEOUT_MS));
     this.attempts = Math.max(1, Math.min(3, Math.floor(options.attempts ?? ROOM_AGENT_PROVIDER_ATTEMPTS)));
+    this.maxTurns = Math.max(1, Math.min(128, Math.floor(options.maxTurns ?? ROOM_AGENT_MAX_TURNS)));
     this.retryDelayMs = Math.max(0, Math.min(10_000, Math.floor(options.retryDelayMs ?? 1_000)));
     this.fetcher = options.fetcher ?? fetch;
   }
@@ -70,9 +74,11 @@ export class FireworksAgent {
       { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nAuthenticated user who triggered this run: ${requester}\nCanonical promotion capability for this run: ${canPromote ? "granted" : "not granted"}.` },
       ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "agent" ? "assistant" : "user", content: message.kind === "agent" ? message.text : `${message.author}: ${message.text}` })),
     ];
-    for (let turn = 0; turn < 10; turn++) {
+    const deadline = Date.now() + this.timeoutMs;
+    for (let turn = 0; turn < this.maxTurns; turn++) {
+      if (turn === this.maxTurns - 4 && concreteWorkPending && !committed) messages.push({ role: "system", content: "Four model turns remain. Stop optional inspection and finish the requested work now: make any essential final edit, call git_commit, then create_preview. If genuinely blocked, state the blocker tersely." });
       activity("thinking", turn ? "reviewing tool results" : "reading the room");
-      const message = await this.complete(messages, activity);
+      const message = await this.complete(messages, activity, deadline);
       messages.push(message);
       if (!message.tool_calls?.length) {
         const reply = filterReply(intent, message.content);
@@ -105,16 +111,15 @@ export class FireworksAgent {
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
     }
-    throw new Error("agent exceeded the 10-turn tool budget");
+    throw new Error(`${this.maxTurns}-turn limit reached · work preserved`);
   }
 
-  private async complete(messages: ChatMessage[], activity: AgentActivity): Promise<ApiMessage> {
-    const deadline = Date.now() + this.timeoutMs;
+  private async complete(messages: ChatMessage[], activity: AgentActivity, deadline: number): Promise<ApiMessage> {
     let lastFailure = "provider request failed";
     for (let attempt = 1; attempt <= this.attempts; attempt++) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error(`provider timed out after ${formatDuration(this.timeoutMs)}`);
-      activity("thinking", attempt === 1 ? `waiting for provider · ${formatDuration(this.timeoutMs)} limit` : `retrying provider · ${attempt}/${this.attempts}`);
+      activity("thinking", attempt === 1 ? `waiting for provider · ${formatDuration(remaining)} left` : `retrying provider · ${attempt}/${this.attempts}`);
       try {
         const response = await this.fetcher(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 }), signal: AbortSignal.timeout(Math.max(1, remaining)) });
         const body = (await response.json()) as ApiResponse;
@@ -149,7 +154,11 @@ export function hasPendingConcreteWork(history: Message[]): boolean {
 function transientStatus(status: number): boolean { return status === 408 || status === 425 || status === 429 || status >= 500; }
 function isTimeout(error: unknown): boolean { return error instanceof Error && (error.name === "TimeoutError" || /timed?\s*out/i.test(error.message)); }
 function boundedProviderFailure(value: string): string { return value.replace(/[\r\n]+/g, " ").trim().slice(0, 160) || "request failed"; }
-function formatDuration(milliseconds: number): string { return milliseconds >= 60_000 && milliseconds % 60_000 === 0 ? `${milliseconds / 60_000}m` : `${milliseconds}ms`; }
+function formatDuration(milliseconds: number): string {
+  if (milliseconds >= 60_000) return `${Math.ceil(milliseconds / 60_000)}m`;
+  if (milliseconds >= 1_000) return `${Math.ceil(milliseconds / 1_000)}s`;
+  return `${milliseconds}ms`;
+}
 
 export class FireworksGuideAgent {
   constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}

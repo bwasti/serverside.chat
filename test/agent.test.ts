@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FireworksAgent, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, ROOM_AGENT_PROVIDER_TIMEOUT_MS, shouldGuideRespond } from "../src/agent";
+import { FireworksAgent, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, ROOM_AGENT_MAX_TURNS, ROOM_AGENT_PROVIDER_TIMEOUT_MS, shouldGuideRespond } from "../src/agent";
 import type { Message } from "../src/room";
 import { RoomWorkspace } from "../src/workspace";
 
@@ -35,6 +35,19 @@ test("the lobby guide admits product questions but not social or unrelated chat"
 
 test("room agent provider calls have a five-minute production budget", () => {
   expect(ROOM_AGENT_PROVIDER_TIMEOUT_MS).toBe(5 * 60_000);
+  expect(ROOM_AGENT_MAX_TURNS).toBe(64);
+});
+
+test("turn-limit failures are concise and confirm that work is preserved", async () => {
+  let calls = 0;
+  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+    timeoutMs: 1_000,
+    attempts: 1,
+    maxTurns: 2,
+    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: `call-${++calls}`, type: "function", function: { name: "git_status", arguments: "{}" } }] } }] }),
+  });
+  await expect(agent.respond("test", "https://test.example", [message("chat", "build a notes app")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("2-turn limit reached · work preserved");
+  expect(calls).toBe(2);
 });
 
 test("concrete work remains pending across a follow-up until a commit or agent blocker", () => {
