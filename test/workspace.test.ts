@@ -45,6 +45,21 @@ test("binary capability writes are atomic, quota-bounded, and optimistic", () =>
   expect(() => workspace.writeFileBytes("large.bin", Buffer.alloc(512 * 1024 + 1))).toThrow("512 KiB");
 });
 
+test("agent patches are unique and tracked files can be safely restored from HEAD", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-patch-"));
+  const workspace = new RoomWorkspace(data, "patch-room");
+  const original = workspace.readFile("index.html");
+  expect(workspace.patchFile("index.html", "Hello world", "Hello patch")).toMatchObject({ replaced: true, path: "index.html" });
+  expect(workspace.readFile("index.html")).toContain("Hello patch");
+  expect(() => workspace.patchFile("index.html", "missing text", "nope")).toThrow("was not found");
+  workspace.writeFile("duplicate.txt", "same same");
+  expect(() => workspace.patchFile("duplicate.txt", "same", "different")).toThrow("not unique");
+  expect(workspace.restoreFile("index.html")).toMatchObject({ path: "index.html", restoredFrom: "HEAD" });
+  expect(workspace.readFile("index.html")).toBe(original);
+  expect(() => workspace.restoreFile("duplicate.txt")).toThrow("not tracked in HEAD");
+  expect(() => workspace.restoreFile(".git/config")).toThrow("invalid repository path");
+});
+
 test("version graph exposes concise commit stacks and refs", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "graph-room");

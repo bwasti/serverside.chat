@@ -68,6 +68,25 @@ export class RoomWorkspace {
     return this.writeFileBytes(path, Buffer.from(content));
   }
 
+  patchFile(path: string, oldText: string, newText: string): { path: string; bytes: number; revision: string; replaced: true } {
+    if (!oldText) throw new Error("patch old_text cannot be empty");
+    const original = this.readFile(path);
+    const match = original.indexOf(oldText);
+    if (match < 0) throw new Error("patch old_text was not found");
+    if (original.indexOf(oldText, match + 1) >= 0) throw new Error("patch old_text is not unique; include more context");
+    const updated = `${original.slice(0, match)}${newText}${original.slice(match + oldText.length)}`;
+    return { ...this.writeFile(path, updated), revision: contentRevision(Buffer.from(updated)), replaced: true };
+  }
+
+  restoreFile(path: string): { path: string; bytes: number; revision: string; restoredFrom: "HEAD" } {
+    const target = this.safePath(path);
+    const normalized = relative(this.root, target);
+    if (this.git(["cat-file", "-t", `HEAD:${normalized}`], true).stdout.trim() !== "blob") throw new Error("file is not tracked in HEAD");
+    this.git(["restore", "--source=HEAD", "--worktree", "--", normalized]);
+    const content = this.readFileBytes(normalized);
+    return { path: normalized, bytes: content.byteLength, revision: contentRevision(content), restoredFrom: "HEAD" };
+  }
+
   writeFileBytes(path: string, content: Buffer, expectedRevision?: string | null): { path: string; bytes: number; revision: string } {
     const target = this.safePath(path);
     const bytes = content.byteLength;
