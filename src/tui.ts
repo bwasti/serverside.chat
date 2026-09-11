@@ -48,6 +48,8 @@ export class TuiSession {
   private lastWasCarriageReturn = false;
   private roomIndex = 0;
   private sidebarFocused = false;
+  private accountFocused = false;
+  private accountPanel?: { field: number; editing: boolean; linkUrl?: string };
   private createRoomFocused = false;
   private creatingRoom = false;
   private createRoomField = 0;
@@ -123,6 +125,10 @@ export class TuiSession {
   }
 
   private onData(data: Buffer): void {
+    if (this.accountPanel) {
+      this.handleAccountPanelData(data);
+      return;
+    }
     if (this.mountPanel) {
       this.handleMountPanelData(data);
       return;
@@ -158,10 +164,12 @@ export class TuiSession {
           if (this.sidebarFocused) {
             this.sidebarFocused = false;
             if (this.createRoomFocused) this.beginRoomCreation();
+            else if (this.accountFocused) this.beginAccountPanel();
             else this.createRoomFocused = false;
           } else {
             this.sidebarFocused = true;
             this.createRoomFocused = this.creatingRoom && this.roomCreationAvailable;
+            this.accountFocused = false;
           }
           this.room.setTyping(this.username, false);
           this.animateSidebar();
@@ -176,6 +184,7 @@ export class TuiSession {
           this.lastWasCarriageReturn = char === "\r";
           this.sidebarFocused = false;
           if (this.createRoomFocused) this.beginRoomCreation();
+          else if (this.accountFocused) this.beginAccountPanel();
           this.animateSidebar();
           dirty = true;
           continue;
@@ -254,21 +263,33 @@ export class TuiSession {
 
   private moveSidebar(offset: number): void {
     const hasCreate = this.roomCreationAvailable = this.computeRoomCreationAvailability();
-    const total = this.rooms.length + (hasCreate ? 1 : 0);
-    const current = this.createRoomFocused ? 0 : this.roomIndex + (hasCreate ? 1 : 0);
+    const roomStart = hasCreate ? 1 : 0;
+    const accountIndex = roomStart + this.rooms.length;
+    const total = accountIndex + 1;
+    const current = this.accountFocused ? accountIndex : this.createRoomFocused ? 0 : this.roomIndex + roomStart;
     const next = (current + offset + total) % total;
     if (hasCreate && next === 0) {
       if (!this.onCreateRoomScreen()) this.resetRoomCreationForm();
       this.createRoomFocused = true;
+      this.accountFocused = false;
+      this.creatingRoom = false;
+      this.render();
+      return;
+    }
+    if (next === accountIndex) {
+      if (this.onCreateRoomScreen()) this.resetRoomCreationForm();
+      this.createRoomFocused = false;
+      this.accountFocused = true;
       this.creatingRoom = false;
       this.render();
       return;
     }
     const leavingRoomCreation = this.onCreateRoomScreen();
     this.createRoomFocused = false;
+    this.accountFocused = false;
     this.creatingRoom = false;
     if (leavingRoomCreation) this.resetRoomCreationForm();
-    const nextRoom = next - (hasCreate ? 1 : 0);
+    const nextRoom = next - roomStart;
     if (nextRoom === this.roomIndex) { this.render(); return; }
     this.unsubscribe();
     this.unsubscribeService();
@@ -588,6 +609,175 @@ export class TuiSession {
     return true;
   }
 
+  private beginAccountPanel(): void {
+    this.accountPanel = { field: 0, editing: false };
+    this.accountFocused = true;
+    this.createRoomFocused = false;
+    this.creatingRoom = false;
+    this.input = "";
+    this.cursorOffset = 0;
+    this.preferredCursorColumn = undefined;
+    this.localNotice = "";
+    this.lastFrame = "";
+    this.room.setTyping(this.username, false);
+  }
+
+  private closeAccountPanel(toSidebar = false): void {
+    this.accountPanel = undefined;
+    this.input = "";
+    this.cursorOffset = 0;
+    this.preferredCursorColumn = undefined;
+    this.localNotice = "";
+    this.sidebarFocused = toSidebar;
+    this.accountFocused = toSidebar;
+    this.lastFrame = "";
+    if (toSidebar) this.animateSidebar();
+    this.render();
+  }
+
+  private handleAccountPanelData(data: Buffer): void {
+    if (!this.accountPanel) return;
+    const tokens = data.toString("utf8").match(/\x1b(?:\[[0-?]*[ -/]*[@-~]|O[HF]|[^\x1b])|[^\x1b]+/gs) ?? [];
+    let dirty = false;
+    for (const token of tokens) {
+      if (token.startsWith("\x1b")) {
+        if (token === "\x1b" && !this.accountPanel.editing) return this.closeAccountPanel();
+        const arrow = token.match(/^\x1b\[([ABCD])$/);
+        if (arrow) {
+          if (this.accountPanel.editing && arrow[1] === "C") dirty = this.moveCursor(1) || dirty;
+          else if (this.accountPanel.editing && arrow[1] === "D") dirty = this.moveCursor(-1) || dirty;
+          else if (!this.accountPanel.editing && (arrow[1] === "A" || arrow[1] === "B")) {
+            const count = this.principal.authenticated ? 3 : 2;
+            this.accountPanel.field = (this.accountPanel.field + (arrow[1] === "A" ? -1 : 1) + count) % count;
+            dirty = true;
+          }
+        } else if (this.accountPanel.editing && token === "\x1b[3~") dirty = this.deleteForward() || dirty;
+        continue;
+      }
+      for (const char of token) {
+        if (char === "\x03" || (char === "\x04" && !this.input)) { this.stream.end(); return; }
+        if (char === "\t" && !this.accountPanel.editing) return this.closeAccountPanel(true);
+        if ((char === "q" || char === "Q") && !this.accountPanel.editing) return this.closeAccountPanel();
+        if (char === "\r" || char === "\n") {
+          if (char === "\n" && this.lastWasCarriageReturn) { this.lastWasCarriageReturn = false; continue; }
+          this.lastWasCarriageReturn = char === "\r";
+          this.activateAccountField();
+          dirty = true;
+          continue;
+        }
+        this.lastWasCarriageReturn = false;
+        if (!this.accountPanel.editing) continue;
+        if (char === "\x7f" || char === "\b") dirty = this.deleteBack() || dirty;
+        else if (char === "\x04") dirty = this.deleteForward() || dirty;
+        else if (char === "\x01") dirty = this.moveCursorTo(0) || dirty;
+        else if (char === "\x05") dirty = this.moveCursorTo(Array.from(this.input).length) || dirty;
+        else if (char === "\x15") dirty = this.deleteBeforeCursor() || dirty;
+        else if (!/[\x00-\x1f\x7f]/.test(char) && Array.from(this.input).length < 80) dirty = this.insertAtCursor(char) || dirty;
+      }
+    }
+    if (dirty) this.render();
+  }
+
+  private activateAccountField(): void {
+    if (!this.accountPanel) return;
+    if (!this.principal.authenticated) {
+      if (this.accountPanel.field === 0) this.openAccountSignIn();
+      else this.closeAccountPanel();
+      return;
+    }
+    if (this.accountPanel.field === 0) {
+      if (!this.accountPanel.editing) {
+        this.input = this.principal.displayName;
+        this.cursorOffset = Array.from(this.input).length;
+        this.accountPanel.editing = true;
+        this.localNotice = "";
+        return;
+      }
+      try {
+        if (!this.accounts) throw new Error("account storage is unavailable");
+        this.principal = this.accounts.updateDisplayName(this.principal, this.input);
+        this.accountPanel.editing = false;
+        this.input = "";
+        this.cursorOffset = 0;
+        this.localNotice = "display name updated";
+      } catch (error) {
+        this.localNotice = error instanceof Error ? error.message : "account update failed";
+      }
+      return;
+    }
+    if (this.accountPanel.field === 1) this.openAccountSignIn();
+    else this.closeAccountPanel();
+  }
+
+  private openAccountSignIn(): void {
+    if (!this.accountPanel) return;
+    try {
+      if (!this.accountPanel.linkUrl) {
+        if (this.principal.authenticated) {
+          if (!this.accounts) throw new Error("account storage is unavailable");
+          const link = this.accounts.createAccountLink(this.principal);
+          this.accountPanel.linkUrl = `${new URL(this.room.pageUrl).origin}/?account=${encodeURIComponent(link.code)}`;
+        } else if (this.signInUrl) this.accountPanel.linkUrl = this.signInUrl;
+      }
+      if (!this.accountPanel.linkUrl) throw new Error("sign in is unavailable in this session");
+      this.write(`\x1b]777;open:${encodeURIComponent(this.accountPanel.linkUrl)}\x07`);
+      this.localNotice = "open the secure sign-in link shown above";
+    } catch (error) {
+      this.localNotice = error instanceof Error ? error.message : "sign in is unavailable";
+    }
+  }
+
+  private renderAccountPanel(): void {
+    if (!this.accountPanel) return;
+    const width = this.width;
+    const authenticated = this.principal.authenticated && this.principal.kind === "user";
+    const settings = authenticated ? this.accounts?.accountSettings(this.principal) : undefined;
+    const linkUrl = this.accountPanel.linkUrl ?? (!authenticated ? this.signInUrl : undefined);
+    const action = (index: number, label: string, detail = "") => {
+      const focused = this.accountPanel?.field === index;
+      const prefix = `  ${focused ? "›" : "·"} ${label}`;
+      const clippedDetail = detail ? truncate(detail, Math.max(0, width - terminalWidth(prefix) - 3)) : "";
+      return padAnsi(`  ${focused ? `${CYAN}›${CHAT}` : `${MUTED}·${CHAT}`} ${focused ? `${ESC}1m${label}${ESC}22m` : label}${clippedDetail ? `   ${MUTED}${clippedDetail}${CHAT}` : ""}`, width);
+    };
+    const rows = authenticated && settings ? [
+      "",
+      `  @${settings.handle} · ${settings.displayName}`,
+      `  ${settings.siteRole} · ${settings.plan} plan · ${settings.ownedRooms}/${settings.roomLimit} rooms`,
+      `  sign-in  ${settings.providers.length ? settings.providers.join(" · ") : "none linked"} · ${settings.sshKeys} SSH ${settings.sshKeys === 1 ? "key" : "keys"}`,
+      "",
+      action(0, "Change display name", this.accountPanel.editing ? "editing below" : settings.displayName),
+      action(1, "Add a sign-in method", linkUrl ? "secure link ready" : "Google or GitHub"),
+      action(2, "Back to chat"),
+    ] : [
+      "",
+      "  Anonymous",
+      "",
+      "  Sign in to create rooms, contribute, and use the same account from browser and SSH.",
+      "",
+      action(0, "Sign in", "Google or GitHub"),
+      action(1, "Back to chat"),
+    ];
+    if (linkUrl) {
+      const index = authenticated ? 6 : 5;
+      rows[index] = linkText(rows[index]!, authenticated ? "Add a sign-in method" : "Sign in", linkUrl, CYAN, CHAT);
+    }
+    const bodyHeight = Math.max(1, this.height - 2);
+    const visible = rows.slice(0, bodyHeight);
+    while (visible.length < bodyHeight) visible.push("");
+    const header = `${HEADER}${pad(truncate(`  ACCOUNT  @${this.username}`, width), width)}${RESET}`;
+    const body = visible.map((line) => `${CHAT}${padAnsi(line, width)}${RESET}`);
+    const footerText = this.accountPanel.editing
+      ? `  display name: ${this.input}`
+      : this.localNotice ? `  ${this.localNotice}` : "  ↑↓ choose   ENTER select   TAB account list   Q close";
+    const footer = `${COMPOSER}${pad(truncate(footerText, width), width)}${RESET}`;
+    const cursorColumn = Math.min(width, terminalWidth("  display name: ") + terminalWidth(Array.from(this.input).slice(0, this.cursorOffset).join("")) + 1);
+    const cursor = this.accountPanel.editing ? `${ESC}${this.height};${cursorColumn}H${ESC}?25h` : `${ESC}?25l`;
+    const frame = `${[header, ...body, footer].join("\r\n")}${cursor}`;
+    if (frame === this.lastFrame) return;
+    this.lastFrame = frame;
+    this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
+  }
+
   private handleMountPanelData(data: Buffer): void {
     const value = data.toString("utf8");
     if (value.includes("\x03") || value.includes("\x04")) {
@@ -676,6 +866,10 @@ export class TuiSession {
     if (this.closed) return;
     if (!this.room.canView(this.principal)) {
       this.stream.end("Room access changed. Reconnect after receiving an invitation.\r\n");
+      return;
+    }
+    if (this.accountPanel) {
+      this.renderAccountPanel();
       return;
     }
     if (this.editor) {
@@ -791,7 +985,9 @@ export class TuiSession {
       const sidebarFooter = last
         ? createRoomScreen
           ? `${SIDEBAR}${pad(sidebarWidth <= 3 ? " + " : "  setup", sidebarWidth)}${RESET}`
-          : sidebarWidth <= 3 ? `${SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}` : `${SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`
+          : sidebarWidth <= 3
+            ? `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
+            : `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`
         : `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
       const columnRow = topRows.length + visible.length + typing.length + index;
       const padded = pad(truncate(inputText, mainWidth), mainWidth);
@@ -895,7 +1091,7 @@ export class TuiSession {
   private sidebarRow(index: number, width: number): string {
     if (width <= 3) {
       const roomIndex = index - 1;
-      const roomActive = !this.onCreateRoomScreen() && roomIndex === this.roomIndex;
+      const roomActive = !this.onCreateRoomScreen() && !this.accountFocused && roomIndex === this.roomIndex;
       const marker = roomActive ? " ● " : roomIndex >= 0 && roomIndex < this.rooms.length ? " · " : "   ";
       return `${roomActive ? SIDEBAR_ACTIVE : SIDEBAR}${pad(marker, width)}${RESET}`;
     }
@@ -907,7 +1103,7 @@ export class TuiSession {
     }
     const roomIndex = index - 1 - (hasCreate ? 1 : 0);
     if (roomIndex < this.rooms.length) {
-      const style = !this.onCreateRoomScreen() && roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
+      const style = !this.onCreateRoomScreen() && !this.accountFocused && roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
       return `${style}${pad(truncate(`  # ${this.rooms[roomIndex]!.name}`, width), width)}${RESET}`;
     }
     return `${SIDEBAR}${" ".repeat(width)}${RESET}`;
@@ -960,6 +1156,7 @@ export class TuiSession {
     if (this.renderTimer) clearTimeout(this.renderTimer);
     this.room.setTyping(this.username, false);
     this.room.leave(this.username);
+    this.accountPanel = undefined;
     this.mountPanel = undefined;
     this.write("\x1b[?25h\x1b[?1049l");
   }
@@ -1061,6 +1258,8 @@ export class TuiSession {
     this.room.leave(oldUsername);
     this.principal = principal;
     this.mountPanel = undefined;
+    this.accountPanel = undefined;
+    this.accountFocused = false;
     this.createRoomFocused = false;
     this.creatingRoom = false;
     this.rooms = this.allRooms.filter((room) => room.canView(principal));
@@ -1098,6 +1297,8 @@ export class TuiSession {
   }
 
   private selectRoom(room: Room): void {
+    this.accountPanel = undefined;
+    this.accountFocused = false;
     this.createRoomFocused = false;
     this.creatingRoom = false;
     this.mountPanel = undefined;

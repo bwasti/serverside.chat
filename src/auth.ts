@@ -40,6 +40,13 @@ export interface AccountProfile {
   roomLimit: number;
 }
 
+export interface AccountSettings extends AccountProfile {
+  handle: string;
+  displayName: string;
+  providers: string[];
+  sshKeys: number;
+}
+
 export interface WebSession {
   sessionToken: string;
   expiresAt: number;
@@ -291,6 +298,26 @@ export class AccountStore {
     if (!row) return { siteRole: "member", plan: "free", ownedRooms: 0, roomLimit: 0 };
     const ownedRooms = this.ownedRoomCount(principal);
     return { siteRole: row.site_role, plan: row.plan, ownedRooms, roomLimit: row.site_role === "admin" ? ACCOUNT_ROOM_LIMITS.siteAdmin : ACCOUNT_ROOM_LIMITS[row.plan] };
+  }
+
+  accountSettings(principal: Principal): AccountSettings {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in to view account settings");
+    const row = this.db.query("SELECT handle, display_name FROM users WHERE id = ? AND status = 'active'").get(principal.id) as Pick<UserRow, "handle" | "display_name"> | null;
+    if (!row) throw new Error("account is unavailable");
+    const profile = this.accountProfile(principal);
+    const providers = (this.db.query("SELECT provider FROM identities WHERE user_id = ? ORDER BY provider").all(principal.id) as Array<{ provider: string }>).map(({ provider }) => provider);
+    const sshKeys = (this.db.query("SELECT COUNT(*) AS count FROM ssh_keys WHERE user_id = ? AND revoked_at IS NULL").get(principal.id) as { count: number }).count;
+    return { ...profile, handle: row.handle, displayName: row.display_name, providers, sshKeys };
+  }
+
+  updateDisplayName(principal: Principal, value: string): Principal {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in to update account settings");
+    const displayName = value.replace(/[\r\n\0]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!displayName) throw new Error("display name is required");
+    const result = this.db.query("UPDATE users SET display_name = ? WHERE id = ? AND status = 'active'").run(displayName, principal.id);
+    if (!result.changes) throw new Error("account is unavailable");
+    this.audit(principal, undefined, "account.display-name");
+    return { ...principal, displayName };
   }
 
   isSiteAdmin(principal: Principal): boolean {

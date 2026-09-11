@@ -83,6 +83,24 @@ test("provider identity creates the canonical account and web sessions are revoc
   accounts.close();
 });
 
+test("account settings expose linked credentials and allow a display-name update", () => {
+  const { accounts } = setup();
+  const account = accounts.authenticateIdentity({ provider: "github", subject: "settings-user", handle: "charlie", displayName: "Charlie" });
+  accounts.enrollSshKey(account.principal.id, "ssh-ed25519", Buffer.from("settings-key"), "laptop");
+
+  expect(accounts.accountSettings(account.principal)).toMatchObject({
+    handle: "charlie",
+    displayName: "Charlie",
+    providers: ["github"],
+    sshKeys: 1,
+  });
+  const updated = accounts.updateDisplayName(account.principal, "  Charlie   Example  ");
+  expect(updated.displayName).toBe("Charlie Example");
+  expect(accounts.accountSettings(updated).displayName).toBe("Charlie Example");
+  expect(() => accounts.updateDisplayName(updated, "   ")).toThrow("display name is required");
+  accounts.close();
+});
+
 test("room mount credentials resolve to canonical accounts and rotate independently", () => {
   const { accounts, owner } = setup();
   const first = accounts.createMountCredential(owner, "public-room", 60_000);

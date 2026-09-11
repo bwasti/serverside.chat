@@ -235,6 +235,49 @@ test("room owners manage their rooms from the TUI", () => {
   accounts.close();
 });
 
+test("the sidebar identity opens keyboard-driven account settings", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-account-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice", "Alice");
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+  const stream = new FakeStream();
+  new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", "https://example.test/?signin=1", undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("\t\x1b[B\r"));
+  expect(stream.writes.at(-1)).toContain("ACCOUNT  @alice");
+  expect(stream.writes.at(-1)).toContain("Change display name");
+  stream.emit("data", Buffer.from("\r\x15Alice Example\r"));
+  expect(accounts.accountSettings(owner).displayName).toBe("Alice Example");
+  expect(stream.writes.at(-1)).toContain("display name updated");
+  stream.emit("data", Buffer.from("\x1b[B\r"));
+  expect(stream.writes.some((write) => write.includes("\x1b]777;open:"))).toBe(true);
+  expect(stream.writes.at(-1)).toContain("secure link ready");
+
+  stream.end();
+  accounts.close();
+});
+
+test("an anonymous sidebar identity opens the canonical sign-in action", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-account-anon-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+  const guest = anonymousPrincipal("SHA256:account-guest");
+  const stream = new FakeStream();
+  new TuiSession(stream as unknown as ServerChannel, directory.rooms, guest, accounts, "lobby", "https://example.test/?signin=1", undefined, undefined, directory, async () => ({ allowed: true }));
+
+  stream.emit("data", Buffer.from("\t\x1b[B\r"));
+  expect(stream.writes.at(-1)).toContain("ACCOUNT  @guest-");
+  expect(stream.writes.at(-1)).toContain("\x1b]8;;https://example.test/?signin=1");
+  stream.emit("data", Buffer.from("\r"));
+  expect(stream.writes.some((write) => write.includes("\x1b]777;open:"))).toBe(true);
+
+  stream.end();
+  accounts.close();
+});
+
 test("room contributors open the same Wasm editor inside the chat TUI", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-editor-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));

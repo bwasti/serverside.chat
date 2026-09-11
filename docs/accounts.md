@@ -28,6 +28,8 @@ Until provider credentials are configured, the UI exposes a conspicuously labele
 
 OAuth identities from different providers are never merged by matching email or handle. An already authenticated account may explicitly attach another provider identity; the flow records the initiating internal user ID, and refuses an identity already owned by another account.
 
+The rooms sidebar treats the bottom `@handle` row as a selectable account destination. Anonymous sessions can open the canonical OAuth flow there. Authenticated sessions can inspect their site role, plan, room allowance, linked provider names, and active SSH-key count; they can also update their display name or create a short-lived account-bound link for attaching another Google or GitHub identity. These changes remain host-owned and are recorded in the account audit log.
+
 Prototype owner accounts that existed before OAuth can run `ssh -p 2222 serverside.chat account`. The server returns a random, hashed-at-rest, single-use HTTPS link valid for ten minutes. Choosing Google or GitHub consumes that bootstrap token, binds the verified provider subject to the existing internal account, and issues the normal browser session. This is a migration path, not the routine browser sign-in flow.
 
 ## Room mount credentials

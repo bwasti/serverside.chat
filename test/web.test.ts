@@ -12,6 +12,7 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain("fetch('/_auth/development',{method:'POST'");
   expect(page).toContain("fetch('/_auth/ssh/link',{method:'POST'");
   expect(page).toContain("linkHandler:{activate:activateLink}");
+  expect(page).toContain("registerOscHandler(777");
   expect(page).toContain('data-provider="google"');
   expect(page).toContain('data-provider="github"');
   expect(browserTuiHtml([], false)).not.toContain('id="devwarning"');
