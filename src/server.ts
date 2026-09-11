@@ -45,7 +45,7 @@ const roomDefaults = [
 accounts.seedRoomsOnce(ownerPrincipal, [...roomDefaults]);
 accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contributions: "members", agentMode: "passive" });
 const fireworksKey = process.env.FIREWORKS_API_KEY;
-const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/glm-5p3-flash";
+const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/deepseek-v4p1-flash";
 let agent: FireworksAgent | undefined;
 let guideAgent: FireworksGuideAgent | undefined;
 let anonymousLobbyGate: AnonymousLobbyGate | undefined;
