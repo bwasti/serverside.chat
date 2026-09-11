@@ -16,7 +16,7 @@ export type AnonymousLobbyReview = (principal: Principal, text: string) => Promi
 
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
-const HEADER = `${ESC}48;5;235m${ESC}38;5;116m`;
+const HEADER = `${ESC}48;5;239m${ESC}38;5;116m`;
 const STATUS = `${ESC}48;5;236m${ESC}38;5;188m`;
 const COMPOSER = `${ESC}48;5;239m${ESC}38;5;188m`;
 const COMMAND = `${ESC}48;5;236m${ESC}38;5;188m`;

@@ -65,6 +65,7 @@ test("main chat canvas uses the same darkest Zenburn background as version contr
   tui.session.resize(120, 24);
   const frame = tui.stream.writes.at(-1)!;
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;102m  VERSION CONTROL");
+  expect(frame).toContain("\x1b[48;5;239m\x1b[38;5;116m  # mine");
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;188m");
   expect(frame).toContain("dark canvas");
   expect(frame).not.toContain("\x1b[48;5;237m");
