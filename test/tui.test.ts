@@ -58,6 +58,32 @@ test("empty composer shows a Zenburn command hint beside its arrow", () => {
   tui.stream.end();
 });
 
+test("main chat canvas uses the same darkest Zenburn background as version control", () => {
+  const room = new Room("mine");
+  room.chat("alice", "dark canvas");
+  const tui = open(room);
+  tui.session.resize(120, 24);
+  const frame = tui.stream.writes.at(-1)!;
+  expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;102m  VERSION CONTROL");
+  expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;188m");
+  expect(frame).toContain("dark canvas");
+  expect(frame).not.toContain("\x1b[48;5;237m");
+  tui.stream.end();
+});
+
+test("owner and agent names use distinct Zenburn blue and purple accents", () => {
+  const room = new Room("mine", 250, "https://example.test/mine", "alice");
+  room.messages.push(
+    { id: 1, kind: "chat", author: "alice", text: "owner note", at: new Date(), agentVisible: true },
+    { id: 2, kind: "agent", author: "room-agent", text: "agent note", at: new Date(), agentVisible: true },
+  );
+  const tui = open(room);
+  const frame = tui.stream.writes.at(-1)!;
+  expect(frame).toContain("\x1b[38;5;110malice");
+  expect(frame).toContain("\x1b[38;5;176mroom-agent");
+  tui.stream.end();
+});
+
 test("slash commands prefix-match and render above the composer", () => {
   expect(slashCommandMatches("/in").map((command) => command.name)).toEqual(["/invite"]);
   expect(slashCommandMatches("/mount revoke")).toEqual([]);
@@ -277,6 +303,7 @@ test("the sidebar identity opens keyboard-driven account settings", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-account-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice", "Alice");
+  accounts.ensureSiteAdmin(owner);
   accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   const stream = new FakeStream();
@@ -285,6 +312,8 @@ test("the sidebar identity opens keyboard-driven account settings", () => {
   stream.emit("data", Buffer.from("\t\x1b[B\r"));
   expect(stream.writes.at(-1)).toContain("ACCOUNT  @alice");
   expect(stream.writes.at(-1)).toContain("Change display name");
+  expect(stream.writes.at(-1)).toContain("\x1b[38;5;110madmin");
+  expect(stream.writes.at(-1)).toContain("\x1b[38;5;108mChange display name");
   stream.emit("data", Buffer.from("\r\x15Alice Example\r"));
   expect(accounts.accountSettings(owner).displayName).toBe("Alice Example");
   expect(stream.writes.at(-1)).toContain("display name updated");

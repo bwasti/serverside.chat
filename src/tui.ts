@@ -27,8 +27,9 @@ const SIDEBAR_ACTIVE = `${ESC}48;5;59m${ESC}38;5;188m`;
 const HUD = `${ESC}48;5;235m${ESC}38;5;188m`;
 const HUD_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
 const MUTED = `${ESC}38;5;102m`;
-const CHAT = `${ESC}48;5;237m${ESC}38;5;188m`;
-const OWNER = `${ESC}38;5;176m`;
+const CHAT = `${ESC}48;5;235m${ESC}38;5;188m`;
+const CHAT_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
+const OWNER = `${ESC}38;5;110m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const GREEN = `${ESC}38;5;108m`;
@@ -805,19 +806,20 @@ export class TuiSession {
     const authenticated = this.principal.authenticated && this.principal.kind === "user";
     const settings = authenticated ? this.accounts?.accountSettings(this.principal) : undefined;
     const linkUrl = this.accountPanel.linkUrl ?? (!authenticated ? this.signInUrl : undefined);
-    const action = (index: number, label: string, detail = "") => {
+    const action = (index: number, label: string, detail = "", tone = CHAT) => {
       const focused = this.accountPanel?.field === index;
       const prefix = `  ${focused ? "›" : "·"} ${label}`;
       const clippedDetail = detail ? truncate(detail, Math.max(0, width - terminalWidth(prefix) - 3)) : "";
-      return padAnsi(`  ${focused ? `${CYAN}›${CHAT}` : `${MUTED}·${CHAT}`} ${focused ? `${ESC}1m${label}${ESC}22m` : label}${clippedDetail ? `   ${MUTED}${clippedDetail}${CHAT}` : ""}`, width);
+      const styledLabel = focused ? `${ESC}1m${tone}${label}${ESC}22m${CHAT}` : `${tone}${label}${CHAT}`;
+      return padAnsi(`  ${focused ? `${CYAN}›${CHAT}` : `${MUTED}·${CHAT}`} ${styledLabel}${clippedDetail ? `   ${MUTED}${clippedDetail}${CHAT}` : ""}`, width);
     };
     const rows = authenticated && settings ? [
       "",
       `  @${settings.handle} · ${settings.displayName}`,
-      `  ${settings.siteRole} · ${settings.plan} plan · ${settings.ownedRooms}/${settings.roomLimit} rooms`,
+      `  ${OWNER}${settings.siteRole}${CHAT} · ${settings.plan} plan · ${settings.ownedRooms}/${settings.roomLimit} rooms`,
       `  sign-in  ${settings.providers.length ? settings.providers.join(" · ") : "none linked"} · ${settings.sshKeys} SSH ${settings.sshKeys === 1 ? "key" : "keys"}`,
       "",
-      action(0, "Change display name", this.accountPanel.editing ? "editing below" : settings.displayName),
+      action(0, "Change display name", this.accountPanel.editing ? "editing below" : settings.displayName, GREEN),
       action(1, "Add a sign-in method", linkUrl ? "secure link ready" : "Google or GitHub"),
       action(2, "Back to chat"),
     ] : [
@@ -1046,7 +1048,7 @@ export class TuiSession {
     const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const body = visible.map(({ text, kind }, index) => {
-      const color = kind === "system" ? MUTED : CHAT;
+      const color = kind === "system" ? CHAT_MUTED : CHAT;
       const columnRow = index + topRows.length;
       const rendered = padAnsi(text, mainWidth);
       const renderedText = this.sidebarFocused ? rendered.replaceAll(`${ESC}22m`, `${ESC}22m${DIM}`) : rendered;
@@ -1207,7 +1209,7 @@ export class TuiSession {
     const time = message.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
     const marker = message.kind === "agent" ? "✦" : message.kind === "commit" ? "◆" : message.kind === "system" ? "·" : "›";
     const plainPrefix = ` ${time} ${marker} ${message.author}  `;
-    const nameTone = message.author === "room-agent" ? CYAN : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
+    const nameTone = message.author === "room-agent" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
     const styledName = `${ESC}1m${nameTone}${message.author}${ESC}22m${message.kind === "system" ? MUTED : CHAT}`;
     const styledPrefix = ` ${time} ${marker} ${styledName}  `;
     if (message.kind === "commit" && message.url) {
