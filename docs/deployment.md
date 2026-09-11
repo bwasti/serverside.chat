@@ -12,6 +12,8 @@ The systemd unit is [`deploy/serverside-chat.service`](../deploy/serverside-chat
 
 ```dotenv
 FIREWORKS_API_KEY=...
+FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4p1-flash
+FIREWORKS_CLASSIFIER_MODEL=accounts/fireworks/models/qwen3p8-flash-next-nvfp4
 WEB_BASE_URL=https://your-host
 ROOM_OWNER=your-handle
 SSH_BOOTSTRAP_KEYS=/etc/serverside-chat/owner.pub

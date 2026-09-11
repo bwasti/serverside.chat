@@ -81,7 +81,7 @@ Fresh installations seed one public development room, `hello-world`, with member
 
 ## Room agent
 
-Set `FIREWORKS_API_KEY` to enable the real room agent. It uses `accounts/fireworks/models/deepseek-v4p1-flash` by default; override that with `FIREWORKS_MODEL`. Agent requests are serialized per room and include the latest 30 non-system transcript messages.
+Set `FIREWORKS_API_KEY` to enable the real room agent. It uses `accounts/fireworks/models/deepseek-v4p1-flash` by default; override that with `FIREWORKS_MODEL`. Lightweight AI classification, currently anonymous lobby moderation, defaults to `accounts/fireworks/models/qwen3p8-flash-next-nvfp4` and can be overridden independently with `FIREWORKS_CLASSIFIER_MODEL`. Agent requests are serialized per room and include the latest 30 non-system transcript messages.
 
 Each provider completion has a five-minute total budget. Fast transient network, rate-limit, and server failures retry within that same budget. Current provider wait/retry activity appears in the persistent AGENT status row; terminal failures also enter the right-hand live log as red `AGENT error` events. A concrete implementation request cannot resolve as silence before a commit or one explicit blocker; the host forces one continuation and then surfaces an error if the model still stops without either.
 

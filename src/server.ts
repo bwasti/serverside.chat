@@ -46,6 +46,7 @@ accounts.seedRoomsOnce(ownerPrincipal, [...roomDefaults]);
 accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contributions: "members", agentMode: "passive" });
 const fireworksKey = process.env.FIREWORKS_API_KEY;
 const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/deepseek-v4p1-flash";
+const fireworksClassifierModel = process.env.FIREWORKS_CLASSIFIER_MODEL ?? "accounts/fireworks/models/qwen3p8-flash-next-nvfp4";
 let agent: FireworksAgent | undefined;
 let guideAgent: FireworksGuideAgent | undefined;
 let anonymousLobbyGate: AnonymousLobbyGate | undefined;
@@ -54,7 +55,7 @@ if (fireworksKey) {
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
   agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
   guideAgent = new FireworksGuideAgent(fireworksKey, fireworksModel, readFileSync("prompts/lobby-agent/system.md", "utf8").trim());
-  anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()));
+  anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()));
 }
 const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: string) => anonymousLobbyGate.review(principal, text) : undefined;
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
@@ -190,7 +191,7 @@ server.listen(port, host, () => {
   console.log(`serverside.chat listening on ssh://${host}:${port}`);
   console.log(`Connect with: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p ${port}`);
   console.log(`Room pages listening on http://${webHost}:${webServer.port}`);
-  console.log(fireworksKey ? `Room agent enabled: ${fireworksModel}` : "Room agent disabled: FIREWORKS_API_KEY is not set");
+  console.log(fireworksKey ? `Room agent enabled: ${fireworksModel}; classifier: ${fireworksClassifierModel}` : "Room agent disabled: FIREWORKS_API_KEY is not set");
 });
 
 function sanitizeUsername(value: string): string {
