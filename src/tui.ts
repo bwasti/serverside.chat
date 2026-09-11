@@ -17,7 +17,7 @@ export type AnonymousLobbyReview = (principal: Principal, text: string) => Promi
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
 const HEADER = `${ESC}48;5;239m${ESC}38;5;116m`;
-const STATUS = `${ESC}48;5;236m${ESC}38;5;188m`;
+const STATUS = `${ESC}48;5;237m${ESC}38;5;188m`;
 const COMPOSER = `${ESC}48;5;239m${ESC}38;5;188m`;
 const COMMAND = `${ESC}48;5;236m${ESC}38;5;188m`;
 const COMMAND_ACTIVE = `${ESC}48;5;239m${ESC}38;5;188m`;
@@ -128,7 +128,7 @@ export class TuiSession {
     if (!this.principal.authenticated && this.accounts) this.localNotice = this.reviewAnonymousLobby
       ? "anonymous · lobby messages are moderated · sign in to create rooms"
       : "anonymous · browse only · sign in to contribute";
-    this.write("\x1b[?1049h\x1b[?25h");
+    this.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25h");
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
     this.unsubscribeDirectory = directory?.subscribe((event) => this.refreshRooms(event));
@@ -272,6 +272,15 @@ export class TuiSession {
   }
 
   private handleEscape(sequence: string): { dirty: boolean; inputChanged: boolean } {
+    const mouse = sequence.match(/^\x1b\[<(\d+);\d+;\d+[Mm]$/);
+    if (mouse) {
+      const button = Number(mouse[1]);
+      if (button === 64 || button === 65) {
+        this.scrollChat(button === 64 ? 3 : -3);
+        return { dirty: true, inputChanged: false };
+      }
+      return { dirty: false, inputChanged: false };
+    }
     const arrow = sequence.match(/^\x1b\[(?:(1;[2-8]))?([ABCD])$/);
     if (arrow) {
       const modifier = arrow[1];
@@ -972,9 +981,8 @@ export class TuiSession {
     const sidebarWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.currentHudWidth();
     const mainWidth = this.mainWidth();
-    const pageLinks = this.pageLinkRows(mainWidth, Math.max(1, Math.min(5, this.height - 8)));
     const topStatus = this.topStatusRows(mainWidth, this.height);
-    const topRows = [...pageLinks, ...topStatus];
+    const topRows = topStatus;
     const writable = this.canUseComposer();
     const readOnlyText = this.principal.authenticated
       ? this.room.policy.contributions === "disabled"
@@ -1037,15 +1045,26 @@ export class TuiSession {
       else visible.unshift(blank);
     }
 
-    const title = createRoomScreen ? "  + new room" : `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
-    const status = createRoomScreen ? "setup  " : `${this.scrollOffset ? `↑${this.scrollOffset}  ` : ""}${this.room.members.size} online  `;
-    const headerGap = " ".repeat(Math.max(1, mainWidth - title.length - status.length));
+    const status = createRoomScreen ? "setup  " : this.scrollOffset ? `↑${this.scrollOffset}  ` : "";
+    const titleWidth = Math.max(1, mainWidth - terminalWidth(status));
+    const baseTitle = createRoomScreen
+      ? "  + new room"
+      : `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
+    const pageRef = !createRoomScreen && this.room.name !== "lobby" ? compactUrl(this.room.pageUrl) : "";
+    const titleCandidates = pageRef
+      ? [`${baseTitle}   ↗ ${pageRef}`, `  # ${this.room.name}   ↗ ${pageRef}`, `  ↗ ${pageRef}`]
+      : [baseTitle];
+    const plainTitle = titleCandidates.find((candidate) => terminalWidth(candidate) <= titleWidth)
+      ?? truncate(titleCandidates.at(-1)!, titleWidth);
+    const linkedTitle = pageRef && plainTitle.includes(pageRef)
+      ? linkText(plainTitle, pageRef, this.room.pageUrl, CYAN, HEADER)
+      : plainTitle;
     const sidebarHeader = sidebarWidth <= 3
       ? `${SIDEBAR_MUTED}${pad(" › ", sidebarWidth)}${RESET}`
       : `${SIDEBAR}${pad(truncate("  serverside.chat", sidebarWidth), sidebarWidth)}${RESET}`;
     const paneTone = this.sidebarFocused ? DIM : "";
     const hudHeader = hudWidth ? this.dimInactiveHud(`${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}`) : "";
-    const header = `${sidebarHeader}${paneTone}${HEADER}${title}${headerGap}${status}${RESET}${hudHeader}`;
+    const header = `${sidebarHeader}${paneTone}${HEADER}${padAnsi(linkedTitle, titleWidth)}${status}${RESET}${hudHeader}`;
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const body = visible.map(({ text, kind }, index) => {
       const color = kind === "system" ? CHAT_MUTED : CHAT;
@@ -1105,19 +1124,6 @@ export class TuiSession {
     if (frame === this.lastFrame) return;
     this.lastFrame = frame;
     this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
-  }
-
-  private pageLinkRows(width: number, _limit: number): string[] {
-    if (this.room.name === "lobby" || this.onCreateRoomScreen()) return [];
-    const links = [{ label: "main", url: this.room.pageUrl }];
-    return links.map((link) => {
-      const ref = compactUrl(link.url).replace(/^localhost:\d+\//, "");
-      const description = link.label === "head" ? "working tip" : link.label;
-      const label = truncate(`  ↗ ${ref}  —  ${description}`, width);
-      const start = label.indexOf(ref);
-      const rendered = start < 0 ? label : `${label.slice(0, start)}\x1b]8;;${link.url}\x1b\\${ESC}24m${label.slice(start, start + ref.length)}\x1b]8;;\x1b\\${label.slice(start + ref.length)}`;
-      return rendered + " ".repeat(Math.max(0, width - Array.from(label).length));
-    });
   }
 
   private topStatusRows(width: number, height: number): string[] {
@@ -1254,7 +1260,7 @@ export class TuiSession {
     this.room.leave(this.username);
     this.accountPanel = undefined;
     this.mountPanel = undefined;
-    this.write("\x1b[?25h\x1b[?1049l");
+    this.write("\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l");
   }
 
   private write(value: string): void {

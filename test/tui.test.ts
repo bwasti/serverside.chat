@@ -66,10 +66,29 @@ test("main chat canvas uses the same darkest Zenburn background as version contr
   const frame = tui.stream.writes.at(-1)!;
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;102m  VERSION CONTROL");
   expect(frame).toContain("\x1b[48;5;239m\x1b[38;5;116m  # mine");
+  expect(frame).toContain("\x1b]8;;http://localhost:3000/mine\x1b\\localhost:3000/mine\x1b]8;;\x1b\\");
+  expect(frame).toContain("\x1b[48;5;237m\x1b[38;5;188m  SITE");
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;188m");
   expect(frame).toContain("dark canvas");
-  expect(frame).not.toContain("\x1b[48;5;237m");
   tui.stream.end();
+});
+
+test("mouse wheel scrolls through chat history and restores the live edge", () => {
+  const room = new Room("mine");
+  for (let index = 0; index < 20; index += 1) room.chat("alice", `message ${index}`);
+  const tui = open(room);
+  tui.session.resize(80, 12);
+  expect(tui.stream.writes.at(-1)).toContain("message 19");
+
+  tui.stream.emit("data", Buffer.from("\x1b[<64;20;8M"));
+  expect(tui.stream.writes.at(-1)).toContain("↑3");
+  expect(tui.stream.writes.at(-1)).not.toContain("message 19");
+
+  tui.stream.emit("data", Buffer.from("\x1b[<65;20;8M"));
+  expect(tui.stream.writes.at(-1)).not.toContain("↑3");
+  expect(tui.stream.writes.at(-1)).toContain("message 19");
+  tui.stream.end();
+  expect(tui.stream.writes.at(-1)).toContain("\x1b[?1006l\x1b[?1000l");
 });
 
 test("owner and agent names use distinct Zenburn blue and purple accents", () => {
