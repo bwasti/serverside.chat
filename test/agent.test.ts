@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { isConcreteWorkRequest, isTrivialSocialMessage, shouldGuideRespond } from "../src/agent";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FireworksAgent, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, ROOM_AGENT_PROVIDER_TIMEOUT_MS, shouldGuideRespond } from "../src/agent";
+import type { Message } from "../src/room";
+import { RoomWorkspace } from "../src/workspace";
 
 test("social greetings are deterministically swallowed before model routing", () => {
   for (const message of ["hi", "Hi Alice", "@room-agent hello", "hey everyone!", "thanks", "cool"]) {
@@ -27,3 +32,61 @@ test("the lobby guide admits product questions but not social or unrelated chat"
     expect(shouldGuideRespond(message)).toBe(false);
   }
 });
+
+test("room agent provider calls have a five-minute production budget", () => {
+  expect(ROOM_AGENT_PROVIDER_TIMEOUT_MS).toBe(5 * 60_000);
+});
+
+test("concrete work remains pending across a follow-up until a commit or agent blocker", () => {
+  const history = [message("chat", "create a notes app"), message("chat", "cmon bot, do this")];
+  expect(hasPendingConcreteWork(history)).toBe(true);
+  expect(hasPendingConcreteWork([...history, message("agent", "A required capability is unavailable.")])).toBe(false);
+  expect(hasPendingConcreteWork([...history, message("commit", "abc1234 Build notes app")])).toBe(false);
+});
+
+test("transient provider failures retry within the completion budget", async () => {
+  let calls = 0;
+  const activity: string[] = [];
+  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+    timeoutMs: 1_000,
+    attempts: 2,
+    retryDelayMs: 0,
+    fetcher: async () => {
+      calls++;
+      return calls === 1
+        ? Response.json({ error: { message: "temporarily busy" } }, { status: 503 })
+        : Response.json({ choices: [{ message: { role: "assistant", content: "worker.js serves the room." } }] });
+    },
+  });
+  const reply = await agent.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), (status, detail) => activity.push(`${status}:${detail}`), "alice", "alice", false, () => []);
+  expect(reply).toBe("worker.js serves the room.");
+  expect(calls).toBe(2);
+  expect(activity.some((entry) => entry.includes("retrying provider · 2/2"))).toBe(true);
+});
+
+test("a provider timeout becomes an explicit bounded agent failure", async () => {
+  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+    timeoutMs: 10,
+    attempts: 1,
+    fetcher: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }),
+  });
+  await expect(agent.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("provider timed out after 10ms");
+});
+
+test("pending implementation work gets one corrective continuation instead of silence", async () => {
+  let calls = 0;
+  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+    timeoutMs: 1_000,
+    attempts: 1,
+    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: ++calls === 1 ? "[silent]" : "A required capability is unavailable." } }] }),
+  });
+  const history = [message("chat", "create a notes app"), message("chat", "cmon bot, do this")];
+  const reply = await agent.respond("test", "https://test.example", history, workspace(), () => {}, "alice", "alice", false, () => []);
+  expect(reply).toBe("A required capability is unavailable.");
+  expect(calls).toBe(2);
+});
+
+function workspace(): RoomWorkspace { return new RoomWorkspace(mkdtempSync(join(tmpdir(), "serverside-chat-agent-")), "test"); }
+function message(kind: Message["kind"], text: string): Message { return { id: Math.floor(Math.random() * 1_000_000), kind, author: kind === "agent" ? "room-agent" : "alice", text, at: new Date(), agentVisible: true }; }

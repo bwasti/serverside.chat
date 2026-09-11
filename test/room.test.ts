@@ -100,6 +100,15 @@ test("room uses a configured asynchronous agent", async () => {
   expect(room.messages.at(-1)?.text).toBe("saw @room-agent hello");
 });
 
+test("agent failures remain visible in the HUD status", async () => {
+  const room = new Room("mine");
+  const failed = new Promise<void>((resolve) => room.subscribeService(() => { if (room.agentState.status === "error") resolve(); }));
+  room.setAgentResponder(async () => { throw new Error("provider timed out after 5m"); });
+  room.agent("alice", "build the page");
+  await failed;
+  expect(room.agentState).toMatchObject({ status: "error", detail: "provider timed out after 5m" });
+});
+
 test("canonical promotions are authoritatively logged in chat", async () => {
   const room = new Room("mine");
   const trunkLogged = new Promise<void>((resolve) => {

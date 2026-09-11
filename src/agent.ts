@@ -7,6 +7,18 @@ interface ApiMessage { role: string; content?: string | null; tool_calls?: ToolC
 interface ApiResponse { choices?: Array<{ message?: ApiMessage }>; error?: { message?: string } }
 type RoomIntent = "IGNORE" | "WORK" | "TECHNICAL";
 export type AgentActivity = (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void;
+type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export const ROOM_AGENT_PROVIDER_TIMEOUT_MS = 5 * 60_000;
+const ROOM_AGENT_PROVIDER_ATTEMPTS = 2;
+
+export interface FireworksAgentOptions {
+  baseUrl?: string;
+  timeoutMs?: number;
+  attempts?: number;
+  retryDelayMs?: number;
+  fetcher?: Fetcher;
+}
 
 const pathProperty = { path: { type: "string", description: "Repository-relative file path; .git and paths outside the repository are forbidden" } };
 const tools = [
@@ -32,11 +44,26 @@ const tools = [
 ];
 
 export class FireworksAgent {
-  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
+  private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly attempts: number;
+  private readonly retryDelayMs: number;
+  private readonly fetcher: Fetcher;
+
+  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, options: FireworksAgentOptions = {}) {
+    this.baseUrl = options.baseUrl ?? "https://api.fireworks.ai/inference/v1";
+    this.timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? ROOM_AGENT_PROVIDER_TIMEOUT_MS));
+    this.attempts = Math.max(1, Math.min(3, Math.floor(options.attempts ?? ROOM_AGENT_PROVIDER_ATTEMPTS)));
+    this.retryDelayMs = Math.max(0, Math.min(10_000, Math.floor(options.retryDelayMs ?? 1_000)));
+    this.fetcher = options.fetcher ?? fetch;
+  }
 
   async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: AgentActivity, requester: string, owner: string, canPromote: boolean, serviceLogs: (limit?: number) => string[]): Promise<string> {
     const latest = [...history].reverse().find((message) => message.kind === "chat");
     if (!latest || isTrivialSocialMessage(latest.text)) return "[silent]";
+    const concreteWorkPending = hasPendingConcreteWork(history);
+    let correctiveRetry = false;
+    let committed = false;
     activity("thinking", "reading room activity");
     const intent: RoomIntent = looksLikeTechnicalQuestion(latest.text) && !isConcreteWorkRequest(latest.text) ? "TECHNICAL" : "WORK";
     const messages: ChatMessage[] = [
@@ -45,18 +72,30 @@ export class FireworksAgent {
     ];
     for (let turn = 0; turn < 10; turn++) {
       activity("thinking", turn ? "reviewing tool results" : "reading the room");
-      const message = await this.complete(messages);
+      const message = await this.complete(messages, activity);
       messages.push(message);
       if (!message.tool_calls?.length) {
         const reply = filterReply(intent, message.content);
         const raw = message.content?.trim() || "[silent]";
+        if (concreteWorkPending && !committed && reply === "[silent]") {
+          if (!correctiveRetry) {
+            correctiveRetry = true;
+            activity("thinking", "work incomplete · continuing");
+            messages.push({ role: "system", content: "A concrete implementation request is still pending. Inspection alone is not completion. Continue with repository tools until you create a commit and preview, or return one terse sentence naming a genuine capability, permission, or ambiguity blocker. Do not return [silent]." });
+            continue;
+          }
+          throw new Error("agent stopped without a commit or blocker");
+        }
         activity("working", reply === "[silent]" ? (raw === "[silent]" ? "agent chose silence" : "response suppressed") : "response admitted");
         return reply;
       }
       for (const call of message.tool_calls) {
         activity("working", call.function.name.replaceAll("_", " "));
         const result = execute(workspace, pageUrl, call, canPromote, serviceLogs);
-        if (call.function.name === "git_commit" && result.ok && typeof result.commit === "string") activity("working", "commit created", { label: `${result.commit} ${String(result.title)}`, url: `${pageUrl}?__ref=${result.commit}`, blurb: String(result.blurb ?? "") });
+        if (call.function.name === "git_commit" && result.ok && typeof result.commit === "string") {
+          committed = true;
+          activity("working", "commit created", { label: `${result.commit} ${String(result.title)}`, url: `${pageUrl}?__ref=${result.commit}`, blurb: String(result.blurb ?? "") });
+        }
         if (call.function.name === "create_preview" && result.ok && typeof result.url === "string") activity("working", "preview ready", { label: String(result.description ?? `preview ${String(result.commit ?? "")}`), url: result.url });
         if (call.function.name === "archive_preview" && result.ok && typeof result.url === "string") activity("working", "preview archived", { label: "archived", url: result.url });
         if (call.function.name === "promote_preview" && result.ok) {
@@ -69,16 +108,48 @@ export class FireworksAgent {
     throw new Error("agent exceeded the 10-turn tool budget");
   }
 
-  private async complete(messages: ChatMessage[]): Promise<ApiMessage> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 }), signal: AbortSignal.timeout(60_000) });
-    const body = (await response.json()) as ApiResponse;
-    if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
-    const message = body.choices?.[0]?.message;
-    if (!message) throw new Error("Fireworks returned no message");
-    return message;
+  private async complete(messages: ChatMessage[], activity: AgentActivity): Promise<ApiMessage> {
+    const deadline = Date.now() + this.timeoutMs;
+    let lastFailure = "provider request failed";
+    for (let attempt = 1; attempt <= this.attempts; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`provider timed out after ${formatDuration(this.timeoutMs)}`);
+      activity("thinking", attempt === 1 ? `waiting for provider · ${formatDuration(this.timeoutMs)} limit` : `retrying provider · ${attempt}/${this.attempts}`);
+      try {
+        const response = await this.fetcher(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 }), signal: AbortSignal.timeout(Math.max(1, remaining)) });
+        const body = (await response.json()) as ApiResponse;
+        if (response.ok) {
+          const message = body.choices?.[0]?.message;
+          if (!message) throw new Error("provider returned no message");
+          return message;
+        }
+        lastFailure = boundedProviderFailure(body.error?.message ?? `HTTP ${response.status}`);
+        if (!transientStatus(response.status) || attempt === this.attempts) throw new Error(`provider unavailable: ${lastFailure}`);
+      } catch (error) {
+        if (isTimeout(error) || Date.now() >= deadline) throw new Error(`provider timed out after ${formatDuration(this.timeoutMs)}`);
+        const message = error instanceof Error ? error.message : "provider request failed";
+        if (message.startsWith("provider unavailable:")) throw error;
+        lastFailure = boundedProviderFailure(message);
+        if (attempt === this.attempts) throw new Error(`provider unavailable: ${lastFailure}`);
+      }
+      const retryWait = Math.min(this.retryDelayMs, Math.max(0, deadline - Date.now() - 1));
+      if (retryWait) await Bun.sleep(retryWait);
+    }
+    throw new Error(`provider unavailable: ${lastFailure}`);
   }
 
 }
+
+export function hasPendingConcreteWork(history: Message[]): boolean {
+  let resolvedThrough = -1;
+  for (let index = 0; index < history.length; index++) if (history[index]!.kind === "agent" || history[index]!.kind === "commit") resolvedThrough = index;
+  return history.slice(resolvedThrough + 1).some((message) => message.kind === "chat" && isConcreteWorkRequest(message.text));
+}
+
+function transientStatus(status: number): boolean { return status === 408 || status === 425 || status === 429 || status >= 500; }
+function isTimeout(error: unknown): boolean { return error instanceof Error && (error.name === "TimeoutError" || /timed?\s*out/i.test(error.message)); }
+function boundedProviderFailure(value: string): string { return value.replace(/[\r\n]+/g, " ").trim().slice(0, 160) || "request failed"; }
+function formatDuration(milliseconds: number): string { return milliseconds >= 60_000 && milliseconds % 60_000 === 0 ? `${milliseconds / 60_000}m` : `${milliseconds}ms`; }
 
 export class FireworksGuideAgent {
   constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
