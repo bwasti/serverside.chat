@@ -231,7 +231,7 @@ test("agent failures render as distinct live-log entries", () => {
   expect(rendered).toContain("provider returned no usable completion");
 });
 
-test("lobby replaces the developer dashboard with a padded, concise introduction", () => {
+test("lobby replaces the developer dashboard with a padded quick-start", () => {
   const lobby = new Room("lobby");
   const tui = open(lobby);
   tui.session.resize(120, 24);
@@ -243,15 +243,20 @@ test("lobby replaces the developer dashboard with a padded, concise introduction
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .slice(3)
     .trim();
-  expect(frame).toContain("serverside.chat");
-  expect(frame).toContain("build live software together");
-  expect(visibleMain(lines[1]!)).toBe("");
-  expect(visibleMain(lines[3]!)).toBe("chat  →  commit  →  live preview");
+  expect(frame).toContain("\x1b]8;;http://localhost:3000\x1b\\localhost:3000\x1b]8;;\x1b\\");
+  expect(visibleMain(lines[1]!)).toBe("ssh -p 2222 serverside.chat");
+  expect(visibleMain(lines[2]!)).toBe("");
+  expect(visibleMain(lines[3]!)).toBe("Each chat room comes paired with a website server and a bot to help you build.");
   expect(visibleMain(lines[4]!)).toBe("");
-  expect(visibleMain(lines[5]!)).toContain("TAB rooms");
-  expect(visibleMain(lines[5]!)).toContain("/ commands");
-  expect(visibleMain(lines[5]!)).toContain("ask here for help");
-  expect(visibleMain(lines[6]!)).toBe("");
+  expect(visibleMain(lines[5]!)).toBe("TAB           open the room bar");
+  expect(visibleMain(lines[6]!)).toBe("/mount        instructions to mount the room's filesystem");
+  expect(visibleMain(lines[7]!)).toBe("/invite       create a one-use room invite");
+  expect(visibleMain(lines[8]!)).toBe("/edit         open a room file in the terminal editor");
+  expect(visibleMain(lines[9]!)).toBe("/permissions  view or change the room's access rules");
+  expect(visibleMain(lines[10]!)).toBe("/             see all commands");
+  expect(visibleMain(lines[11]!)).toBe("");
+  expect(visibleMain(lines[12]!)).toBe("ask here for help");
+  expect(frame).not.toContain("live preview");
   expect(frame).not.toContain("VERSION CONTROL");
   expect(frame).not.toContain("LIVE LOGS");
   expect(frame).not.toContain("SITE   ");

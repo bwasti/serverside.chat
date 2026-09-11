@@ -1050,14 +1050,18 @@ export class TuiSession {
     const baseTitle = createRoomScreen
       ? "  + new room"
       : `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
-    const pageRef = !createRoomScreen && this.room.name !== "lobby" ? compactUrl(this.room.pageUrl) : "";
+    let headerPageUrl = !createRoomScreen ? this.room.pageUrl : "";
+    if (headerPageUrl && this.room.name === "lobby") {
+      try { headerPageUrl = new URL(headerPageUrl).origin; } catch { /* keep the room URL */ }
+    }
+    const pageRef = headerPageUrl ? compactUrl(headerPageUrl) : "";
     const titleCandidates = pageRef
       ? [`${baseTitle}   ↗ ${pageRef}`, `  # ${this.room.name}   ↗ ${pageRef}`, `  ↗ ${pageRef}`]
       : [baseTitle];
     const plainTitle = titleCandidates.find((candidate) => terminalWidth(candidate) <= titleWidth)
       ?? truncate(titleCandidates.at(-1)!, titleWidth);
     const linkedTitle = pageRef && plainTitle.includes(pageRef)
-      ? linkText(plainTitle, pageRef, this.room.pageUrl, CYAN, HEADER)
+      ? linkText(plainTitle, pageRef, headerPageUrl, CYAN, HEADER)
       : plainTitle;
     const sidebarHeader = sidebarWidth <= 3
       ? `${SIDEBAR_MUTED}${pad(" › ", sidebarWidth)}${RESET}`
@@ -1138,10 +1142,26 @@ export class TuiSession {
       return height < 12 ? [title] : [title, defaults];
     }
     if (this.room.name === "lobby") {
-      const intro = `    ${CYAN}${ESC}1mserverside.chat${ESC}22m${STATUS}   build live software together`;
-      const flow = `    ${GREEN}chat${STATUS}  →  ${YELLOW}commit${STATUS}  →  ${CYAN}live preview${STATUS}`;
-      const keys = `    ${MUTED}TAB${STATUS} rooms     ${MUTED}/${STATUS} commands     ask here for help`;
-      return height < 13 ? [intro, keys] : ["", intro, flow, "", keys, ""];
+      const ssh = `    ${MUTED}ssh -p 2222 serverside.chat${STATUS}`;
+      const description = "    Each chat room comes paired with a website server and a bot to help you build.";
+      const instruction = (command: string, detail: string) => `    ${CYAN}${pad(command, 14)}${STATUS}${detail}`;
+      const help = `    ${ESC}1mask here for help${ESC}22m${STATUS}`;
+      if (height < 15) return [ssh, `    ${MUTED}TAB${STATUS} rooms     ${MUTED}/${STATUS} commands     ask here for help`];
+      if (height < 20) return [ssh, "", description, "", instruction("TAB", "open the room bar"), instruction("/", "see all commands"), help];
+      return [
+        ssh,
+        "",
+        description,
+        "",
+        instruction("TAB", "open the room bar"),
+        instruction("/mount", "instructions to mount the room's filesystem"),
+        instruction("/invite", "create a one-use room invite"),
+        instruction("/edit", "open a room file in the terminal editor"),
+        instruction("/permissions", "view or change the room's access rules"),
+        instruction("/", "see all commands"),
+        "",
+        help,
+      ];
     }
     const active = this.agentIsActive();
     const spinner = active ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
