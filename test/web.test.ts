@@ -13,6 +13,9 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain("fetch('/_auth/ssh/link',{method:'POST'");
   expect(page).toContain("linkHandler:{activate:activateLink}");
   expect(page).toContain("registerOscHandler(777");
+  expect(page).toContain("background:'#3f3f3f'");
+  expect(page).toContain("foreground:'#dcdccc'");
+  expect(page).toContain("cursor:'#f0dfaf'");
   expect(page).toContain("location.pathname.split('/').filter(Boolean)");
   expect(page).not.toContain("location.pathname.match(/^/room/");
   expect(page).toContain('data-provider="google"');

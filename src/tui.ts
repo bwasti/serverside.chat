@@ -16,24 +16,52 @@ export type AnonymousLobbyReview = (principal: Principal, text: string) => Promi
 
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
-const HEADER = `${ESC}48;5;234m${ESC}38;5;45m`;
-const STATUS = `${ESC}48;5;234m${ESC}38;5;252m`;
-const COMPOSER = `${ESC}48;5;238m${ESC}38;5;255m`;
-const SIDEBAR = `${ESC}48;5;236m${ESC}38;5;250m`;
-const SIDEBAR_MUTED = `${ESC}48;5;236m${ESC}38;5;244m`;
-const SIDEBAR_ACTIVE = `${ESC}48;5;60m${ESC}38;5;255m`;
-const HUD = `${ESC}48;5;233m${ESC}38;5;250m`;
-const HUD_MUTED = `${ESC}48;5;233m${ESC}38;5;244m`;
-const MUTED = `${ESC}38;5;244m`;
-const CHAT = `${ESC}38;5;252m`;
-const OWNER = `${ESC}38;5;213m`;
+const HEADER = `${ESC}48;5;235m${ESC}38;5;116m`;
+const STATUS = `${ESC}48;5;236m${ESC}38;5;188m`;
+const COMPOSER = `${ESC}48;5;239m${ESC}38;5;188m`;
+const COMMAND = `${ESC}48;5;236m${ESC}38;5;188m`;
+const COMMAND_ACTIVE = `${ESC}48;5;239m${ESC}38;5;188m`;
+const SIDEBAR = `${ESC}48;5;236m${ESC}38;5;188m`;
+const SIDEBAR_MUTED = `${ESC}48;5;236m${ESC}38;5;102m`;
+const SIDEBAR_ACTIVE = `${ESC}48;5;59m${ESC}38;5;188m`;
+const HUD = `${ESC}48;5;235m${ESC}38;5;188m`;
+const HUD_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
+const MUTED = `${ESC}38;5;102m`;
+const CHAT = `${ESC}48;5;237m${ESC}38;5;188m`;
+const OWNER = `${ESC}38;5;176m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const GREEN = `${ESC}38;5;82m`;
-const YELLOW = `${ESC}38;5;220m`;
-const RED = `${ESC}38;5;203m`;
-const CYAN = `${ESC}38;5;45m`;
-const MAGENTA = `${ESC}38;5;213m`;
+const GREEN = `${ESC}38;5;108m`;
+const YELLOW = `${ESC}38;5;223m`;
+const RED = `${ESC}38;5;181m`;
+const CYAN = `${ESC}38;5;116m`;
+const MAGENTA = `${ESC}38;5;176m`;
+
+export interface SlashCommand {
+  name: string;
+  usage: string;
+  description: string;
+  requiresArgument: boolean;
+}
+
+export const SLASH_COMMANDS: readonly SlashCommand[] = [
+  { name: "/agent", usage: "/agent <request>", description: "ask the room agent", requiresArgument: true },
+  { name: "/invite", usage: "/invite <role>", description: "create a one-use room invite", requiresArgument: true },
+  { name: "/mount", usage: "/mount [revoke]", description: "mount or revoke room files", requiresArgument: false },
+  { name: "/edit", usage: "/edit <path>", description: "edit a room file", requiresArgument: true },
+  { name: "/permissions", usage: "/permissions [field value]", description: "inspect or change room policy", requiresArgument: false },
+  { name: "/room", usage: "/room <action> <name>", description: "create, rename, or delete a room", requiresArgument: true },
+  { name: "/redeem", usage: "/redeem <invite>", description: "redeem a room invitation", requiresArgument: true },
+  { name: "/account", usage: "/account", description: "show account and room limits", requiresArgument: false },
+  { name: "/help", usage: "/help", description: "ask the room guide for help", requiresArgument: false },
+  { name: "/quit", usage: "/quit", description: "close this chat session", requiresArgument: false },
+];
+
+export function slashCommandMatches(input: string): readonly SlashCommand[] {
+  const prefix = input.toLowerCase();
+  if (!prefix.startsWith("/") || /\s/.test(prefix)) return [];
+  return SLASH_COMMANDS.filter((command) => command.name.startsWith(prefix));
+}
 
 export class TuiSession {
   private width = 80;
@@ -41,6 +69,8 @@ export class TuiSession {
   private input = "";
   private cursorOffset = 0;
   private preferredCursorColumn?: number;
+  private commandSelection = 0;
+  private commandPrefix = "";
   private closed = false;
   private unsubscribe: () => void;
   private unsubscribeService: () => void;
@@ -210,6 +240,11 @@ export class TuiSession {
             continue;
           }
           this.lastWasCarriageReturn = char === "\r";
+          if (this.completeSelectedCommand()) {
+            dirty = true;
+            inputChanged = true;
+            continue;
+          }
           if (this.submit()) return;
           dirty = true;
           continue;
@@ -328,6 +363,11 @@ export class TuiSession {
         return true;
       }
     }
+    if ((direction === "A" || direction === "B") && this.commandMatches().length) {
+      const matches = this.commandMatches();
+      this.commandSelection = (this.commandSelection + (direction === "A" ? -1 : 1) + matches.length) % matches.length;
+      return true;
+    }
     if (direction === "C") return this.moveCursor(1);
     if (direction === "D") return this.moveCursor(-1);
     const moved = this.moveCursorVertical(direction === "A" ? -1 : 1);
@@ -439,6 +479,34 @@ export class TuiSession {
     return this.width - sidebarWidth - hudWidth;
   }
 
+  private commandMatches(): readonly SlashCommand[] {
+    const matches = this.onCreateRoomScreen() ? [] : slashCommandMatches(this.input);
+    if (this.commandPrefix !== this.input) {
+      this.commandPrefix = this.input;
+      this.commandSelection = 0;
+    }
+    this.commandSelection = Math.max(0, Math.min(this.commandSelection, Math.max(0, matches.length - 1)));
+    return matches;
+  }
+
+  private completeSelectedCommand(): boolean {
+    const matches = this.commandMatches();
+    const selected = matches[this.commandSelection];
+    if (!selected) return false;
+    if (!selected.requiresArgument) {
+      this.input = selected.name;
+      this.cursorOffset = Array.from(this.input).length;
+      return false;
+    }
+    this.input = `${selected.name} `;
+    this.cursorOffset = Array.from(this.input).length;
+    this.preferredCursorColumn = undefined;
+    this.commandPrefix = this.input;
+    this.commandSelection = 0;
+    this.localNotice = "";
+    return true;
+  }
+
   private currentHudWidth(): number {
     if (this.room.name === "lobby" || this.onCreateRoomScreen()) return 0;
     return this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
@@ -449,6 +517,8 @@ export class TuiSession {
     this.input = "";
     this.cursorOffset = 0;
     this.preferredCursorColumn = undefined;
+    this.commandPrefix = "";
+    this.commandSelection = 0;
     this.room.setTyping(this.username, false);
     this.scrollOffset = 0;
     if (line === "/quit") {
@@ -926,7 +996,14 @@ export class TuiSession {
     const bottomStatus = this.localNotice
       ? truncate(`  ${this.localNotice}`, mainWidth)
       : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
-    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0));
+    const commandMatches = writable ? this.commandMatches() : [];
+    const commandCapacity = Math.max(0, Math.min(8, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - 3));
+    const maximumCommandStart = Math.max(0, commandMatches.length - commandCapacity);
+    const commandStart = Math.min(maximumCommandStart, Math.max(0, this.commandSelection - Math.floor(commandCapacity / 2)));
+    const commandChoices = commandCapacity
+      ? commandMatches.slice(commandStart, commandStart + commandCapacity).map((command, offset) => ({ command, index: commandStart + offset }))
+      : [];
+    const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - commandChoices.length);
     const messageCacheRoom = createRoomScreen ? "__new-room__" : this.room.name;
     if (this.messageCacheRoom !== messageCacheRoom || this.messageCacheWidth !== mainWidth) {
       this.messageCacheRoom = messageCacheRoom;
@@ -982,6 +1059,12 @@ export class TuiSession {
           return [`${this.sidebarRow(topRows.length + visible.length, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${rendered}${ESC}23m${RESET}${this.hudRow(topRows.length + visible.length, hudWidth)}`];
         })()
       : [];
+    const commandMenu = commandChoices.map(({ command, index }, offset) => {
+      const columnRow = topRows.length + visible.length + typing.length + offset;
+      const selected = index === this.commandSelection;
+      const style = selected ? COMMAND_ACTIVE : COMMAND;
+      return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${style}${renderSlashCommand(command, selected, mainWidth)}${RESET}${this.hudRow(columnRow, hudWidth)}`;
+    });
     const composer = inputRows.map((inputText, index) => {
       const last = index === inputRows.length - 1;
       const sidebarFooter = last
@@ -991,9 +1074,18 @@ export class TuiSession {
             ? `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
             : `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`
         : `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
-      const columnRow = topRows.length + visible.length + typing.length + index;
-      const padded = pad(truncate(inputText, mainWidth), mainWidth);
-      const renderedInput = !writable && !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, COMPOSER) : padded;
+      const columnRow = topRows.length + visible.length + typing.length + commandMenu.length + index;
+      const firstVisibleInputRow = firstInputRow + index === 0;
+      const displayText = firstVisibleInputRow && writable && !this.input && !createRoomScreen
+        ? `  type / to see commands`
+        : inputText;
+      const padded = pad(truncate(displayText, mainWidth), mainWidth);
+      let renderedInput = !writable && !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, COMPOSER) : padded;
+      if (firstVisibleInputRow && !createRoomScreen) {
+        renderedInput = writable && !this.input
+          ? `${CYAN}›${COMPOSER} ${MUTED}${pad(truncate("type / to see commands", Math.max(0, mainWidth - 2)), Math.max(0, mainWidth - 2))}`
+          : `${CYAN}›${COMPOSER}${renderedInput.slice(1)}`;
+      }
       return `${sidebarFooter}${paneTone}${COMPOSER}${renderedInput}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
     const composerCursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);
@@ -1001,7 +1093,7 @@ export class TuiSession {
     const formNamePrefix = "  › " + pad("Name", 16) + " ";
     const formCursorColumn = sidebarWidth + visibleLength(formNamePrefix) + terminalWidth(Array.from(this.input).slice(0, this.cursorOffset).join("")) + 1;
     const formCursorRow = topRows.length + 2;
-    const screen = [header, ...statusHeaders, ...body, ...typing, ...composer].join("\r\n");
+    const screen = [header, ...statusHeaders, ...body, ...typing, ...commandMenu, ...composer].join("\r\n");
     const cursor = this.sidebarFocused || !writable || (createRoomScreen && (!this.creatingRoom || this.createRoomField !== 0))
       ? `${ESC}?25l`
       : createRoomScreen
@@ -1435,6 +1527,16 @@ export function renderServiceLog(value: string): string {
   }
   const timestamp = safe.match(/^(\d{2}:\d{2}:\d{2}) (.*)$/);
   return timestamp ? `  ${MUTED}${timestamp[1]}${HUD} ${timestamp[2]}` : `  ${safe}`;
+}
+
+function renderSlashCommand(command: SlashCommand, selected: boolean, width: number): string {
+  const style = selected ? COMMAND_ACTIVE : COMMAND;
+  const marker = ` ${selected ? "›" : " "} `;
+  const usageWidth = Math.min(32, Math.max(12, Math.floor(width * 0.42)));
+  const usage = pad(truncate(command.usage, usageWidth), usageWidth);
+  const descriptionWidth = Math.max(0, width - terminalWidth(marker) - usageWidth - 1);
+  const description = truncate(command.description, descriptionWidth);
+  return padAnsi(`${selected ? YELLOW : MUTED}${marker}${CYAN}${usage}${style} ${MUTED}${description}`, width);
 }
 
 export interface ComposerLayout {

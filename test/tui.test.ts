@@ -7,7 +7,7 @@ import type { ServerChannel } from "ssh2";
 import { AccountStore, anonymousPrincipal } from "../src/auth";
 import { Room } from "../src/room";
 import { RoomDirectory } from "../src/room-directory";
-import { layoutComposer, renderServiceLog, TuiSession } from "../src/tui";
+import { layoutComposer, renderServiceLog, slashCommandMatches, TuiSession } from "../src/tui";
 
 class FakeStream extends EventEmitter {
   destroyed = false;
@@ -49,6 +49,36 @@ test("composer layout word-wraps and tracks the editing cursor", () => {
   expect(layout.cursorColumn).toBe(5);
 });
 
+test("empty composer shows a Zenburn command hint beside its arrow", () => {
+  const tui = open();
+  const frame = tui.stream.writes.at(-1)!;
+  expect(frame).toContain("›");
+  expect(frame).toContain("type / to see commands");
+  expect(frame).toContain("\x1b[38;5;102mtype / to see commands");
+  tui.stream.end();
+});
+
+test("slash commands prefix-match and render above the composer", () => {
+  expect(slashCommandMatches("/in").map((command) => command.name)).toEqual(["/invite"]);
+  expect(slashCommandMatches("/mount revoke")).toEqual([]);
+  const tui = open();
+  tui.stream.emit("data", Buffer.from("/"));
+  expect(tui.stream.writes.at(-1)).toContain("/invite <role>");
+  expect(tui.stream.writes.at(-1)).toContain("/mount [revoke]");
+  tui.stream.emit("data", Buffer.from("mo"));
+  expect(tui.stream.writes.at(-1)).toContain("/mount [revoke]");
+  expect(tui.stream.writes.at(-1)).not.toContain("/invite <role>");
+  tui.stream.end();
+});
+
+test("command palette arrows cycle and Enter expands commands with arguments", () => {
+  const tui = open();
+  tui.stream.emit("data", Buffer.from("/\x1b[B\r"));
+  expect(tui.state().input).toBe("/invite ");
+  expect(tui.state().cursorOffset).toBe(8);
+  tui.stream.end();
+});
+
 test("typing presence renders for other room members", () => {
   const room = new Room("mine", 250, "http://localhost:3000/mine", "alice");
   const alice = open(room, "alice");
@@ -81,8 +111,8 @@ test("room focus dims the version control and live-log HUD", () => {
   tui.stream.emit("data", Buffer.from("\t"));
 
   const frame = tui.stream.writes.at(-1)!;
-  expect(frame).toContain("\x1b[2m\x1b[48;5;233m\x1b[38;5;244m  VERSION CONTROL");
-  expect(frame).toContain("\x1b[2m\x1b[48;5;233m\x1b[38;5;250m");
+  expect(frame).toContain("\x1b[2m\x1b[48;5;235m\x1b[38;5;102m  VERSION CONTROL");
+  expect(frame).toContain("\x1b[2m\x1b[48;5;235m\x1b[38;5;188m");
   tui.stream.end();
 });
 
@@ -351,8 +381,8 @@ test("room creation is a keyboard-only policy form", async () => {
   const selected = session as unknown as { input: string; createRoomFocused: boolean; creatingRoom: boolean; createRoomField: number };
   expect(selected.createRoomFocused).toBe(true);
   expect(selectedFrame).toContain("Configure the room before entering it");
-  expect(selectedFrame).toContain("\x1b[48;5;60m\x1b[38;5;255m  + new room");
-  expect(selectedFrame).not.toContain("\x1b[48;5;60m\x1b[38;5;255m  # lobby");
+  expect(selectedFrame).toContain("\x1b[48;5;59m\x1b[38;5;188m  + new room");
+  expect(selectedFrame).not.toContain("\x1b[48;5;59m\x1b[38;5;188m  # lobby");
   expect(selectedFrame).not.toContain("# lobby  public");
   stream.emit("data", Buffer.from("\r"));
   expect(selected.creatingRoom).toBe(true);

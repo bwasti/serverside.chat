@@ -24,9 +24,9 @@ export interface CapabilityResult {
 const MAX_COMMAND_BYTES = 2_048;
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
-const CYAN = `${ESC}38;5;45m`;
-const GREEN = `${ESC}38;5;82m`;
-const MUTED = `${ESC}38;5;244m`;
+const CYAN = `${ESC}38;5;116m`;
+const GREEN = `${ESC}38;5;108m`;
+const MUTED = `${ESC}38;5;102m`;
 
 /** Host-owned capabilities used by the terminal adapter. No input reaches a system shell. */
 export class RoomCapabilitySession {
@@ -475,7 +475,7 @@ export class RoomShellSession {
     this.write(`\r\x1b[2K${GREEN}${prompt}${RESET}${text}${tail ? `\x1b[${tail}D` : ""}`);
   }
   private output(value: string): void { this.write(`${safeTerminalText(value).replaceAll("\n", "\r\n")}\r\n`); }
-  private error(error: unknown): void { this.write(`${ESC}38;5;203m${safeTerminalText(error instanceof Error ? error.message : "command failed")}${RESET}\r\n`); }
+  private error(error: unknown): void { this.write(`${ESC}38;5;181m${safeTerminalText(error instanceof Error ? error.message : "command failed")}${RESET}\r\n`); }
   private write(value: string): void { if (!this.closed && !this.stream.destroyed) this.stream.write(value); }
   resize(width: number, height: number): void {
     this.width = Math.max(30, width || 80);
