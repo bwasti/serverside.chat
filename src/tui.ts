@@ -49,6 +49,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/agent", usage: "/agent <request>", description: "ask the room agent", requiresArgument: true },
   { name: "/invite", usage: "/invite <role>", description: "create a one-use room invite", requiresArgument: true },
   { name: "/mount", usage: "/mount [revoke]", description: "mount or revoke room files", requiresArgument: false },
+  { name: "/shell", usage: "/shell", description: "show SSH access for the room shell", requiresArgument: false },
   { name: "/edit", usage: "/edit <path>", description: "edit a room file", requiresArgument: true },
   { name: "/permissions", usage: "/permissions [field value]", description: "inspect or change room policy", requiresArgument: false },
   { name: "/room", usage: "/room <action> <name>", description: "create, rename, or delete a room", requiresArgument: true },
@@ -106,6 +107,7 @@ export class TuiSession {
   private roomCreationAvailable = false;
   private editor?: RoomEditor;
   private mountPanel?: { credential: MountCredential; scroll: number };
+  private shellPanel = false;
 
   constructor(
     private readonly stream: TuiStream,
@@ -162,6 +164,10 @@ export class TuiSession {
     }
     if (this.mountPanel) {
       this.handleMountPanelData(data);
+      return;
+    }
+    if (this.shellPanel) {
+      this.handleShellPanelData(data);
       return;
     }
     if (this.editor) {
@@ -604,8 +610,15 @@ export class TuiSession {
     if (!this.accounts) return false;
     const trimmed = line.trim();
     const [command, field, value, ...extra] = trimmed.split(/\s+/);
-    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account" && command !== "/edit" && command !== "/mount") return false;
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account" && command !== "/edit" && command !== "/mount" && command !== "/shell") return false;
     try {
+      if (command === "/shell") {
+        if (field) throw new Error("usage: /shell");
+        this.shellPanel = true;
+        this.localNotice = "";
+        this.lastFrame = "";
+        return true;
+      }
       if (command === "/mount") {
         if (value || extra.length || (field && field !== "revoke")) throw new Error("usage: /mount [revoke]");
         if (field === "revoke") {
@@ -912,6 +925,44 @@ export class TuiSession {
     this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
   }
 
+  private handleShellPanelData(data: Buffer): void {
+    const value = data.toString("utf8");
+    if (value.includes("\x03") || value.includes("\x04")) {
+      this.stream.end();
+      return;
+    }
+    if (value.includes("\r") || value.includes("\n") || value === "q" || value === "Q" || value === "\x1b") {
+      this.shellPanel = false;
+      this.lastFrame = "";
+      this.render();
+    }
+  }
+
+  private renderShellPanel(): void {
+    if (!this.shellPanel) return;
+    const width = this.width;
+    const command = `ssh -t -p 2222 serverside.chat shell ${this.room.name}`;
+    const raw = [
+      "",
+      "  Open this room's constrained shell in a new terminal:",
+      "",
+      `    ${command}`,
+      "",
+      "  The shell exposes only this room's bounded files and version-control capabilities.",
+      this.principal.authenticated ? "  It authenticates with any SSH key linked to your account." : "  Sign in and link an SSH key to your account first.",
+    ];
+    const bodyHeight = Math.max(1, this.height - 2);
+    const rows = raw.flatMap((line) => line ? wrap(line, Math.max(12, width - 2)) : [""]).slice(0, bodyHeight);
+    while (rows.length < bodyHeight) rows.push("");
+    const header = `${HEADER}${pad(truncate(`  SHELL  #${this.room.name}`, width), width)}${RESET}`;
+    const body = rows.map((line) => `${CHAT}${padAnsi(line.includes(command) ? `${CYAN}${line}${CHAT}` : line, width)}${RESET}`);
+    const footer = `${COMPOSER}${pad(truncate("  ENTER/Q close", width), width)}${RESET}`;
+    const frame = `${[header, ...body, footer].join("\r\n")}${ESC}?25l`;
+    if (frame === this.lastFrame) return;
+    this.lastFrame = frame;
+    this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
+  }
+
   private mountInstructionRows(width: number): string[] {
     if (!this.mountPanel) return [];
     const credential = this.mountPanel.credential;
@@ -965,6 +1016,10 @@ export class TuiSession {
     }
     if (this.mountPanel) {
       this.renderMountPanel();
+      return;
+    }
+    if (this.shellPanel) {
+      this.renderShellPanel();
       return;
     }
     if (this.renderTimer) {
@@ -1155,6 +1210,7 @@ export class TuiSession {
         "",
         instruction("TAB", "open the room bar"),
         instruction("/mount", "instructions to mount the room's filesystem"),
+        instruction("/shell", "show the SSH command for the room shell"),
         instruction("/invite", "create a one-use room invite"),
         instruction("/edit", "open a room file in the terminal editor"),
         instruction("/permissions", "view or change the room's access rules"),
@@ -1285,6 +1341,7 @@ export class TuiSession {
     this.room.leave(this.username);
     this.accountPanel = undefined;
     this.mountPanel = undefined;
+    this.shellPanel = false;
     this.write("\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l");
   }
 
@@ -1385,6 +1442,7 @@ export class TuiSession {
     this.room.leave(oldUsername);
     this.principal = principal;
     this.mountPanel = undefined;
+    this.shellPanel = false;
     this.accountPanel = undefined;
     this.accountFocused = false;
     this.createRoomFocused = false;
@@ -1429,6 +1487,7 @@ export class TuiSession {
     this.createRoomFocused = false;
     this.creatingRoom = false;
     this.mountPanel = undefined;
+    this.shellPanel = false;
     if (room === this.room) return;
     this.unsubscribe();
     this.unsubscribeService();

@@ -125,6 +125,7 @@ test("owner and agent names use distinct Zenburn blue and purple accents", () =>
 
 test("slash commands prefix-match and render above the composer", () => {
   expect(slashCommandMatches("/in").map((command) => command.name)).toEqual(["/invite"]);
+  expect(slashCommandMatches("/sh").map((command) => command.name)).toEqual(["/shell"]);
   expect(slashCommandMatches("/mount revoke")).toEqual([]);
   const tui = open();
   tui.stream.emit("data", Buffer.from("/"));
@@ -250,12 +251,13 @@ test("lobby replaces the developer dashboard with a padded quick-start", () => {
   expect(visibleMain(lines[4]!)).toBe("");
   expect(visibleMain(lines[5]!)).toBe("TAB           open the room bar");
   expect(visibleMain(lines[6]!)).toBe("/mount        instructions to mount the room's filesystem");
-  expect(visibleMain(lines[7]!)).toBe("/invite       create a one-use room invite");
-  expect(visibleMain(lines[8]!)).toBe("/edit         open a room file in the terminal editor");
-  expect(visibleMain(lines[9]!)).toBe("/permissions  view or change the room's access rules");
-  expect(visibleMain(lines[10]!)).toBe("/             see all commands");
-  expect(visibleMain(lines[11]!)).toBe("");
-  expect(visibleMain(lines[12]!)).toBe("ask here for help");
+  expect(visibleMain(lines[7]!)).toBe("/shell        show the SSH command for the room shell");
+  expect(visibleMain(lines[8]!)).toBe("/invite       create a one-use room invite");
+  expect(visibleMain(lines[9]!)).toBe("/edit         open a room file in the terminal editor");
+  expect(visibleMain(lines[10]!)).toBe("/permissions  view or change the room's access rules");
+  expect(visibleMain(lines[11]!)).toBe("/             see all commands");
+  expect(visibleMain(lines[12]!)).toBe("");
+  expect(visibleMain(lines[13]!)).toBe("ask here for help");
   expect(frame).not.toContain("live preview");
   expect(frame).not.toContain("VERSION CONTROL");
   expect(frame).not.toContain("LIVE LOGS");
@@ -444,6 +446,27 @@ test("mount command shows keyboard-first SFTP, SSHFS, and Finder WebDAV instruct
   expect((session as unknown as { mountPanel?: unknown }).mountPanel).toBeUndefined();
   stream.emit("data", Buffer.from("/mount revoke\r"));
   expect(stream.writes.at(-1)).toContain("Finder mount credential revoked");
+  stream.end();
+  accounts.close();
+});
+
+test("shell command shows exact SSH access instructions for the current room", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-shell-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("/shell\r"));
+  expect(stream.writes.at(-1)).toContain("SHELL  #mine");
+  expect(stream.writes.at(-1)).toContain("ssh -t -p 2222 serverside.chat shell mine");
+  expect(stream.writes.at(-1)).toContain("SSH key linked to your account");
+  expect((session as unknown as { shellPanel: boolean }).shellPanel).toBe(true);
+  stream.emit("data", Buffer.from("\r"));
+  expect((session as unknown as { shellPanel: boolean }).shellPanel).toBe(false);
+
   stream.end();
   accounts.close();
 });
