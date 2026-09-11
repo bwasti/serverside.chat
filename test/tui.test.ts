@@ -7,7 +7,7 @@ import type { ServerChannel } from "ssh2";
 import { AccountStore, anonymousPrincipal } from "../src/auth";
 import { Room } from "../src/room";
 import { RoomDirectory } from "../src/room-directory";
-import { layoutComposer, TuiSession } from "../src/tui";
+import { layoutComposer, renderServiceLog, TuiSession } from "../src/tui";
 
 class FakeStream extends EventEmitter {
   destroyed = false;
@@ -126,6 +126,14 @@ test("wide version control HUD reserves its lower third for live service logs", 
   expect(frame).toContain("guest rendered 你好, 世界");
   expect(frame.indexOf("LIVE LOGS")).toBeGreaterThan(frame.indexOf("abcdef0"));
   tui.stream.end();
+});
+
+test("agent failures render as distinct live-log entries", () => {
+  const rendered = renderServiceLog("12:34:56 AGENT error provider returned no usable completion");
+  expect(rendered).toContain("12:34:56");
+  expect(rendered).toContain("AGENT");
+  expect(rendered).toContain("error");
+  expect(rendered).toContain("provider returned no usable completion");
 });
 
 test("lobby replaces the developer dashboard with a compact introduction", () => {

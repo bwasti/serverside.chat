@@ -83,7 +83,7 @@ Fresh installations seed one public development room, `hello-world`, with member
 
 Set `FIREWORKS_API_KEY` to enable the real room agent. It uses `accounts/fireworks/models/glm-5p3-flash` by default; override that with `FIREWORKS_MODEL`. Agent requests are serialized per room and include the latest 30 non-system transcript messages.
 
-Each provider completion has a five-minute total budget. Fast transient network, rate-limit, and server failures retry within that same budget. Current provider wait/retry activity and terminal failures appear in the persistent AGENT status row. A concrete implementation request cannot resolve as silence before a commit or one explicit blocker; the host forces one continuation and then surfaces an error if the model still stops without either.
+Each provider completion has a five-minute total budget. Fast transient network, rate-limit, and server failures retry within that same budget. Current provider wait/retry activity appears in the persistent AGENT status row; terminal failures also enter the right-hand live log as red `AGENT error` events. A concrete implementation request cannot resolve as silence before a commit or one explicit blocker; the host forces one continuation and then surfaces an error if the model still stops without either.
 
 Each room has an isolated Git repository under `.data/rooms/<room>/repo`. The agent can operate across the complete working tree through bounded file and predefined Git tools, but receives no shell access and cannot inspect `.git` internals. Working-tree files are capped at 512 KiB each and 5 MiB total.
 

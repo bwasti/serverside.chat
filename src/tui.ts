@@ -1423,8 +1423,10 @@ function renderVersionRow(value: string, url: string | undefined, width: number)
   return fitted;
 }
 
-function renderServiceLog(value: string): string {
+export function renderServiceLog(value: string): string {
   const safe = value.replace(/[\r\n]/g, " ");
+  const agentError = safe.match(/^(\d{2}:\d{2}:\d{2}) AGENT error (.*)$/);
+  if (agentError) return `  ${MUTED}${agentError[1]}${HUD} ${CYAN}AGENT ${RED}error${HUD} ${agentError[2]}`;
   const request = safe.match(/^(\d{2}:\d{2}:\d{2}) (\d{3}) (.*)$/);
   if (request) {
     const status = Number(request[2]);

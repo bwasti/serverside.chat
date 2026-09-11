@@ -97,6 +97,14 @@ test("legacy cumulative client-error totals do not poison the new server-error c
   expect(room.serviceErrors).toBe(0);
 });
 
+test("a latest persisted agent failure migrates into live logs", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-agent-log-migration-"));
+  const statePath = join(data, "room-state.json");
+  writeFileSync(statePath, JSON.stringify({ serviceStartedAt: new Date().toISOString(), serviceLogs: [], agentState: { events: ["12:34:56 error · agent stopped without a commit or blocker"], links: [] } }));
+  const room = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath);
+  expect(room.serviceLogs).toContain("12:34:56 AGENT error agent stopped without a commit or blocker");
+});
+
 test("room bounds messages and input", () => {
   const room = new Room("mine", 2);
   room.chat("alice", "one");
@@ -126,6 +134,7 @@ test("agent failures remain visible in the HUD status", async () => {
   room.agent("alice", "build the page");
   await failed;
   expect(room.agentState).toMatchObject({ status: "error", detail: "provider timed out after 5m" });
+  expect(room.serviceLogs.at(-1)).toContain("AGENT error provider timed out after 5m");
 });
 
 test("canonical promotions are authoritatively logged in chat", async () => {

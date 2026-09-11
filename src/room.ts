@@ -312,6 +312,11 @@ export class Room {
     const event = `${time} ${status} · ${this.agentState.detail}`;
     if (this.agentState.events.at(-1) !== event) this.agentState.events.push(event);
     if (this.agentState.events.length > 30) this.agentState.events.shift();
+    if (status === "error") {
+      const log = `${time} AGENT error ${this.agentState.detail}`;
+      if (this.serviceLogs.at(-1) !== log) this.serviceLogs.push(log);
+      if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
+    }
     if (detail === "preview archived" && link) {
       this.agentState.links.splice(0, this.agentState.links.length, ...this.agentState.links.filter((existing) => existing.url !== link.url));
     } else if (link && !this.agentState.links.some((existing) => existing.url === link.url)) {
@@ -366,6 +371,12 @@ export class Room {
         if (Array.isArray(agent.links)) for (const raw of agent.links.slice(-5)) {
           const link = raw as Record<string, unknown>;
           if (typeof link?.label === "string" && typeof link.url === "string") this.agentState.links.push({ label: link.label, url: rebaseRoomUrl(link.url, this.pageUrl) });
+        }
+        const lastAgentError = this.agentState.events.at(-1)?.match(/^(\d{2}:\d{2}:\d{2}) error · (.*)$/);
+        if (lastAgentError) {
+          const log = `${lastAgentError[1]} AGENT error ${lastAgentError[2]}`;
+          if (!this.serviceLogs.includes(log)) this.serviceLogs.push(log);
+          if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
         }
       }
       const startedAt = new Date(String(state.serviceStartedAt));
