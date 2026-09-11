@@ -729,7 +729,7 @@ export class TuiSession {
     const inputRows = inputLayout.rows.slice(firstInputRow, firstInputRow + maximumComposerRows).map((row) => row.text);
     const bottomStatus = this.localNotice
       ? truncate(`  ${this.localNotice}`, mainWidth)
-      : createRoomScreen ? "" : this.typingStatus(mainWidth);
+      : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
     const messageRows = Math.max(3, this.height - 1 - topRows.length - inputRows.length - (bottomStatus ? 1 : 0));
     const messageCacheRoom = createRoomScreen ? "__new-room__" : this.room.name;
     if (this.messageCacheRoom !== messageCacheRoom || this.messageCacheWidth !== mainWidth) {
@@ -941,6 +941,11 @@ export class TuiSession {
         ? `${names[0]} and ${names[1]}`
         : `${names[0]}, ${names[1]} +${names.length - 2}`;
     return truncate(`  ${subject} ${names.length === 1 ? "is" : "are"} typing…`, width);
+  }
+
+  private anonymousLobbyStatus(width: number): string {
+    if (this.principal.authenticated || !this.accounts || !this.reviewAnonymousLobby || this.room.name !== "lobby") return "";
+    return truncate("  anonymous · lobby messages are moderated · sign in to create rooms", width);
   }
 
   private close(): void {

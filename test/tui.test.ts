@@ -346,7 +346,10 @@ test("anonymous lobby input is persisted only after the review callback allows i
 
   expect(stream.writes.at(-1)).toContain("lobby messages are moderated");
   expect(stream.writes.at(-1)).toContain("\x1b]8;;https://example.test/?signin=1");
-  stream.emit("data", Buffer.from("how do rooms work?\r"));
+  stream.emit("data", Buffer.from("how"));
+  expect(stream.writes.at(-1)).toContain("lobby messages are moderated");
+  expect(stream.writes.at(-1)).toContain("\x1b]8;;https://example.test/?signin=1");
+  stream.emit("data", Buffer.from(" do rooms work?\r"));
   await Bun.sleep(1);
   expect(reviewed).toEqual(["how do rooms work?"]);
   expect(lobby.messages.at(-1)).toMatchObject({ author: guest.handle, text: "how do rooms work?", agentVisible: true });

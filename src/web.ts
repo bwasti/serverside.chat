@@ -375,10 +375,8 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     html,body,#terminal{width:100%;height:100%;margin:0;background:#0d1117;overflow:hidden}
     body{box-sizing:border-box;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
     #state{position:fixed;right:12px;top:8px;color:#7d8590;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;z-index:2}
-    #signin{position:fixed;right:14px;bottom:11px;z-index:3;border:0;background:transparent;color:#58a6ff;padding:4px 6px;font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;cursor:pointer}
-    #signin:hover{color:#79c0ff}
     #pairing{position:fixed;inset:0;z-index:4;display:grid;place-items:center;background:#0d1117cc;color:#d8dee9;font:14px ui-monospace,SFMono-Regular,Menlo,monospace}
-    #pairing[hidden],#signin[hidden]{display:none}
+    #pairing[hidden]{display:none}
     #paircard{width:min(560px,calc(100vw - 40px));box-sizing:border-box;border:1px solid #39414d;border-radius:8px;background:#161b22;padding:20px;box-shadow:0 20px 70px #0009}
     #paircard h1{margin:0 0 10px;font-size:16px;color:#58a6ff}#paircard p{color:#9da7b3;line-height:1.5}
     #providers{display:grid;gap:8px;margin:12px 0}#providers:empty{display:none}#providers button{border:1px solid #39414d;border-radius:5px;background:#222933;color:#d8dee9;padding:9px 11px;cursor:pointer;font:13px ui-monospace,SFMono-Regular,Menlo,monospace;text-align:left}#providers button:hover{border-color:#58a6ff}
@@ -389,13 +387,12 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
   </style>
 </head>
 <body>
-  <div id="terminal" aria-label="serverside.chat terminal"></div><div id="state">connecting…</div><button id="signin" hidden>sign in</button>
+  <div id="terminal" aria-label="serverside.chat terminal"></div><div id="state">connecting…</div>
   <div id="pairing" hidden><section id="paircard" role="dialog" aria-modal="true" aria-labelledby="pairtitle"><h1 id="pairtitle">create your account</h1><p id="pairdescription">Sign in to contribute to serverside.chat.</p><div id="providers">${providerButtons}</div>${developmentForm}<div id="linkactions" hidden><button class="primary" id="linkkey">link this SSH key</button></div><p id="autherror"></p><div id="pairactions"><button id="closepair">cancel</button></div></section></div>
   <script src="/_terminal/xterm.js"></script>
   <script src="/_terminal/addon-fit.js"></script>
   <script>
     const state = document.getElementById('state');
-    const signin = document.getElementById('signin');
     const pairing = document.getElementById('pairing');
     const pairtitle = document.getElementById('pairtitle');
     const pairdescription = document.getElementById('pairdescription');
@@ -428,9 +425,8 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     terminal.onResize(({cols,rows})=>send({type:'resize',cols,rows}));
     addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>fit.fit())});
     document.getElementById('terminal').addEventListener('pointerdown',()=>terminal.focus());
-    const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());currentAccount=result.authenticated?result.handle:undefined;signin.hidden=Boolean(currentAccount);return Boolean(currentAccount)}catch{return false}};
+    const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());currentAccount=result.authenticated?result.handle:undefined;return Boolean(currentAccount)}catch{return false}};
     const linkSsh=async()=>{if(!sshCode)return;autherror.textContent='';const response=await fetch('/_auth/ssh/link',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:sshCode})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not link SSH key');history.replaceState({},'',location.pathname);pairtitle.textContent='SSH key linked';pairdescription.textContent='This terminal is now signed in as @'+result.handle+'.';linkactions.hidden=true;setTimeout(()=>location.reload(),700)};
-    signin.addEventListener('click',showSignIn);
     document.querySelectorAll('[data-provider]').forEach(button=>button.addEventListener('click',()=>{const returnTo=location.pathname+(sshCode?'?ssh='+encodeURIComponent(sshCode):'');const bootstrap=accountCode?'&account='+encodeURIComponent(accountCode):'';location.href='/_auth/'+button.dataset.provider+'/start?return='+encodeURIComponent(returnTo)+bootstrap}));
     accountform.addEventListener('submit',async event=>{event.preventDefault();autherror.textContent='';const button=accountform.querySelector('button');if(!button)return;button.disabled=true;try{const response=await fetch('/_auth/development',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({handle:document.getElementById('handle').value})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not create account');currentAccount=result.handle;if(sshCode)await linkSsh();else location.reload()}catch(error){autherror.textContent=error.message}finally{button.disabled=false}});
     document.getElementById('linkkey').addEventListener('click',async()=>{try{await linkSsh()}catch(error){autherror.textContent=error.message}});
