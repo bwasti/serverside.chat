@@ -26,11 +26,16 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain("#terminal-shell{box-sizing:border-box;width:100%;height:100%;display:flex");
   expect(page).toContain("#terminal{box-sizing:border-box;width:100%;height:auto;flex:1 1 auto");
   expect(page).toContain('id="mobilekeys" aria-label="terminal keys"');
+  expect(page).toContain('id="mobileinput" rows="1" inputmode="text" enterkeyhint="send" autocomplete="off" autocorrect="off"');
   expect(page).toContain('data-terminal-key="tab">TAB</button>');
   expect(page).toContain('data-terminal-key="escape">ESC</button>');
   expect(page).toContain('data-terminal-key="up" aria-label="up arrow">↑</button>');
   expect(page).toContain("const escapeKey=String.fromCharCode(27);const terminalKeys={tab:String.fromCharCode(9)");
   expect(page).toContain("mobileKeys.addEventListener('pointerdown'");
+  expect(page).toContain("mobileInput.addEventListener('compositionend'");
+  expect(page).toContain("mobileInput.addEventListener('keydown'");
+  expect(page).toContain("mobileInput.addEventListener('input'");
+  expect(page).toContain("if(mobileScreen.matches)mobileInput.focus({preventScroll:true});else terminal.focus()");
   expect(page).toContain("terminal.textarea.enterKeyHint='send'");
   expect(page).toContain("document.body.style.height=(viewport?.height||innerHeight)+'px'");
   expect(page).toContain("new ResizeObserver(refit).observe(terminalHost)");

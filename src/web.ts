@@ -454,7 +454,8 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     body{position:fixed;left:0;right:0;top:0;bottom:auto;height:100dvh;box-sizing:border-box;margin:0;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);background:#3f3f3f;overflow:hidden}
     #terminal-shell{box-sizing:border-box;width:100%;height:100%;display:flex;flex-direction:column;min-height:0;background:#3f3f3f}
     #terminal{box-sizing:border-box;width:100%;height:auto;flex:1 1 auto;min-height:0;padding:1px;overflow:hidden;background:#3f3f3f}
-    #mobilekeys{display:none;box-sizing:border-box;flex:0 0 44px;gap:4px;padding:4px;background:#333333;border-top:1px solid #5f5f5f}
+    #mobilekeys{position:relative;display:none;box-sizing:border-box;flex:0 0 44px;gap:4px;padding:4px;background:#333333;border-top:1px solid #5f5f5f}
+    #mobileinput{position:absolute;left:50%;top:50%;width:2px;height:2px;margin:0;padding:0;border:0;opacity:.01;font-size:16px;line-height:1;resize:none;caret-color:transparent}
     #mobilekeys button{min-width:0;flex:1;border:1px solid #5f5f5f;border-radius:5px;background:#4f4f4f;color:#dcdccc;font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace;touch-action:manipulation;-webkit-user-select:none;user-select:none}
     #mobilekeys button:active{border-color:#8cd0d3;background:#5f5f5f;color:#f0dfaf}
     #state{position:fixed;right:12px;top:8px;color:#9fafaf;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;z-index:2}
@@ -471,7 +472,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
   </style>
 </head>
 <body>
-  <main id="terminal-shell"><div id="terminal" aria-label="serverside.chat terminal"></div><nav id="mobilekeys" aria-label="terminal keys"><button type="button" data-terminal-key="tab">TAB</button><button type="button" data-terminal-key="escape">ESC</button><button type="button" data-terminal-key="left" aria-label="left arrow">←</button><button type="button" data-terminal-key="up" aria-label="up arrow">↑</button><button type="button" data-terminal-key="down" aria-label="down arrow">↓</button><button type="button" data-terminal-key="right" aria-label="right arrow">→</button></nav></main><div id="state">connecting…</div>
+  <main id="terminal-shell"><div id="terminal" aria-label="serverside.chat terminal"></div><nav id="mobilekeys" aria-label="terminal keys"><textarea id="mobileinput" rows="1" inputmode="text" enterkeyhint="send" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-label="chat keyboard input"></textarea><button type="button" data-terminal-key="tab">TAB</button><button type="button" data-terminal-key="escape">ESC</button><button type="button" data-terminal-key="left" aria-label="left arrow">←</button><button type="button" data-terminal-key="up" aria-label="up arrow">↑</button><button type="button" data-terminal-key="down" aria-label="down arrow">↓</button><button type="button" data-terminal-key="right" aria-label="right arrow">→</button></nav></main><div id="state">connecting…</div>
   <div id="pairing" hidden><section id="paircard" role="dialog" aria-modal="true" aria-labelledby="pairtitle"><h1 id="pairtitle">create your account</h1><p id="pairdescription">Sign in to contribute to serverside.chat.</p><div id="providers">${providerButtons}</div>${developmentForm}<div id="linkactions" hidden><button class="primary" id="linkkey">link this SSH key</button></div><p id="autherror"></p><div id="pairactions"><button id="closepair">cancel</button></div></section></div>
   <script src="/_terminal/xterm.js"></script>
   <script src="/_terminal/addon-fit.js"></script>
@@ -485,6 +486,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const autherror = document.getElementById('autherror');
     const terminalShell = document.getElementById('terminal-shell');
     const mobileKeys = document.getElementById('mobilekeys');
+    const mobileInput = document.getElementById('mobileinput');
     const pageUrl = new URL(location.href);
     const sshCode = pageUrl.searchParams.get('ssh');
     const accountCode = pageUrl.searchParams.get('account');
@@ -497,15 +499,17 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const activateLink=(_event,value)=>{try{const target=new URL(value,location.href);if(target.origin===location.origin&&target.searchParams.get('signin')==='1'){showSignIn();return}if(target.protocol==='http:'||target.protocol==='https:')window.open(target.href,'_blank','noopener')}catch{}};
     const terminalHost = document.getElementById('terminal');
     const compactScreen = matchMedia('(max-width:600px)');
+    const mobileScreen = matchMedia('(hover:none) and (pointer:coarse), (max-width:700px)');
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:compactScreen.matches?13:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#3f3f3f',foreground:'#dcdccc',cursor:'#f0dfaf',cursorAccent:'#3f3f3f',selectionBackground:'#5f5f5f',black:'#3f3f3f',red:'#cc9393',green:'#7f9f7f',yellow:'#f0dfaf',blue:'#8cd0d3',magenta:'#dc8cc3',cyan:'#93e0e3',white:'#dcdccc',brightBlack:'#7f7f7f',brightRed:'#dca3a3',brightGreen:'#9fc59f',brightYellow:'#f8f1c7',brightBlue:'#94bff3',brightMagenta:'#ec93d3',brightCyan:'#93e0e3',brightWhite:'#ffffff'},linkHandler:{activate:activateLink}});
     const fit = new FitAddon.FitAddon();
-    terminal.loadAddon(fit); terminal.open(terminalHost); fit.fit(); terminal.focus();
+    terminal.loadAddon(fit); terminal.open(terminalHost); fit.fit();
     if(terminal.textarea){terminal.textarea.inputMode='text';terminal.textarea.enterKeyHint='send';terminal.textarea.autocomplete='off';terminal.textarea.autocapitalize='off';terminal.textarea.spellcheck=false;terminal.textarea.setAttribute('virtualkeyboardpolicy','auto')}
     terminal.parser.registerOscHandler(777,value=>{if(value==='signin'){showSignIn();return true}if(value.startsWith('room:')){try{const room=decodeURIComponent(value.slice(5));if(/^[a-z0-9][a-z0-9-]{0,31}$/.test(room))history.replaceState({},'',room==='lobby'?'/':'/room/'+encodeURIComponent(room))}catch{}return true}if(value.startsWith('open:')){try{const target=new URL(decodeURIComponent(value.slice(5)),location.href);if(target.origin===location.origin){location.href=target.href;return true}}catch{}return true}return false});
     terminal.attachCustomKeyEventHandler(event=>{if(event.type==='keydown'&&event.shiftKey){const sequence=event.key==='ArrowUp'?'\\x1b[1;2A':event.key==='ArrowDown'?'\\x1b[1;2B':event.key==='Enter'?'\\x1b[13;2u':'';if(sequence){event.preventDefault();send({type:'input',data:sequence});return false}}if(event.type==='keydown'&&event.ctrlKey&&['s','p','q'].includes(event.key.toLowerCase()))event.preventDefault();return true});
     let socket, retry=250, resizeFrame, settleFrame;
     const refit=()=>{cancelAnimationFrame(resizeFrame);cancelAnimationFrame(settleFrame);resizeFrame=requestAnimationFrame(()=>{fit.fit();settleFrame=requestAnimationFrame(()=>fit.fit())})};
-    const syncViewport=()=>{const viewport=window.visualViewport;document.body.style.top=(viewport?.offsetTop||0)+'px';document.body.style.height=(viewport?.height||innerHeight)+'px';refit()};
+    const syncViewport=()=>{const viewport=window.visualViewport;document.body.style.height=(viewport?.height||innerHeight)+'px';refit()};
+    const focusInput=()=>{if(mobileScreen.matches)mobileInput.focus({preventScroll:true});else terminal.focus()};
     const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
     const connect = () => {
       state.textContent='connecting…'; state.hidden=false;
@@ -519,15 +523,20 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     terminal.onData(data=>send({type:'input',data}));
     terminal.onResize(({cols,rows})=>send({type:'resize',cols,rows}));
     const escapeKey=String.fromCharCode(27);const terminalKeys={tab:String.fromCharCode(9),escape:escapeKey,left:escapeKey+'[D',up:escapeKey+'[A',down:escapeKey+'[B',right:escapeKey+'[C'};
-    mobileKeys.addEventListener('pointerdown',event=>{const button=event.target.closest?.('[data-terminal-key]');const sequence=button&&terminalKeys[button.dataset.terminalKey];if(!sequence)return;event.preventDefault();terminal.focus();send({type:'input',data:sequence})});
+    mobileKeys.addEventListener('pointerdown',event=>{const button=event.target.closest?.('[data-terminal-key]');const sequence=button&&terminalKeys[button.dataset.terminalKey];if(!sequence)return;event.preventDefault();focusInput();send({type:'input',data:sequence})});
+    let composing=false;
+    mobileInput.addEventListener('compositionstart',()=>{composing=true});
+    mobileInput.addEventListener('compositionend',event=>{composing=false;if(event.data)send({type:'input',data:event.data});mobileInput.value=''});
+    mobileInput.addEventListener('keydown',event=>{const data=event.key==='Enter'?String.fromCharCode(13):event.key==='Backspace'?String.fromCharCode(127):event.key==='Tab'?terminalKeys.tab:event.key==='Escape'?terminalKeys.escape:event.key==='ArrowLeft'?terminalKeys.left:event.key==='ArrowUp'?terminalKeys.up:event.key==='ArrowDown'?terminalKeys.down:event.key==='ArrowRight'?terminalKeys.right:'';if(data){event.preventDefault();send({type:'input',data})}});
+    mobileInput.addEventListener('input',()=>{if(composing)return;const data=mobileInput.value;mobileInput.value='';if(data)send({type:'input',data})});
     addEventListener('resize',syncViewport);
     window.visualViewport?.addEventListener('resize',syncViewport);
-    window.visualViewport?.addEventListener('scroll',syncViewport);
     compactScreen.addEventListener('change',event=>{terminal.options.fontSize=event.matches?13:14;refit()});
     new ResizeObserver(refit).observe(terminalHost);
     document.fonts?.ready.then(refit);
-    terminalHost.addEventListener('pointerdown',()=>terminal.focus());
+    terminalHost.addEventListener('pointerdown',focusInput);
     syncViewport();
+    focusInput();
     const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());currentAccount=result.authenticated?result.handle:undefined;return Boolean(currentAccount)}catch{return false}};
     const linkSsh=async()=>{if(!sshCode)return;autherror.textContent='';const response=await fetch('/_auth/ssh/link',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:sshCode})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not link SSH key');history.replaceState({},'',location.pathname);pairtitle.textContent='SSH key linked';pairdescription.textContent='This terminal is now signed in as @'+result.handle+'.';linkactions.hidden=true;setTimeout(()=>location.reload(),700)};
     const redeemInvite=async()=>{if(!inviteToken)return false;autherror.textContent='';const response=await fetch('/_auth/invite/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:inviteToken})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not accept invite');location.href='/room/'+encodeURIComponent(result.roomName);return true};
