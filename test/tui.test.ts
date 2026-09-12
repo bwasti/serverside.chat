@@ -144,6 +144,16 @@ test("mouse wheel scrolls through chat history and restores the live edge", () =
   expect(tui.stream.writes.at(-1)).toContain("\x1b[?1006l\x1b[?1000l");
 });
 
+test("browser sessions can leave terminal mouse tracking disabled for native selection", () => {
+  const room = new Room("mine");
+  const stream = new FakeStream();
+  new TuiSession(stream as unknown as ServerChannel, [room], "alice", undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, false);
+  expect(stream.writes[0]).toContain("\x1b[?1049h");
+  expect(stream.writes[0]).not.toContain("\x1b[?1000h");
+  expect(stream.writes[0]).not.toContain("\x1b[?1006h");
+  stream.end();
+});
+
 test("empty-composer arrows select messages for replies and confirmed admin deletion", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-message-actions-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));

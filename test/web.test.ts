@@ -35,6 +35,8 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain("mobileInput.addEventListener('compositionend'");
   expect(page).toContain("mobileInput.addEventListener('keydown'");
   expect(page).toContain("mobileInput.addEventListener('input'");
+  expect(page).toContain("terminalHost.addEventListener('wheel'");
+  expect(page).toContain("event.preventDefault();const button=event.deltaY<0?64:65");
   expect(page).toContain("if(mobileDevice)mobileInput.focus({preventScroll:true});else terminal.focus()");
   expect(page).toContain("html.mobile-device #mobilekeys{display:flex}");
   expect(page).not.toContain("(max-width:700px){#mobilekeys{display:flex}");

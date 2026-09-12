@@ -129,6 +129,7 @@ export class TuiSession {
     private readonly directory?: RoomDirectory,
     private readonly reviewAnonymousLobby?: AnonymousLobbyReview,
     private readonly rateLimiter?: AdaptiveRateLimiter,
+    private readonly mouseTracking = true,
   ) {
     this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
     this.allRooms = rooms;
@@ -139,7 +140,7 @@ export class TuiSession {
     if (!this.principal.authenticated && this.accounts) this.localNotice = this.reviewAnonymousLobby
       ? "anonymous · lobby messages are moderated · sign in to create rooms"
       : "anonymous · browse only · sign in to contribute";
-    this.write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?25h");
+    this.write(`\x1b[?1049h${this.mouseTracking ? "\x1b[?1000h\x1b[?1006h" : ""}\x1b[?25h`);
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
     this.unsubscribeDirectory = directory?.subscribe((event) => this.refreshRooms(event));
@@ -1837,7 +1838,7 @@ export class TuiSession {
     this.roomSettings = undefined;
     this.mountPanel = undefined;
     this.shellPanel = false;
-    this.write("\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l");
+    this.write(`${this.mouseTracking ? "\x1b[?1006l\x1b[?1000l" : ""}\x1b[?25h\x1b[?1049l`);
   }
 
   private write(value: string): void {

@@ -217,7 +217,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       open(ws) {
         if (ws.data.kind === "tui") {
           const stream = new BrowserTuiStream(ws);
-          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, ws.data.initialRoom, signInUrl, undefined, undefined, directory, reviewAnonymousLobby, rateLimiter);
+          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, ws.data.initialRoom, signInUrl, undefined, undefined, directory, reviewAnonymousLobby, rateLimiter, false);
           session.resize(ws.data.cols, ws.data.rows);
           browserTuis.set(ws, { stream, session });
           return;
@@ -536,6 +536,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     new ResizeObserver(refit).observe(terminalHost);
     document.fonts?.ready.then(refit);
     terminalHost.addEventListener('pointerdown',focusInput);
+    terminalHost.addEventListener('wheel',event=>{if(!event.deltaY)return;event.preventDefault();const button=event.deltaY<0?64:65;send({type:'input',data:escapeKey+'[<'+button+';1;1M'})},{passive:false});
     syncViewport();
     focusInput();
     const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());currentAccount=result.authenticated?result.handle:undefined;return Boolean(currentAccount)}catch{return false}};
