@@ -157,6 +157,13 @@ export class AccountStore {
         revoked_at INTEGER,
         PRIMARY KEY(room_name, user_id)
       );
+      CREATE TABLE IF NOT EXISTS room_preferences (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        room_name TEXT NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, room_name)
+      );
       CREATE TABLE IF NOT EXISTS room_archives (
         id TEXT PRIMARY KEY,
         original_name TEXT NOT NULL,
@@ -399,6 +406,7 @@ export class AccountStore {
       this.db.query("UPDATE invites SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE agent_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE mount_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("UPDATE room_preferences SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE audit_events SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("DELETE FROM rooms WHERE name = ?").run(oldName);
     })();
@@ -476,6 +484,22 @@ export class AccountStore {
 
   canManageRoom(principal: Principal, roomName: string): boolean {
     return this.isSiteAdmin(principal) || this.roleFor(principal, roomName) === "owner";
+  }
+
+  roomOrder(principal: Principal): string[] {
+    if (!principal.authenticated || principal.kind !== "user") return [];
+    return (this.db.query("SELECT room_name FROM room_preferences WHERE user_id = ? ORDER BY position, room_name").all(principal.id) as Array<{ room_name: string }>).map((row) => row.room_name);
+  }
+
+  saveRoomOrder(principal: Principal, names: string[]): void {
+    if (!principal.authenticated || principal.kind !== "user") throw new Error("sign in to customize your room bar");
+    if (names.length > 256 || new Set(names).size !== names.length || names.some((name) => !ROOM_NAME.test(name) || !this.canView(principal, name))) throw new Error("room order contains an unavailable room");
+    const now = Date.now();
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM room_preferences WHERE user_id = ?").run(principal.id);
+      const insert = this.db.query("INSERT INTO room_preferences(user_id, room_name, position, updated_at) VALUES (?, ?, ?, ?)");
+      names.forEach((name, position) => insert.run(principal.id, name, position, now));
+    })();
   }
 
   private archivedRoomFromRow(row: ArchivedRoomRow): ArchivedRoom {

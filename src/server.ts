@@ -47,16 +47,17 @@ accounts.seedRoomsOnce(ownerPrincipal, [...roomDefaults]);
 accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contributions: "members", agentMode: "passive" });
 const fireworksKey = process.env.FIREWORKS_API_KEY;
 const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/deepseek-v4p1-flash";
-const fireworksClassifierModel = process.env.FIREWORKS_CLASSIFIER_MODEL ?? "accounts/fireworks/models/qwen3p8-flash-next-nvfp4";
+const fireworksClassifierModel = process.env.FIREWORKS_CLASSIFIER_MODEL ?? "accounts/fireworks/models/glm-5p3-flash";
 let agent: FireworksAgent | undefined;
 let guideAgent: FireworksGuideAgent | undefined;
 let anonymousLobbyGate: AnonymousLobbyGate | undefined;
+let reportModerationError = (error: unknown) => console.error("Lobby moderation error:", error instanceof Error ? error.message : "unknown provider failure");
 if (fireworksKey) {
   const prompt = ["prompts/room-agent/system.md", "prompts/room-agent/context.md", "prompts/room-agent/project.md"]
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
   agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
   guideAgent = new FireworksGuideAgent(fireworksKey, fireworksModel, readFileSync("prompts/lobby-agent/system.md", "utf8").trim());
-  anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()));
+  anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()), Date.now, (error) => reportModerationError(error));
 }
 const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: string) => anonymousLobbyGate.review(principal, text) : undefined;
 const rateLimiter = new AdaptiveRateLimiter();
@@ -70,6 +71,11 @@ const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, worksp
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }, roomSiteDomain);
+reportModerationError = (error) => {
+  const detail = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 180) : "unknown provider failure";
+  console.error("Lobby moderation error:", detail);
+  directory.room("lobby")?.recordServiceLog(`MODERATION error ${detail}`);
+};
 const rooms = directory.rooms;
 const webServer = startWebServer(directory, webHost, webPort, dataDir, accounts, oauth, developmentAuth, reviewAnonymousLobby, rateLimiter);
 const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection, info) => {

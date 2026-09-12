@@ -7,6 +7,8 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain('<script src="/_terminal/xterm.js"></script>');
   expect(page).toContain('<script src="/_terminal/addon-fit.js"></script>');
   expect(page).toContain("attachCustomKeyEventHandler");
+  expect(page).toContain("event.key==='ArrowUp'?'\\x1b[1;2A'");
+  expect(page).toContain("event.key==='Enter'?'\\x1b[13;2u'");
   expect(page).toContain("new WebSocket(scheme+'//'+location.host+'/_terminal/socket");
   expect(page).not.toContain('id="signin"');
   expect(page).toContain("fetch('/_auth/development',{method:'POST'");

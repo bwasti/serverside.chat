@@ -27,7 +27,7 @@ export class AnonymousLobbyGate {
   private readonly globalHour = new Map<string, WindowCounter>();
   private reviewsInFlight = 0;
 
-  constructor(private readonly moderator: LobbyContentModerator, private readonly now: () => number = Date.now) {}
+  constructor(private readonly moderator: LobbyContentModerator, private readonly now: () => number = Date.now, private readonly onError: (error: unknown) => void = () => {}) {}
 
   async review(principal: Principal, raw: string): Promise<LobbyModerationDecision> {
     if (principal.authenticated || principal.kind !== "anonymous") return { allowed: false, reason: "anonymous moderation is not applicable" };
@@ -47,7 +47,8 @@ export class AnonymousLobbyGate {
       return await this.moderator.allows(text)
         ? { allowed: true }
         : { allowed: false, reason: "message was not posted" };
-    } catch {
+    } catch (error) {
+      this.onError(error);
       return { allowed: false, reason: "lobby moderation is unavailable · try again later" };
     } finally {
       this.reviewsInFlight--;
@@ -69,23 +70,46 @@ export class AnonymousLobbyGate {
 interface ModerationResponse { choices?: Array<{ message?: { content?: string | null } }>; error?: { message?: string } }
 
 export class FireworksLobbyModerator implements LobbyContentModerator {
-  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
+  constructor(
+    private readonly apiKey: string,
+    readonly model: string,
+    private readonly systemPrompt: string,
+    private readonly baseUrl = "https://api.fireworks.ai/inference/v1",
+    private readonly fetcher: typeof fetch = fetch,
+  ) {}
 
   async allows(text: string): Promise<boolean> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
         model: this.model,
         messages: [{ role: "system", content: this.systemPrompt }, { role: "user", content: text }],
-        max_tokens: 64,
-        reasoning_effort: 24,
+        max_tokens: 128,
         temperature: 0,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "lobby_moderation",
+            schema: {
+              type: "object",
+              properties: { decision: { type: "string", enum: ["ALLOW", "BLOCK"] } },
+              required: ["decision"],
+              additionalProperties: false,
+            },
+          },
+        },
       }),
       signal: AbortSignal.timeout(30_000),
     });
     const body = (await response.json()) as ModerationResponse;
     if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
-    return body.choices?.[0]?.message?.content?.trim().toUpperCase() === "ALLOW";
+    const content = body.choices?.[0]?.message?.content?.trim();
+    if (!content) throw new Error("Fireworks returned no moderation verdict");
+    let verdict: unknown;
+    try { verdict = (JSON.parse(content) as { decision?: unknown }).decision; }
+    catch { throw new Error("Fireworks returned an invalid moderation verdict"); }
+    if (verdict !== "ALLOW" && verdict !== "BLOCK") throw new Error("Fireworks returned an invalid moderation verdict");
+    return verdict === "ALLOW";
   }
 }

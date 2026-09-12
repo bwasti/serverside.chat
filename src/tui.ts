@@ -84,6 +84,7 @@ export class TuiSession {
   private sidebarFocused = false;
   private accountFocused = false;
   private accountPanel?: { field: number; editing: boolean; linkUrl?: string };
+  private roomSettings?: { field: number; visibility: RoomVisibility; contributions: ContributionPolicy; agentMode: AgentMode };
   private createRoomFocused = false;
   private creatingRoom = false;
   private createRoomField = 0;
@@ -130,7 +131,7 @@ export class TuiSession {
   ) {
     this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
     this.allRooms = rooms;
-    this.rooms = rooms.filter((room) => room.canView(this.principal));
+    this.rooms = this.orderedVisibleRooms(this.principal);
     if (!this.rooms.length) throw new Error("principal cannot view any rooms");
     this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === initialRoom));
     this.room = this.rooms[this.roomIndex]!;
@@ -180,6 +181,10 @@ export class TuiSession {
     }
     if (this.accountPanel) {
       this.handleAccountPanelData(data);
+      return;
+    }
+    if (this.roomSettings) {
+      this.handleRoomSettingsData(data);
       return;
     }
     if (this.mountPanel) {
@@ -352,9 +357,14 @@ export class TuiSession {
     if (arrow) {
       const modifier = arrow[1];
       const direction = arrow[2]!;
+      if (modifier === "1;2" && this.sidebarFocused && (direction === "A" || direction === "B")) return { dirty: this.reorderSidebarRoom(direction === "A" ? -1 : 1), inputChanged: false };
       const wordMotion = (modifier === "1;3" || modifier === "1;5") && (direction === "C" || direction === "D");
       const dirty = wordMotion && !this.sidebarFocused ? this.moveWord(direction === "D" ? -1 : 1) : this.handleArrow(direction);
       return { dirty, inputChanged: false };
+    }
+    if (this.sidebarFocused && (sequence === "\x1b[13;2u" || sequence === "\x1b[27;2;13~" || sequence === "\x1b\r")) {
+      this.beginRoomSettings();
+      return { dirty: true, inputChanged: false };
     }
     const page = sequence.match(/^\x1b\[([56])~$/);
     if (page && !this.sidebarFocused) { this.scrollChat(page[1] === "5" ? 8 : -8); return { dirty: true, inputChanged: false }; }
@@ -427,6 +437,30 @@ export class TuiSession {
     this.messageCache.clear();
     this.room.join(this.username);
     this.render();
+  }
+
+  private reorderSidebarRoom(offset: -1 | 1): boolean {
+    if (this.createRoomFocused || this.accountFocused) return false;
+    if (!this.accounts || !this.principal.authenticated || this.principal.kind !== "user") {
+      this.localNotice = "sign in to customize your room bar";
+      return true;
+    }
+    const next = this.roomIndex + offset;
+    if (next < 0 || next >= this.rooms.length) return false;
+    const previousRooms = [...this.rooms];
+    const previousIndex = this.roomIndex;
+    const [moved] = this.rooms.splice(this.roomIndex, 1);
+    this.rooms.splice(next, 0, moved!);
+    this.roomIndex = next;
+    try {
+      this.accounts.saveRoomOrder(this.principal, this.rooms.map((room) => room.name));
+      this.localNotice = "room order saved";
+    } catch {
+      this.rooms = previousRooms;
+      this.roomIndex = previousIndex;
+      this.localNotice = "could not save room order";
+    }
+    return true;
   }
 
   private scrollChat(offset: number): void {
@@ -905,6 +939,123 @@ export class TuiSession {
     return true;
   }
 
+  private beginRoomSettings(): void {
+    if (this.createRoomFocused || this.accountFocused) {
+      this.localNotice = "select a room to edit its settings";
+      return;
+    }
+    if (!this.accounts?.isAdmin(this.principal, this.room.name)) {
+      this.localNotice = "room settings require a room admin";
+      return;
+    }
+    const policy = this.room.policy;
+    if (policy.system) {
+      this.localNotice = "system room policy is host-managed";
+      return;
+    }
+    this.roomSettings = { field: 0, visibility: policy.visibility, contributions: policy.contributions, agentMode: policy.agentMode };
+    this.sidebarFocused = false;
+    this.input = "";
+    this.cursorOffset = 0;
+    this.localNotice = "";
+    this.lastFrame = "";
+    this.room.setTyping(this.username, false);
+    this.animateSidebar();
+  }
+
+  private closeRoomSettings(toSidebar = false): void {
+    this.roomSettings = undefined;
+    this.sidebarFocused = toSidebar;
+    this.localNotice = "";
+    this.lastFrame = "";
+    if (toSidebar) this.animateSidebar();
+    this.render();
+  }
+
+  private handleRoomSettingsData(data: Buffer): void {
+    const settings = this.roomSettings;
+    if (!settings) return;
+    const tokens = data.toString("utf8").match(/\x1b(?:\[[0-?]*[ -/]*[@-~]|O[HF]|[^\x1b])|[^\x1b]+/gs) ?? [];
+    let dirty = false;
+    for (const token of tokens) {
+      if (token.startsWith("\x1b")) {
+        const arrow = token.match(/^\x1b\[(?:1;[2-8])?([ABCD])$/);
+        if (!arrow) continue;
+        const direction = arrow[1]!;
+        if (direction === "A" || direction === "B") settings.field = Math.max(0, Math.min(3, settings.field + (direction === "A" ? -1 : 1)));
+        else this.cycleRoomSetting(direction === "C" ? 1 : -1);
+        dirty = true;
+        continue;
+      }
+      for (const char of token) {
+        if (char === "\x03" || char === "\x04") { this.stream.end(); return; }
+        if (char === "\t") return this.closeRoomSettings(true);
+        if (char === "q" || char === "Q") return this.closeRoomSettings();
+        if (char !== "\r" && char !== "\n") continue;
+        if (char === "\n" && this.lastWasCarriageReturn) { this.lastWasCarriageReturn = false; continue; }
+        this.lastWasCarriageReturn = char === "\r";
+        if (settings.field < 3) {
+          this.cycleRoomSetting(1);
+          dirty = true;
+          continue;
+        }
+        try {
+          this.room.updatePolicy(this.principal, {
+            visibility: settings.visibility,
+            contributions: settings.contributions,
+            agentMode: settings.agentMode,
+          });
+          this.roomSettings = undefined;
+          this.localNotice = "room settings saved";
+          this.lastFrame = "";
+          this.render();
+          return;
+        } catch (error) {
+          this.localNotice = error instanceof Error ? error.message : "room settings could not be saved";
+          dirty = true;
+        }
+      }
+    }
+    if (dirty) this.render();
+  }
+
+  private cycleRoomSetting(direction: -1 | 1): void {
+    if (!this.roomSettings) return;
+    if (this.roomSettings.field === 0) this.roomSettings.visibility = cycle(["public", "private"] as const, this.roomSettings.visibility, direction);
+    else if (this.roomSettings.field === 1) this.roomSettings.contributions = cycle(["members", "admins", "disabled"] as const, this.roomSettings.contributions, direction);
+    else if (this.roomSettings.field === 2) this.roomSettings.agentMode = cycle(["passive", "explicit", "disabled"] as const, this.roomSettings.agentMode, direction);
+  }
+
+  private renderRoomSettings(): void {
+    if (!this.roomSettings) return;
+    const width = this.width;
+    const row = (index: number, label: string, value: string, detail: string) => {
+      const focused = this.roomSettings?.field === index;
+      const marker = focused ? `${CYAN}›${CHAT}` : `${MUTED}·${CHAT}`;
+      const setting = index === 3
+        ? `${focused ? `${CYAN}${ESC}1m` : MUTED}[ Save changes ]${ESC}22m${CHAT}`
+        : `${MUTED}← ${CHAT}${focused ? `${ESC}1m` : ""}${value}${focused ? `${ESC}22m` : ""}${MUTED} →${CHAT}`;
+      return padAnsi(`  ${marker} ${pad(label, 18)} ${setting}${detail ? `   ${MUTED}${detail}${CHAT}` : ""}`, width);
+    };
+    const rows = [
+      "",
+      row(0, "Visibility", this.roomSettings.visibility, this.roomSettings.visibility === "public" ? "anyone can view" : "members only"),
+      row(1, "Contributions", this.roomSettings.contributions, this.roomSettings.contributions === "members" ? "contributors and admins" : this.roomSettings.contributions === "admins" ? "admins only" : "read only"),
+      row(2, "Agent", this.roomSettings.agentMode, this.roomSettings.agentMode === "passive" ? "listens when useful" : this.roomSettings.agentMode === "explicit" ? "/agent only" : "disabled"),
+      "",
+      row(3, "", "save", ""),
+    ];
+    const bodyHeight = Math.max(1, this.height - 2);
+    while (rows.length < bodyHeight) rows.push("");
+    const header = `${HEADER}${pad(truncate(`  ROOM SETTINGS  #${this.room.name}`, width), width)}${RESET}`;
+    const body = rows.slice(0, bodyHeight).map((line) => `${CHAT}${padAnsi(line, width)}${RESET}`);
+    const footer = `${COMPOSER}${pad(truncate(this.localNotice ? `  ${this.localNotice}` : "  ↑↓ choose   ←→ or ENTER change   ENTER save   TAB rooms   Q close", width), width)}${RESET}`;
+    const frame = `${[header, ...body, footer].join("\r\n")}${ESC}?25l`;
+    if (frame === this.lastFrame) return;
+    this.lastFrame = frame;
+    this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
+  }
+
   private beginAccountPanel(): void {
     this.accountPanel = { field: 0, editing: false };
     this.accountFocused = true;
@@ -1206,6 +1357,10 @@ export class TuiSession {
     }
     if (this.accountPanel) {
       this.renderAccountPanel();
+      return;
+    }
+    if (this.roomSettings) {
+      this.renderRoomSettings();
       return;
     }
     if (this.editor) {
@@ -1512,7 +1667,7 @@ export class TuiSession {
       const marker = roomActive ? " ● " : roomIndex >= 0 && roomIndex < this.rooms.length ? " · " : "   ";
       return `${roomActive ? SIDEBAR_ACTIVE : SIDEBAR}${pad(marker, width)}${RESET}`;
     }
-    if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS ↑↓ DEL" : "  ROOMS", width), width)}${RESET}`;
+    if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS ⇧↑↓ ⇧↵" : "  ROOMS", width), width)}${RESET}`;
     const hasCreate = this.roomCreationAvailable;
     if (hasCreate && index === 1) {
       const style = this.createRoomFocused ? SIDEBAR_ACTIVE : SIDEBAR;
@@ -1577,6 +1732,7 @@ export class TuiSession {
     this.room.setTyping(this.username, false);
     this.room.leave(this.username);
     this.accountPanel = undefined;
+    this.roomSettings = undefined;
     this.mountPanel = undefined;
     this.shellPanel = false;
     this.write("\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l");
@@ -1603,6 +1759,18 @@ export class TuiSession {
     if (!this.accounts || !this.directory || !this.principal.authenticated || this.principal.kind !== "user") return false;
     const profile = this.accounts.accountProfile(this.principal);
     return profile.ownedRooms < profile.roomLimit;
+  }
+
+  private orderedVisibleRooms(principal: Principal): Room[] {
+    const visible = this.allRooms.filter((room) => room.canView(principal));
+    const order = this.accounts?.roomOrder(principal) ?? [];
+    if (!order.length) return visible;
+    const rank = new Map(order.map((name, index) => [name, index]));
+    return visible.map((room, index) => ({ room, index, rank: rank.get(room.name) }))
+      .sort((left, right) => left.rank === undefined
+        ? right.rank === undefined ? left.index - right.index : 1
+        : right.rank === undefined ? -1 : left.rank - right.rank)
+      .map(({ room }) => room);
   }
 
   private onCreateRoomScreen(): boolean {
@@ -1695,11 +1863,12 @@ export class TuiSession {
     this.mountPanel = undefined;
     this.shellPanel = false;
     this.accountPanel = undefined;
+    this.roomSettings = undefined;
     this.accountFocused = false;
     this.createRoomFocused = false;
     this.creatingRoom = false;
     this.deletingRoomName = undefined;
-    this.rooms = this.allRooms.filter((room) => room.canView(principal));
+    this.rooms = this.orderedVisibleRooms(principal);
     if (!this.rooms.length) throw new Error("account cannot view any rooms");
     this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === preferredRoom));
     this.room = this.rooms[this.roomIndex]!;
@@ -1717,7 +1886,7 @@ export class TuiSession {
   private refreshRooms(event: RoomDirectoryEvent): void {
     if (this.closed) return;
     const preferred = event.kind === "rename" && event.previousName === this.room.name ? event.name : this.room.name;
-    const visible = this.allRooms.filter((room) => room.canView(this.principal));
+    const visible = this.orderedVisibleRooms(this.principal);
     if (!visible.length) {
       this.stream.end("No rooms are visible to this account.\r\n");
       return;
@@ -1738,6 +1907,7 @@ export class TuiSession {
 
   private selectRoom(room: Room): void {
     this.accountPanel = undefined;
+    this.roomSettings = undefined;
     this.accountFocused = false;
     this.createRoomFocused = false;
     this.creatingRoom = false;

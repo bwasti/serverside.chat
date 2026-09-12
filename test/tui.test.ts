@@ -261,6 +261,49 @@ test("Enter selects the highlighted room and returns focus to chat", () => {
   stream.end();
 });
 
+test("Shift-arrows persist a different room-bar order for each account", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-room-order-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const alice = accounts.ensureLocalOwner("alice");
+  const bob = accounts.createDevelopmentAccount("bob").principal;
+  accounts.ensureSystemRoom("lobby", alice, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("alpha", alice, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("beta", alice, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  const first = new FakeStream();
+  new TuiSession(first as unknown as ServerChannel, directory.rooms, alice, accounts, "alpha", undefined, undefined, undefined, directory);
+
+  first.emit("data", Buffer.from("\t\x1b[1;2B"));
+  expect(accounts.roomOrder(alice)).toEqual(["lobby", "beta", "alpha"]);
+  first.end();
+
+  const aliceAgain = new TuiSession(new FakeStream() as unknown as ServerChannel, directory.rooms, alice, accounts, undefined, undefined, undefined, undefined, directory);
+  const bobSession = new TuiSession(new FakeStream() as unknown as ServerChannel, directory.rooms, bob, accounts, undefined, undefined, undefined, undefined, directory);
+  expect((aliceAgain as unknown as { rooms: Room[] }).rooms.map((room) => room.name)).toEqual(["lobby", "beta", "alpha"]);
+  expect((bobSession as unknown as { rooms: Room[] }).rooms.map((room) => room.name)).toEqual(["lobby", "alpha", "beta"]);
+  (aliceAgain as unknown as { stream: FakeStream }).stream.end();
+  (bobSession as unknown as { stream: FakeStream }).stream.end();
+  accounts.close();
+});
+
+test("Shift-Enter opens keyboard-only room permission settings for admins", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-room-settings-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  const stream = new FakeStream();
+  new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("\t\x1b[13;2u"));
+  expect(stream.writes.at(-1)).toContain("ROOM SETTINGS  #mine");
+  stream.emit("data", Buffer.from("\x1b[C\x1b[B\x1b[C\x1b[B\x1b[C\x1b[B\r"));
+  expect(directory.room("mine")!.policy).toMatchObject({ visibility: "private", contributions: "admins", agentMode: "explicit" });
+  expect(stream.writes.at(-1)).toContain("room settings saved");
+  stream.end();
+  accounts.close();
+});
+
 test("wide version control HUD reserves its lower third for live service logs", () => {
   const room = new Room("mine");
   room.versionGraph.push({ text: "* abcdef0  head", url: "https://example.test/mine?__ref=abcdef0" });

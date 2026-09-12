@@ -474,7 +474,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const fit = new FitAddon.FitAddon();
     terminal.loadAddon(fit); terminal.open(document.getElementById('terminal')); fit.fit(); terminal.focus();
     terminal.parser.registerOscHandler(777,value=>{if(value==='signin'){showSignIn();return true}if(value.startsWith('room:')){try{const room=decodeURIComponent(value.slice(5));if(/^[a-z0-9][a-z0-9-]{0,31}$/.test(room))history.replaceState({},'',room==='lobby'?'/':'/room/'+encodeURIComponent(room))}catch{}return true}if(value.startsWith('open:')){try{const target=new URL(decodeURIComponent(value.slice(5)),location.href);if(target.origin===location.origin){location.href=target.href;return true}}catch{}return true}return false});
-    terminal.attachCustomKeyEventHandler(event=>{if(event.type==='keydown'&&event.ctrlKey&&['s','p','q'].includes(event.key.toLowerCase()))event.preventDefault();return true});
+    terminal.attachCustomKeyEventHandler(event=>{if(event.type==='keydown'&&event.shiftKey){const sequence=event.key==='ArrowUp'?'\\x1b[1;2A':event.key==='ArrowDown'?'\\x1b[1;2B':event.key==='Enter'?'\\x1b[13;2u':'';if(sequence){event.preventDefault();send({type:'input',data:sequence});return false}}if(event.type==='keydown'&&event.ctrlKey&&['s','p','q'].includes(event.key.toLowerCase()))event.preventDefault();return true});
     let socket, retry=250, resizeFrame;
     const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
     const connect = () => {

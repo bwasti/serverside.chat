@@ -30,6 +30,8 @@ OAuth identities from different providers are never merged by matching email or 
 
 The rooms sidebar treats the bottom `@handle` row as a selectable account destination. Anonymous sessions can open the canonical OAuth flow there. Authenticated sessions can inspect their site role, plan, room allowance, linked provider names, and active SSH-key count; they can also update their display name or create a short-lived account-bound link for attaching another Google or GitHub identity. These changes remain host-owned and are recorded in the account audit log.
 
+Room-bar ordering is a canonical-account preference, not shared room state. While the sidebar is focused, Shift-Up and Shift-Down move the selected room and persist the complete visible ordering for that account; new or newly visible rooms append without disturbing it. Anonymous sessions keep the default order. Shift-Enter opens the selected room's policy editor. The host rechecks room-admin authority when the editor opens and again when it saves visibility, contribution, and agent settings.
+
 Prototype owner accounts that existed before OAuth can run `ssh -p 2222 serverside.chat account`. The server returns a random, hashed-at-rest, single-use HTTPS link valid for ten minutes. Choosing Google or GitHub consumes that bootstrap token, binds the verified provider subject to the existing internal account, and issues the normal browser session. This is a migration path, not the routine browser sign-in flow.
 
 ## Room mount credentials
