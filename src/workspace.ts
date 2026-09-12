@@ -18,7 +18,7 @@ export class RoomWorkspace {
   private readonly publishedCache = new Map<string, string>();
   activeCommit!: string;
 
-  constructor(dataDir: string, readonly roomName: string, sourceRoot?: string) {
+  constructor(dataDir: string, readonly roomName: string, sourceRoot?: string, private readonly onUsageChange: (bytes: number) => void = () => {}) {
     this.root = resolve(dataDir, "rooms", roomName, "repo");
     this.metadataPath = resolve(dataDir, "rooms", roomName, "deployments.json");
     if (sourceRoot && !existsSync(this.root)) {
@@ -32,6 +32,7 @@ export class RoomWorkspace {
     }
     this.loadDeployments();
     this.updateStableTag();
+    this.reportUsage();
   }
 
   listTree(): Array<{ path: string; bytes: number }> {
@@ -84,6 +85,7 @@ export class RoomWorkspace {
     if (this.git(["cat-file", "-t", `HEAD:${normalized}`], true).stdout.trim() !== "blob") throw new Error("file is not tracked in HEAD");
     this.git(["restore", "--source=HEAD", "--worktree", "--", normalized]);
     const content = this.readFileBytes(normalized);
+    this.reportUsage();
     return { path: normalized, bytes: content.byteLength, revision: contentRevision(content), restoredFrom: "HEAD" };
   }
 
@@ -103,6 +105,7 @@ export class RoomWorkspace {
     try {
       writeFileSync(temporary, content, { mode: 0o644 });
       renameSync(temporary, target);
+      this.reportUsage(total);
     } catch (error) {
       if (existsSync(temporary)) unlinkSync(temporary);
       throw error;
@@ -117,6 +120,7 @@ export class RoomWorkspace {
     if (info.isSymbolicLink()) throw new Error("symbolic links are not supported");
     if (!info.isFile()) throw new Error("file not found");
     unlinkSync(target);
+    this.reportUsage();
     return { deleted: path };
   }
 
@@ -249,12 +253,14 @@ export class RoomWorkspace {
   switchBranch(name: string): { branch: string } {
     const branch = validBranch(name);
     this.git(["switch", branch]);
+    this.reportUsage();
     return { branch };
   }
 
   rebaseOntoStable(): { completed: boolean; head?: string; base: string; conflicts?: string } {
     if (this.status().split("\n").some((line) => line && !line.startsWith("##"))) throw new Error("working tree must be clean before rebase");
     const result = this.git(["rebase", "stable"], true);
+    this.reportUsage();
     if (!result.ok) {
       return { completed: false, base: this.activeCommit, conflicts: this.status() };
     }
@@ -264,12 +270,14 @@ export class RoomWorkspace {
   continueRebase(): { completed: boolean; head?: string; conflicts?: string } {
     this.git(["add", "-A", "--", "."]);
     const result = this.git(["-c", "core.editor=true", "rebase", "--continue"], true);
+    this.reportUsage();
     if (!result.ok) return { completed: false, conflicts: this.status() };
     return { completed: true, head: this.head() };
   }
 
   abortRebase(): { aborted: true } {
     if (!this.git(["rebase", "--abort"], true).ok) throw new Error("no rebase is in progress");
+    this.reportUsage();
     return { aborted: true };
   }
 
@@ -376,6 +384,10 @@ export class RoomWorkspace {
 
   private updateStableTag(): void {
     this.git(["tag", "-f", "stable", this.activeCommit]);
+  }
+
+  private reportUsage(bytes = this.listTree().reduce((sum, file) => sum + file.bytes, 0)): void {
+    this.onUsageChange(bytes);
   }
 
   private safePath(path: string): string {

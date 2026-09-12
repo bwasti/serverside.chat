@@ -59,13 +59,17 @@ test("guest realtime capability publishes a bounded room event", async () => {
 
 test("guest scratch filesystem persists across isolates and rejects traversal", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
-  const workspace = new RoomWorkspace(data, "mine");
+  const room = new Room("mine");
+  const workspace = new RoomWorkspace(data, "mine", undefined, (bytes) => room.recordSourceBytes(bytes));
   workspace.writeFile("worker.js", `export default { fetch(request, env) { if(request.method==="POST") env.fs.writeText("state/note.txt", "durable"); return Response.json({value:env.fs.readText("state/note.txt"),files:env.fs.list()}); } };`);
   workspace.commit("test scratch filesystem");
-  const runtime = new ServiceRuntime(workspace, new Room("mine"), data);
+  const runtime = new ServiceRuntime(workspace, room, data);
   await runtime.fetch(new Request("http://service/mine", { method: "POST" }), "head", "/");
   const result = await runtime.fetch(new Request("http://service/mine"), "head", "/");
   expect(JSON.parse(result.body)).toEqual({ value: "durable", files: [{ path: "state/note.txt", bytes: 7 }] });
+  expect(room.sourceBytes).toBe(workspace.listTree().reduce((sum, file) => sum + file.bytes, 0));
+  expect(room.scratchFilesystemBytes).toBe(7);
+  expect(room.filesystemBytes).toBe(room.sourceBytes + 7);
 
   workspace.writeFile("worker.js", `export default { fetch(_request, env) { env.fs.readText("../other/secret"); return new Response("bad"); } };`);
   workspace.commit("test scratch traversal");

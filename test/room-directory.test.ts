@@ -19,6 +19,12 @@ test("accounts can create a persistent room that owners can rename, archive, and
   expect(starter.pageUrl).toBe("https://example.test/bob");
   expect(accounts.roleFor(member, "bob")).toBe("owner");
   expect(existsSync(join(data, "rooms", "bob", "repo", ".git"))).toBe(true);
+  expect(starter.sourceBytes).toBeGreaterThan(0);
+  expect(starter.filesystemBytes).toBe(starter.sourceBytes);
+  const beforeSourceBytes = starter.sourceBytes;
+  directory.workspaces.get("bob")!.writeFile("extra.txt", "count me");
+  expect(starter.sourceBytes).toBe(beforeSourceBytes + Buffer.byteLength("count me"));
+  expect(starter.filesystemBytes).toBe(starter.sourceBytes);
   starter.chat(member, "persistent before rename");
 
   const renamed = directory.renameRoom(member, "bob", "bob-site");

@@ -28,6 +28,7 @@ export class ServiceRuntime {
     mkdirSync(dirname(this.databasePath), { recursive: true });
     mkdirSync(this.scratchRoot, { recursive: true });
     this.filesystemBytes = this.scratchFiles().reduce((sum, file) => sum + file.bytes, 0);
+    this.room.recordResources(databaseBytes(this.databasePath), this.filesystemBytes);
   }
 
   async fetch(request: Request, deploymentRef: string | undefined, servicePath: string, publish?: (payload: string) => void, requestHeaders?: Record<string, string>): Promise<GuestResponse> {

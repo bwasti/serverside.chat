@@ -28,7 +28,15 @@ export interface ClankerRequest {
   explicit: boolean;
 }
 
-export const ROOM_LIMITS = { connections: 128, concurrentRequests: 32, egressBytesPerHour: 64 * 1024 * 1024, databaseBytes: 5 * 1024 * 1024, filesystemBytes: 5 * 1024 * 1024 } as const;
+export const ROOM_LIMITS = {
+  connections: 128,
+  concurrentRequests: 32,
+  egressBytesPerHour: 64 * 1024 * 1024,
+  databaseBytes: 5 * 1024 * 1024,
+  sourceBytes: 5 * 1024 * 1024,
+  scratchBytes: 5 * 1024 * 1024,
+  filesystemBytes: 10 * 1024 * 1024,
+} as const;
 const TELEMETRY_VERSION = 2;
 
 export class Room {
@@ -52,6 +60,8 @@ export class Room {
   activeRequests = 0;
   databaseBytes = 0;
   filesystemBytes = 0;
+  sourceBytes = 0;
+  scratchFilesystemBytes = 0;
   lastRequestAt = 0;
   private readonly egressSamples: Array<{ at: number; bytes: number }> = [];
   private clankerResponder?: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: ClankerRequest) => Promise<string>;
@@ -180,9 +190,21 @@ export class Room {
   setWebConnections(count: number): void { this.webConnections = Math.max(0, Math.min(ROOM_LIMITS.connections, count)); for (const listener of this.serviceListeners) listener(); }
   recordResources(databaseBytes: number, filesystemBytes: number): void {
     const nextDatabaseBytes = Math.max(0, databaseBytes);
-    const nextFilesystemBytes = Math.max(0, filesystemBytes);
-    if (nextDatabaseBytes === this.databaseBytes && nextFilesystemBytes === this.filesystemBytes) return;
+    const nextScratchBytes = Math.max(0, filesystemBytes);
+    const nextFilesystemBytes = this.sourceBytes + nextScratchBytes;
+    if (nextDatabaseBytes === this.databaseBytes && nextScratchBytes === this.scratchFilesystemBytes && nextFilesystemBytes === this.filesystemBytes) return;
     this.databaseBytes = nextDatabaseBytes;
+    this.scratchFilesystemBytes = nextScratchBytes;
+    this.filesystemBytes = nextFilesystemBytes;
+    this.saveState();
+    for (const listener of this.serviceListeners) listener();
+  }
+
+  recordSourceBytes(sourceBytes: number): void {
+    const nextSourceBytes = Math.max(0, sourceBytes);
+    const nextFilesystemBytes = nextSourceBytes + this.scratchFilesystemBytes;
+    if (nextSourceBytes === this.sourceBytes && nextFilesystemBytes === this.filesystemBytes) return;
+    this.sourceBytes = nextSourceBytes;
     this.filesystemBytes = nextFilesystemBytes;
     this.saveState();
     for (const listener of this.serviceListeners) listener();
@@ -390,7 +412,11 @@ export class Room {
       this.serviceResponseBytes = finiteNumber(state.serviceResponseBytes);
       this.serviceTotalLatencyMs = finiteNumber(state.serviceTotalLatencyMs);
       this.databaseBytes = finiteNumber(state.databaseBytes);
-      this.filesystemBytes = finiteNumber(state.filesystemBytes);
+      this.sourceBytes = finiteNumber(state.sourceBytes);
+      this.scratchFilesystemBytes = state.scratchFilesystemBytes === undefined
+        ? finiteNumber(state.filesystemBytes)
+        : finiteNumber(state.scratchFilesystemBytes);
+      this.filesystemBytes = this.sourceBytes + this.scratchFilesystemBytes;
       if (Array.isArray(state.egressSamples)) for (const raw of state.egressSamples) { const sample = raw as Record<string, unknown>; if (typeof sample?.at === "number" && typeof sample.bytes === "number") this.egressSamples.push({ at: sample.at, bytes: sample.bytes }); }
       this.pruneEgress();
       if (Array.isArray(state.serviceLogs)) this.serviceLogs.push(...state.serviceLogs.filter((value): value is string => typeof value === "string").slice(-50).map(legacyClankerTelemetry));
@@ -419,7 +445,7 @@ export class Room {
     if (!this.statePath) return;
     mkdirSync(dirname(this.statePath), { recursive: true });
     const temporary = `${this.statePath}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ telemetryVersion: TELEMETRY_VERSION, messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, egressSamples: this.egressSamples, clankerState: { events: this.clankerState.events, links: this.clankerState.links } }, null, 2));
+    writeFileSync(temporary, JSON.stringify({ telemetryVersion: TELEMETRY_VERSION, messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, sourceBytes: this.sourceBytes, scratchFilesystemBytes: this.scratchFilesystemBytes, egressSamples: this.egressSamples, clankerState: { events: this.clankerState.events, links: this.clankerState.links } }, null, 2));
     renameSync(temporary, this.statePath);
   }
 
