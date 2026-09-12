@@ -97,13 +97,13 @@ test("telemetry and composer have dark breathing room without growing the frame"
   tui.stream.end();
 });
 
-test("main chat canvas uses the same darkest Zenburn background as version control", () => {
+test("main chat stays darkest while the version HUD matches the status background", () => {
   const room = new Room("mine");
   room.chat("alice", "dark canvas");
   const tui = open(room);
   tui.session.resize(120, 24);
   const frame = tui.stream.writes.at(-1)!;
-  expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;102m  VERSION CONTROL");
+  expect(frame).toContain("\x1b[48;5;237m\x1b[38;5;102m  VERSION CONTROL");
   expect(frame).toContain("# mine  public");
   expect(frame).toContain("\x1b]8;;http://localhost:3000/mine\x1b\\localhost:3000/mine\x1b]8;;\x1b\\");
   expect(frame).not.toContain("SITE");
@@ -112,6 +112,7 @@ test("main chat canvas uses the same darkest Zenburn background as version contr
   expect(frame).toContain("CONN ");
   expect(frame).toContain("FILES ");
   expect(frame).toContain("BYTES/H ");
+  expect(frame).toContain("\x1b[48;5;237m\x1b[38;5;188m");
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;188m");
   expect(frame).toContain("dark canvas");
   const strip = (line: string) => line.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -380,8 +381,8 @@ test("room focus dims the version control and live-log HUD", () => {
   tui.stream.emit("data", Buffer.from("\t"));
 
   const frame = tui.stream.writes.at(-1)!;
-  expect(frame).toContain("\x1b[2m\x1b[48;5;235m\x1b[38;5;102m  VERSION CONTROL");
-  expect(frame).toContain("\x1b[2m\x1b[48;5;235m\x1b[38;5;188m");
+  expect(frame).toContain("\x1b[2m\x1b[48;5;237m\x1b[38;5;102m  VERSION CONTROL");
+  expect(frame).toContain("\x1b[2m\x1b[48;5;237m\x1b[38;5;188m");
   tui.stream.end();
 });
 
@@ -493,6 +494,14 @@ test("wide version control HUD reserves its lower third for live service logs", 
   expect(frame.indexOf("LIVE LOGS")).toBeGreaterThan(frame.indexOf("abcdef0"));
   expect(frame.indexOf("DB ")).toBeGreaterThan(frame.indexOf("abcdef0"));
   expect(frame.indexOf("DB ")).toBeLessThan(frame.indexOf("LIVE LOGS"));
+  const rows = frame.split("\r\n");
+  const resourceRows = ["DB", "FILES", "CONN", "BYTES/H"].map((label) => rows.findIndex((row) => row.includes(label)));
+  expect(new Set(resourceRows).size).toBe(4);
+  for (const index of resourceRows) {
+    expect(index).toBeGreaterThan(-1);
+    expect(rows[index]).toContain("\x1b[48;5;237m");
+    expect(rows[index]!.match(/░/g)?.length).toBeGreaterThan(10);
+  }
   tui.stream.end();
 });
 

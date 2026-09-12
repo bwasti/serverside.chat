@@ -25,8 +25,8 @@ const COMMAND_ACTIVE = `${ESC}48;5;239m${ESC}38;5;188m`;
 const SIDEBAR = `${ESC}48;5;236m${ESC}38;5;188m`;
 const SIDEBAR_MUTED = `${ESC}48;5;236m${ESC}38;5;102m`;
 const SIDEBAR_ACTIVE = `${ESC}48;5;59m${ESC}38;5;188m`;
-const HUD = `${ESC}48;5;235m${ESC}38;5;188m`;
-const HUD_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
+const HUD = `${ESC}48;5;237m${ESC}38;5;188m`;
+const HUD_MUTED = `${ESC}48;5;237m${ESC}38;5;102m`;
 const MUTED = `${ESC}38;5;102m`;
 const CHAT = `${ESC}48;5;235m${ESC}38;5;188m`;
 const CHAT_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
@@ -1670,7 +1670,7 @@ export class TuiSession {
       rendered = `${HUD}${padAnsi(log ? renderServiceLog(log) : "", width)}${RESET}`;
       return this.dimInactiveHud(rendered);
     }
-    const resources = this.resourceHudRows();
+    const resources = this.resourceHudRows(width);
     const resourceStart = Math.min(this.room.versionGraph.length, Math.max(0, logStart - resources.length));
     if (index >= resourceStart && index < resourceStart + resources.length) {
       rendered = `${HUD}${padAnsi(resources[index - resourceStart]!, width)}${RESET}`;
@@ -1681,12 +1681,13 @@ export class TuiSession {
     return this.dimInactiveHud(rendered);
   }
 
-  private resourceHudRows(): string[] {
-    const db = denseUsageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatCompactBytes);
-    const connections = denseUsageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String);
-    const files = denseUsageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatCompactBytes);
-    const bytes = denseUsageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatCompactBytes);
-    return [` ${db} ${connections}`, ` ${files} ${bytes}`];
+  private resourceHudRows(width: number): string[] {
+    return [
+      denseUsageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatCompactBytes, width),
+      denseUsageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String, width),
+      denseUsageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatCompactBytes, width),
+      denseUsageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatCompactBytes, width),
+    ];
   }
 
   private dimInactiveHud(value: string): string {
@@ -2074,12 +2075,15 @@ function formatCompactBytes(bytes: number): string {
   return `${Number.isInteger(mib) ? mib : mib.toFixed(1)}M`;
 }
 
-function denseUsageBar(label: string, used: number, limit: number, format: (value: number) => string): string {
+function denseUsageBar(label: string, used: number, limit: number, format: (value: number) => string, width: number): string {
   const ratio = Math.max(0, Math.min(1, used / limit));
-  const filled = Math.round(ratio * 4);
+  const labelWidth = 7;
+  const usage = `${format(used)}/${format(limit)}`;
+  const barWidth = Math.max(4, width - 2 - labelWidth - 1 - 2 - terminalWidth(usage));
+  const filled = Math.round(ratio * barWidth);
   const tone = ratio >= 0.9 ? RED : ratio >= 0.7 ? YELLOW : GREEN;
-  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(4 - filled)}${HUD}`;
-  return `${label} ${bar} ${format(used)}/${format(limit)}`;
+  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(barWidth - filled)}${HUD}`;
+  return `  ${pad(label, labelWidth)} ${bar}  ${usage}`;
 }
 
 function compactUrl(value: string): string {
