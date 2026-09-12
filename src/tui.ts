@@ -31,6 +31,7 @@ const MUTED = `${ESC}38;5;102m`;
 const CHAT = `${ESC}48;5;235m${ESC}38;5;188m`;
 const CHAT_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
 const CHAT_SELECTED = `${ESC}48;5;59m${ESC}38;5;188m`;
+const CHAT_STATUS = `${ESC}48;5;236m${ESC}38;5;102m`;
 const OWNER = `${ESC}38;5;110m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1420,6 +1421,7 @@ export class TuiSession {
       : writable ? this.input : readOnlyText;
     const selectedMessage = this.selectedMessageId === undefined ? undefined : this.room.messages.find((message) => message.id === this.selectedMessageId);
     const deletingMessage = this.deleteConfirmationId === undefined ? undefined : this.room.messages.find((message) => message.id === this.deleteConfirmationId);
+    const ambientStatus = this.ambientStatus(mainWidth);
     const bottomStatus = deletingMessage
       ? truncate(`  delete @${deletingMessage.author}'s message?  Y confirm · N cancel`, mainWidth)
       : this.localNotice
@@ -1428,7 +1430,7 @@ export class TuiSession {
           ? truncate(`  selected @${selectedMessage.author} · ENTER reply${this.room.canDeleteMessage(this.principal) ? " · DELETE remove" : ""} · ↓ cancel`, mainWidth)
           : deleteRoomScreen
             ? truncate(`  type ${this.deletingRoomName} exactly · TAB cancels`, mainWidth)
-            : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
+            : createRoomScreen ? "" : ambientStatus;
     const inputLayout = layoutComposer(composerValue, !createRoomScreen && writable ? this.cursorOffset : 0, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - (bottomStatus ? 1 : 0) - 5));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
@@ -1528,7 +1530,7 @@ export class TuiSession {
             ? linkText(padded, this.localNotice, this.localNotice, CYAN, `${ESC}3m${MUTED}`)
             : !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, `${ESC}3m${MUTED}`) : padded;
           const columnRow = topRows.length + 1 + visible.length;
-          return [`${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${rendered}${ESC}23m${RESET}${this.hudRow(columnRow, hudWidth)}`];
+          return [`${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${CHAT_STATUS}${ESC}3m${rendered}${ESC}23m${RESET}${this.hudRow(columnRow, hudWidth)}`];
         })()
       : [];
     const commandMenu = commandChoices.map(({ command, index }, offset) => {
@@ -1716,6 +1718,15 @@ export class TuiSession {
         ? `${names[0]} and ${names[1]}`
         : `${names[0]}, ${names[1]} +${names.length - 2}`;
     return truncate(`  ${subject} ${names.length === 1 ? "is" : "are"} typing…`, width);
+  }
+
+  private ambientStatus(width: number): string {
+    const typing = this.typingStatus(width).trim();
+    const agent = this.agentIsActive()
+      ? `${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]} agent ${this.room.agentState.status}${this.room.agentState.detail ? ` · ${this.room.agentState.detail}` : ""}`
+      : "";
+    if (typing || agent) return truncate(`  ${[typing, agent].filter(Boolean).join(" · ")}`, width);
+    return this.anonymousLobbyStatus(width) || truncate("  · ready", width);
   }
 
   private anonymousLobbyStatus(width: number): string {

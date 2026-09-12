@@ -232,6 +232,31 @@ test("typing presence renders for other room members", () => {
   bob.stream.end();
 });
 
+test("chat reserves a distinct status row and shows live agent thinking", () => {
+  const room = new Room("mine");
+  room.chat("alice", "latest message");
+  const tui = open(room);
+  tui.session.resize(80, 12);
+  let frame = tui.stream.writes.at(-1)!;
+  let lines = frame.split("\r\n");
+  const visible = (line: string) => line.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  const messageRow = lines.findIndex((line) => visible(line).includes("latest message"));
+  const readyRow = lines.findIndex((line) => visible(line).includes("· ready"));
+  const composerRow = lines.findIndex((line) => visible(line).includes("type / to see commands"));
+  expect(messageRow).toBeGreaterThan(-1);
+  expect(readyRow).toBe(messageRow + 1);
+  expect(composerRow).toBeGreaterThan(readyRow);
+  expect(lines[readyRow]).toContain("\x1b[48;5;236m");
+
+  room.agentState.status = "thinking";
+  room.agentState.detail = "reading the room";
+  tui.session.resize(80, 12);
+  frame = tui.stream.writes.at(-1)!;
+  expect(frame).toContain("agent thinking · reading the room");
+  expect(frame).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] agent thinking/);
+  tui.stream.end();
+});
+
 test("room focus dims chat text after bold author names", () => {
   const room = new Room("mine", 250, "http://localhost:3000/mine", "alice");
   room.chat("alice", "focus me");
