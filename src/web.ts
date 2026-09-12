@@ -450,8 +450,9 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
   <title>serverside.chat</title>
   <link rel="stylesheet" href="/_terminal/xterm.css">
   <style>
-    html,body,#terminal{width:100%;height:100%;margin:0;background:#3f3f3f;overflow:hidden}
-    body{box-sizing:border-box;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+    html{width:100%;height:100%;margin:0;background:#3f3f3f;overflow:hidden}
+    body{position:fixed;inset:0;box-sizing:border-box;margin:0;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);background:#3f3f3f;overflow:hidden}
+    #terminal{box-sizing:border-box;width:100%;height:100%;padding:1px;overflow:hidden;background:#3f3f3f}
     #state{position:fixed;right:12px;top:8px;color:#9fafaf;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;z-index:2}
     #pairing{position:fixed;inset:0;z-index:4;display:grid;place-items:center;background:#3f3f3fcc;color:#dcdccc;font:14px ui-monospace,SFMono-Regular,Menlo,monospace}
     #pairing[hidden]{display:none}
@@ -461,7 +462,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     #devwarning{color:#f0dfaf!important;font-size:12px}#autherror{min-height:18px;color:#cc9393!important;font-size:12px}
     #accountform{display:grid;gap:10px}#accountform label{color:#9fafaf;font-size:12px}#accountform input{box-sizing:border-box;width:100%;margin-top:5px;border:1px solid #5f5f5f;border-radius:5px;background:#3f3f3f;color:#dcdccc;padding:9px;font:14px ui-monospace,SFMono-Regular,Menlo,monospace;outline:none}#accountform input:focus{border-color:#8cd0d3}
     #pairactions{display:flex;gap:8px;margin-top:14px}#pairactions button,#accountform button,#linkactions button{border:1px solid #5f5f5f;border-radius:5px;background:#4f4f4f;color:#dcdccc;padding:7px 11px;cursor:pointer;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}#pairactions .primary,#accountform .primary,#linkactions .primary{border-color:#8cd0d3;background:#5f7f7f;color:#dcdccc}
-    .xterm{height:100%;padding:0}.xterm-viewport{overflow-y:hidden!important}
+    .xterm{width:100%;height:100%;padding:0}.xterm-viewport{overflow-y:hidden!important}
   </style>
 </head>
 <body>
@@ -487,12 +488,14 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const showSignIn=()=>{const linking=Boolean(accountCode||currentAccount);pairtitle.textContent=inviteToken?'accept room invite':linking?'add a sign-in method':'create your account';pairdescription.textContent=inviteToken?'Sign in to accept this invitation with your serverside.chat account.':accountCode?'Choose an OAuth provider to attach it to your existing serverside.chat account.':sshCode?'Create an account, then attach the SSH key that sent you here.':linking?'Attach another OAuth provider to @'+currentAccount+'.':'Sign in to contribute to serverside.chat.';accountform.hidden=${developmentAuth ? "Boolean(accountCode||currentAccount)" : "true"};const warning=document.getElementById('devwarning');if(warning)warning.hidden=linking;linkactions.hidden=true;autherror.textContent='';pairing.hidden=false;document.getElementById('handle')?.focus()};
     const showSshLink=()=>{pairtitle.textContent='link SSH key';pairdescription.textContent='Attach this verified SSH key to @'+currentAccount+'. You can link more keys later.';accountform.hidden=true;linkactions.hidden=false;autherror.textContent='';pairing.hidden=false};
     const activateLink=(_event,value)=>{try{const target=new URL(value,location.href);if(target.origin===location.origin&&target.searchParams.get('signin')==='1'){showSignIn();return}if(target.protocol==='http:'||target.protocol==='https:')window.open(target.href,'_blank','noopener')}catch{}};
+    const terminalHost = document.getElementById('terminal');
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#3f3f3f',foreground:'#dcdccc',cursor:'#f0dfaf',cursorAccent:'#3f3f3f',selectionBackground:'#5f5f5f',black:'#3f3f3f',red:'#cc9393',green:'#7f9f7f',yellow:'#f0dfaf',blue:'#8cd0d3',magenta:'#dc8cc3',cyan:'#93e0e3',white:'#dcdccc',brightBlack:'#7f7f7f',brightRed:'#dca3a3',brightGreen:'#9fc59f',brightYellow:'#f8f1c7',brightBlue:'#94bff3',brightMagenta:'#ec93d3',brightCyan:'#93e0e3',brightWhite:'#ffffff'},linkHandler:{activate:activateLink}});
     const fit = new FitAddon.FitAddon();
-    terminal.loadAddon(fit); terminal.open(document.getElementById('terminal')); fit.fit(); terminal.focus();
+    terminal.loadAddon(fit); terminal.open(terminalHost); fit.fit(); terminal.focus();
     terminal.parser.registerOscHandler(777,value=>{if(value==='signin'){showSignIn();return true}if(value.startsWith('room:')){try{const room=decodeURIComponent(value.slice(5));if(/^[a-z0-9][a-z0-9-]{0,31}$/.test(room))history.replaceState({},'',room==='lobby'?'/':'/room/'+encodeURIComponent(room))}catch{}return true}if(value.startsWith('open:')){try{const target=new URL(decodeURIComponent(value.slice(5)),location.href);if(target.origin===location.origin){location.href=target.href;return true}}catch{}return true}return false});
     terminal.attachCustomKeyEventHandler(event=>{if(event.type==='keydown'&&event.shiftKey){const sequence=event.key==='ArrowUp'?'\\x1b[1;2A':event.key==='ArrowDown'?'\\x1b[1;2B':event.key==='Enter'?'\\x1b[13;2u':'';if(sequence){event.preventDefault();send({type:'input',data:sequence});return false}}if(event.type==='keydown'&&event.ctrlKey&&['s','p','q'].includes(event.key.toLowerCase()))event.preventDefault();return true});
-    let socket, retry=250, resizeFrame;
+    let socket, retry=250, resizeFrame, settleFrame;
+    const refit=()=>{cancelAnimationFrame(resizeFrame);cancelAnimationFrame(settleFrame);resizeFrame=requestAnimationFrame(()=>{fit.fit();settleFrame=requestAnimationFrame(()=>fit.fit())})};
     const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
     const connect = () => {
       state.textContent='connecting…'; state.hidden=false;
@@ -505,8 +508,11 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     };
     terminal.onData(data=>send({type:'input',data}));
     terminal.onResize(({cols,rows})=>send({type:'resize',cols,rows}));
-    addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>fit.fit())});
-    document.getElementById('terminal').addEventListener('pointerdown',()=>terminal.focus());
+    addEventListener('resize',refit);
+    window.visualViewport?.addEventListener('resize',refit);
+    new ResizeObserver(refit).observe(terminalHost);
+    document.fonts?.ready.then(refit);
+    terminalHost.addEventListener('pointerdown',()=>terminal.focus());
     const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());currentAccount=result.authenticated?result.handle:undefined;return Boolean(currentAccount)}catch{return false}};
     const linkSsh=async()=>{if(!sshCode)return;autherror.textContent='';const response=await fetch('/_auth/ssh/link',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:sshCode})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not link SSH key');history.replaceState({},'',location.pathname);pairtitle.textContent='SSH key linked';pairdescription.textContent='This terminal is now signed in as @'+result.handle+'.';linkactions.hidden=true;setTimeout(()=>location.reload(),700)};
     const redeemInvite=async()=>{if(!inviteToken)return false;autherror.textContent='';const response=await fetch('/_auth/invite/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:inviteToken})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not accept invite');location.href='/room/'+encodeURIComponent(result.roomName);return true};

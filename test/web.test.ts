@@ -22,6 +22,11 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).toContain("foreground:'#dcdccc'");
   expect(page).toContain("cursor:'#f0dfaf'");
   expect(page).toContain("location.pathname.split('/').filter(Boolean)");
+  expect(page).toContain("body{position:fixed;inset:0;box-sizing:border-box");
+  expect(page).toContain("#terminal{box-sizing:border-box;width:100%;height:100%;padding:1px");
+  expect(page).toContain("new ResizeObserver(refit).observe(terminalHost)");
+  expect(page).toContain("window.visualViewport?.addEventListener('resize',refit)");
+  expect(page).toContain("document.fonts?.ready.then(refit)");
   expect(page).not.toContain("location.pathname.match(/^/room/");
   expect(page).toContain('data-provider="google"');
   expect(page).toContain('data-provider="github"');
