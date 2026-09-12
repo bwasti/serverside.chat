@@ -238,15 +238,12 @@ test("consecutive messages share an author header and align under a fixed time g
   expect(firstMessage).toBe(aliceHeader + 1);
   expect(lines.slice(firstMessage + 1, secondMessage).every((line) => line.startsWith(" ".repeat(9)))).toBe(true);
   expect(secondMessage).toBeGreaterThan(firstMessage);
-  expect(bobHeader).toBe(secondMessage + 1);
+  expect(lines[secondMessage + 1]!.trim()).toBe("");
+  expect(bobHeader).toBe(secondMessage + 2);
   expect(thirdMessage).toBe(bobHeader + 1);
-  expect(frame).toContain("\x1b[48;5;235m         \x1b[1m\x1b[38;5;110malice\x1b[22m\x1b[38;5;188m");
-  expect(frame).toContain(`\x1b[48;5;235m  \x1b[38;5;102m${time(firstAt)}\x1b[38;5;188m  first message`);
-  expect(frame).toContain(`\x1b[48;5;235m  \x1b[38;5;102m${time(secondAt)}\x1b[38;5;188m  second message`);
-  expect(frame).toContain("\x1b[48;5;237m         \x1b[1m\x1b[38;5;188mbob\x1b[22m\x1b[38;5;188m");
-  expect(frame).toContain(`\x1b[48;5;237m  \x1b[38;5;102m${time(thirdAt)}\x1b[38;5;188m  third message`);
-  const bobMessageRow = frame.split("\r\n").find((line) => line.includes("third message"))!;
-  expect(bobMessageRow.slice(bobMessageRow.indexOf("third message"))).not.toContain("\x1b[48;5;235m");
+  for (const line of frame.split("\r\n").filter((row) => /first message|second message|third message/.test(row))) {
+    expect(line).not.toContain("\x1b[48;5;237m");
+  }
   tui.stream.end();
 });
 
@@ -260,10 +257,17 @@ test("trunk updates render as quiet status rows without an author heading", () =
   const tui = open(room);
   tui.session.resize(60, 20);
   const frame = tui.stream.writes.at(-1)!;
+  const lines = frame.split("\r\n").map((line) => line
+    .replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .slice(3));
+  const updateRow = lines.findIndex((line) => line.includes("updated to abc1234"));
+  const bobHeader = lines.findIndex((line) => line.trim() === "bob");
   expect(frame).not.toContain("trunk");
   expect(frame).toContain("updated to abc1234 by @alice");
   expect(frame).toContain("\x1b[3m\x1b[38;5;102mupdated to abc1234 by @alice\x1b[23m");
-  expect(frame).toContain("\x1b[48;5;237m         \x1b[1m\x1b[38;5;188mbob");
+  expect(lines[updateRow - 1]!.trim()).toBe("");
+  expect(lines[bobHeader - 1]!.trim()).toBe("");
   tui.stream.end();
 });
 
