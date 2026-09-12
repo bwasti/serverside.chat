@@ -32,6 +32,9 @@ const CHAT = `${ESC}48;5;235m${ESC}38;5;188m`;
 const CHAT_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
 const CHAT_SELECTED = `${ESC}48;5;59m${ESC}38;5;188m`;
 const CHAT_STATUS = `${ESC}48;5;236m${ESC}38;5;102m`;
+const CHAT_SECTION_A = `${ESC}48;5;236m`;
+const CHAT_SECTION_B = `${ESC}48;5;237m`;
+const TEXT = `${ESC}38;5;188m`;
 const OWNER = `${ESC}38;5;110m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -103,7 +106,7 @@ export class TuiSession {
   private lastFrame = "";
   private messageCacheRoom = "";
   private messageCacheWidth = 0;
-  private readonly messageCache = new Map<number, { showAuthor: boolean; rows: string[] }>();
+  private readonly messageCache = new Map<number, { showAuthor: boolean; section: 0 | 1; rows: string[] }>();
   private principal: Principal;
   private readonly allRooms: Room[];
   private rooms: Room[];
@@ -1452,15 +1455,18 @@ export class TuiSession {
       this.messageCache.clear();
     }
     const roomMessages = roomManagementScreen ? [] : this.room.messages;
+    let sectionIndex = -1;
     const messages: Array<{ text: string; kind: MessageKind | "form"; id?: number }> = createRoomScreen
       ? this.createRoomFormRows().map((text) => ({ text, kind: "form" }))
       : deleteRoomScreen
         ? this.deleteRoomFormRows().map((text) => ({ text, kind: "form" }))
         : roomMessages.flatMap((message, index) => {
           const showAuthor = index === 0 || roomMessages[index - 1]!.author !== message.author;
+          if (showAuthor) sectionIndex++;
+          const section = (sectionIndex % 2) as 0 | 1;
           let cached = this.messageCache.get(message.id);
-          if (!cached || cached.showAuthor !== showAuthor) {
-            cached = { showAuthor, rows: this.formatMessage(message, mainWidth, showAuthor) };
+          if (!cached || cached.showAuthor !== showAuthor || cached.section !== section) {
+            cached = { showAuthor, section, rows: this.formatMessage(message, mainWidth, showAuthor, section) };
             this.messageCache.set(message.id, cached);
           }
           return cached.rows.map((text) => ({ text, kind: message.kind, id: message.id }));
@@ -1520,7 +1526,9 @@ export class TuiSession {
       const selected = id !== undefined && id === this.selectedMessageId;
       const color = selected ? CHAT_SELECTED : kind === "system" ? CHAT_MUTED : CHAT;
       const columnRow = index + topRows.length + 1;
-      const rendered = padAnsi(selected ? text.replaceAll(`${ESC}48;5;235m`, `${ESC}48;5;59m`) : text, mainWidth);
+      const rendered = padAnsi(selected
+        ? text.replaceAll(`${ESC}48;5;235m`, `${ESC}48;5;59m`).replaceAll(CHAT_SECTION_A, `${ESC}48;5;59m`).replaceAll(CHAT_SECTION_B, `${ESC}48;5;59m`)
+        : text, mainWidth);
       const renderedText = this.sidebarFocused ? rendered.replaceAll(`${ESC}22m`, `${ESC}22m${DIM}`) : rendered;
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
@@ -1688,30 +1696,34 @@ export class TuiSession {
     return `${SIDEBAR}${" ".repeat(width)}${RESET}`;
   }
 
-  private formatMessage(message: Message, width: number, showAuthor: boolean): string[] {
+  private formatMessage(message: Message, width: number, showAuthor: boolean, section: 0 | 1): string[] {
     const time = message.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
     const gutter = 9;
     const contentWidth = Math.max(1, width - gutter);
     const continuation = " ".repeat(gutter);
-    const timestamp = `  ${MUTED}${time}${message.kind === "system" ? MUTED : CHAT}  `;
-    const nameTone = message.author === "room-agent" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
-    const styledName = `${ESC}1m${nameTone}${message.author}${ESC}22m${message.kind === "system" ? MUTED : CHAT}`;
-    const authorRows = showAuthor ? [`${continuation}${styledName}`] : [];
+    const sectionTone = section === 0 ? CHAT_SECTION_A : CHAT_SECTION_B;
+    const baseTone = message.kind === "system" ? CHAT_MUTED : CHAT;
+    const contentTone = message.kind === "system" ? MUTED : TEXT;
+    const timestamp = `  ${MUTED}${time}${contentTone}  `;
+    const nameTone = message.author === "room-agent" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : TEXT;
+    const displayAuthor = truncate(message.author, contentWidth);
+    const styledName = `${ESC}1m${nameTone}${displayAuthor}${ESC}22m${contentTone}`;
+    const authorRows = showAuthor ? [`${continuation}${sectionTone}${styledName}${baseTone}`] : [];
     const replyRows = message.replyTo
-      ? wrap(`↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, contentWidth).map((line) => `${continuation}${MUTED}${line}${message.kind === "system" ? MUTED : CHAT}`)
+      ? wrap(`↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, contentWidth).map((line) => `${sectionTone}${continuation}${MUTED}${line}${baseTone}`)
       : [];
     if (message.kind === "commit" && message.url) {
       const [hash, ...title] = message.text.split(" ");
       const suffix = `${title.join(" ")}${message.detail ? ` — ${message.detail}` : ""}`;
       const contentRows = wrap(`${hash} ${suffix}`, contentWidth).map((line, index) => {
         const prefix = index === 0 ? timestamp : continuation;
-        if (index !== 0 || !line.startsWith(hash)) return `${prefix}${ESC}3m${line}${ESC}23m`;
-        return `${prefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${line.slice(hash.length)}${ESC}23m`;
+        if (index !== 0 || !line.startsWith(hash)) return `${sectionTone}${prefix}${ESC}3m${line}${ESC}23m${baseTone}`;
+        return `${sectionTone}${prefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${line.slice(hash.length)}${ESC}23m${baseTone}`;
       });
       return [...authorRows, ...replyRows, ...contentRows];
     }
     const contentRows = wrap(message.text.replace(/\s+/g, " "), contentWidth)
-      .map((line, index) => `${index === 0 ? timestamp : continuation}${line}`);
+      .map((line, index) => `${sectionTone}${index === 0 ? timestamp : continuation}${line}${baseTone}`);
     return [...authorRows, ...replyRows, ...contentRows];
   }
 

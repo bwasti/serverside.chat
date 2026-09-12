@@ -201,7 +201,8 @@ test("consecutive messages share an author header and align under a fixed time g
   );
   const tui = open(room);
   tui.session.resize(40, 30);
-  const lines = tui.stream.writes.at(-1)!.split("\r\n").map((line) => line
+  const frame = tui.stream.writes.at(-1)!;
+  const lines = frame.split("\r\n").map((line) => line
     .replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .slice(3));
@@ -219,6 +220,11 @@ test("consecutive messages share an author header and align under a fixed time g
   expect(secondMessage).toBeGreaterThan(firstMessage);
   expect(bobHeader).toBe(secondMessage + 1);
   expect(thirdMessage).toBe(bobHeader + 1);
+  expect(frame).toContain("\x1b[48;5;236m\x1b[1m\x1b[38;5;110malice\x1b[22m\x1b[38;5;188m\x1b[48;5;235m");
+  expect(frame).toContain(`\x1b[48;5;236m  \x1b[38;5;102m${time(firstAt)}\x1b[38;5;188m  first message`);
+  expect(frame).toContain(`\x1b[48;5;236m  \x1b[38;5;102m${time(secondAt)}\x1b[38;5;188m  second message\x1b[48;5;235m`);
+  expect(frame).toContain("\x1b[48;5;237m\x1b[1m\x1b[38;5;188mbob\x1b[22m\x1b[38;5;188m\x1b[48;5;235m");
+  expect(frame).toContain(`\x1b[48;5;237m  \x1b[38;5;102m${time(thirdAt)}\x1b[38;5;188m  third message\x1b[48;5;235m`);
   tui.stream.end();
 });
 
