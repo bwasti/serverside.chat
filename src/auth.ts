@@ -33,6 +33,12 @@ export interface RoomPolicy {
   system: boolean;
 }
 
+export interface ArchivedRoom extends RoomPolicy {
+  archiveId: string;
+  storageName: string;
+  archivedAt: number;
+}
+
 export interface AccountProfile {
   siteRole: SiteRole;
   plan: AccountPlan;
@@ -90,11 +96,13 @@ export interface OAuthFlow {
 }
 
 interface UserRow { id: string; handle: string; display_name: string; status: string }
-interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode; system: number }
+interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode; system: number; created_at?: number }
+interface ArchivedRoomRow { id: string; original_name: string; owner_user_id: string; owner_handle: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode; room_created_at: number; storage_name: string; archived_at: number }
 interface InviteRow { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number }
 
 const ROLE_WEIGHT: Record<RoomRole, number> = { viewer: 0, contributor: 1, admin: 2, owner: 3 };
 export const ACCOUNT_ROOM_LIMITS = { free: 5, pro: 25, siteAdmin: 100 } as const;
+export const ACCOUNT_ROOM_ARCHIVE_LIMITS = { free: 10, pro: 50, siteAdmin: 200 } as const;
 const ROOM_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 export class AccountStore {
@@ -148,6 +156,27 @@ export class AccountStore {
         created_at INTEGER NOT NULL,
         revoked_at INTEGER,
         PRIMARY KEY(room_name, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS room_archives (
+        id TEXT PRIMARY KEY,
+        original_name TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL REFERENCES users(id),
+        visibility TEXT NOT NULL CHECK(visibility IN ('public','private')),
+        contribution_policy TEXT NOT NULL CHECK(contribution_policy IN ('members','admins','disabled')),
+        agent_mode TEXT NOT NULL CHECK(agent_mode IN ('passive','explicit','disabled')),
+        room_created_at INTEGER NOT NULL,
+        storage_name TEXT NOT NULL UNIQUE,
+        archived_at INTEGER NOT NULL,
+        archived_by_principal_id TEXT NOT NULL,
+        restored_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS archived_room_memberships (
+        archive_id TEXT NOT NULL REFERENCES room_archives(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('owner','admin','contributor','viewer')),
+        created_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        PRIMARY KEY(archive_id, user_id)
       );
       CREATE TABLE IF NOT EXISTS invites (
         id TEXT PRIMARY KEY,
@@ -386,8 +415,83 @@ export class AccountStore {
     this.db.query("DELETE FROM rooms WHERE name = ?").run(name);
   }
 
+  archiveRoom(actor: Principal, name: string, archiveId: string, storageName: string): ArchivedRoom {
+    if (!this.canManageRoom(actor, name)) throw new Error("deleting a room requires its owner or a site admin");
+    if (!/^[0-9a-f-]{36}$/.test(archiveId) || !/^[0-9]+-[0-9a-f]{8}-[a-z0-9][a-z0-9-]{0,31}$/.test(storageName)) throw new Error("room archive identity is invalid");
+    const current = this.db.query("SELECT name, owner_user_id, visibility, contribution_policy, agent_mode, system, created_at FROM rooms WHERE name = ?").get(name) as RoomRow | null;
+    if (!current) throw new Error("room not found");
+    if (current.system) throw new Error("system rooms cannot be deleted");
+    const owner = this.db.query("SELECT site_role, plan FROM users WHERE id = ? AND status = 'active'").get(current.owner_user_id) as { site_role: SiteRole; plan: AccountPlan } | null;
+    if (!owner) throw new Error("room owner not found");
+    const archiveLimit = owner.site_role === "admin" ? ACCOUNT_ROOM_ARCHIVE_LIMITS.siteAdmin : ACCOUNT_ROOM_ARCHIVE_LIMITS[owner.plan];
+    const archiveCount = (this.db.query("SELECT COUNT(*) AS count FROM room_archives WHERE owner_user_id = ? AND restored_at IS NULL").get(current.owner_user_id) as { count: number }).count;
+    if (archiveCount >= archiveLimit) throw new Error(`archive limit reached · restore an archived room before deleting another`);
+    const archivedAt = Date.now();
+    this.db.transaction(() => {
+      this.db.query(`INSERT INTO room_archives(id, original_name, owner_user_id, visibility, contribution_policy, agent_mode, room_created_at, storage_name, archived_at, archived_by_principal_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(archiveId, name, current.owner_user_id, current.visibility, current.contribution_policy, current.agent_mode, current.created_at ?? archivedAt, storageName, archivedAt, actor.id);
+      this.db.query(`INSERT INTO archived_room_memberships(archive_id, user_id, role, created_at, revoked_at)
+        SELECT ?, user_id, role, created_at, revoked_at FROM room_memberships WHERE room_name = ?`).run(archiveId, name);
+      this.audit(actor, name, "room.archive", archiveId);
+      this.db.query("DELETE FROM rooms WHERE name = ?").run(name);
+    })();
+    return this.archivedRoomFromRow({ id: archiveId, original_name: name, owner_user_id: current.owner_user_id, owner_handle: this.userHandle(current.owner_user_id), visibility: current.visibility, contribution_policy: current.contribution_policy, agent_mode: current.agent_mode, room_created_at: current.created_at ?? archivedAt, storage_name: storageName, archived_at: archivedAt });
+  }
+
+  archivedRooms(actor: Principal): ArchivedRoom[] {
+    if (!actor.authenticated || actor.kind !== "user") return [];
+    const rows = this.db.query(`SELECT a.id, a.original_name, a.owner_user_id, u.handle AS owner_handle, a.visibility, a.contribution_policy, a.agent_mode, a.room_created_at, a.storage_name, a.archived_at
+      FROM room_archives a JOIN users u ON u.id = a.owner_user_id
+      WHERE a.restored_at IS NULL AND (? = 1 OR a.owner_user_id = ?)
+      ORDER BY a.archived_at DESC`).all(this.isSiteAdmin(actor) ? 1 : 0, actor.id) as ArchivedRoomRow[];
+    return rows.map((row) => this.archivedRoomFromRow(row));
+  }
+
+  restoreRoom(actor: Principal, archiveId: string): RoomPolicy {
+    const archive = this.archivedRooms(actor).find((candidate) => candidate.archiveId === archiveId);
+    if (!archive) throw new Error("archived room not found");
+    if (this.roomPolicy(archive.name)) throw new Error("room name is already in use");
+    const owner = this.db.query("SELECT site_role, plan, status FROM users WHERE id = ?").get(archive.ownerId) as { site_role: SiteRole; plan: AccountPlan; status: string } | null;
+    if (!owner || owner.status !== "active") throw new Error("the archived room owner is unavailable");
+    const ownedRooms = (this.db.query("SELECT COUNT(*) AS count FROM rooms WHERE owner_user_id = ? AND system = 0").get(archive.ownerId) as { count: number }).count;
+    const limit = owner.site_role === "admin" ? ACCOUNT_ROOM_LIMITS.siteAdmin : ACCOUNT_ROOM_LIMITS[owner.plan];
+    if (ownedRooms >= limit) throw new Error(`${owner.plan} accounts can own at most ${limit} rooms`);
+    this.db.transaction(() => {
+      this.db.query("INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(archive.name, archive.ownerId, archive.visibility, archive.contributions, archive.agentMode, this.archiveCreatedAt(archive.archiveId));
+      this.db.query(`INSERT INTO room_memberships(room_name, user_id, role, created_at, revoked_at)
+        SELECT ?, user_id, role, created_at, revoked_at FROM archived_room_memberships WHERE archive_id = ?`).run(archive.name, archive.archiveId);
+      this.db.query("UPDATE room_archives SET restored_at = ? WHERE id = ? AND restored_at IS NULL").run(Date.now(), archive.archiveId);
+      this.audit(actor, archive.name, "room.restore", archive.archiveId);
+    })();
+    return this.roomPolicy(archive.name)!;
+  }
+
+  rollbackRoomRestore(archiveId: string, name: string): void {
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM rooms WHERE name = ?").run(name);
+      this.db.query("UPDATE room_archives SET restored_at = NULL WHERE id = ?").run(archiveId);
+    })();
+  }
+
   canManageRoom(principal: Principal, roomName: string): boolean {
     return this.isSiteAdmin(principal) || this.roleFor(principal, roomName) === "owner";
+  }
+
+  private archivedRoomFromRow(row: ArchivedRoomRow): ArchivedRoom {
+    return { archiveId: row.id, storageName: row.storage_name, archivedAt: row.archived_at, name: row.original_name, ownerId: row.owner_user_id, ownerHandle: row.owner_handle, visibility: row.visibility, contributions: row.contribution_policy, agentMode: row.agent_mode, system: false };
+  }
+
+  private archiveCreatedAt(archiveId: string): number {
+    const row = this.db.query("SELECT room_created_at FROM room_archives WHERE id = ? AND restored_at IS NULL").get(archiveId) as { room_created_at: number } | null;
+    if (!row) throw new Error("archived room not found");
+    return row.room_created_at;
+  }
+
+  private userHandle(userId: string): string {
+    const row = this.db.query("SELECT handle FROM users WHERE id = ?").get(userId) as { handle: string } | null;
+    if (!row) throw new Error("room owner not found");
+    return row.handle;
   }
 
   roomPolicy(name: string): RoomPolicy | undefined {

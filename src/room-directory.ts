@@ -5,7 +5,7 @@ import { Room } from "./room";
 import { RoomWorkspace } from "./workspace";
 
 export interface RoomDirectoryEvent {
-  kind: "create" | "rename" | "delete";
+  kind: "create" | "rename" | "delete" | "restore";
   name: string;
   previousName?: string;
 }
@@ -128,15 +128,46 @@ export class RoomDirectory {
     if (agentBusy(room)) throw new Error("wait for the room agent to finish before deleting");
     if (!this.accounts.canManageRoom(actor, name)) throw new Error("deleting a room requires its owner or a site admin");
     const source = this.roomDataPath(name);
-    const trashed = this.trashStorage(name);
+    const archiveId = crypto.randomUUID();
+    const storageName = `${Date.now()}-${archiveId.slice(0, 8)}-${name}`;
+    const trashed = this.trashStorage(name, storageName);
     try {
-      this.accounts.deleteRoom(actor, name);
+      this.accounts.archiveRoom(actor, name, archiveId, storageName);
       const index = this.rooms.indexOf(room);
       if (index >= 0) this.rooms.splice(index, 1);
       this.workspaces.delete(name);
       this.emit({ kind: "delete", name });
     } catch (error) {
       if (existsSync(trashed) && !existsSync(source)) renameSync(trashed, source);
+      throw error;
+    }
+  }
+
+  restoreRoom(actor: Principal, name: string): Room {
+    if (this.room(name) || this.accounts.roomPolicy(name)) throw new Error("room name is already in use");
+    const archive = this.accounts.archivedRooms(actor).find((candidate) => candidate.name === name);
+    if (!archive) throw new Error("archived room not found");
+    const trashed = this.archivedStoragePath(archive.storageName);
+    const target = this.roomDataPath(name);
+    if (!existsSync(trashed)) throw new Error("archived room storage is unavailable");
+    if (existsSync(target)) throw new Error("target room storage already exists");
+    renameSync(trashed, target);
+    let databaseRestored = false;
+    let restored: Room | undefined;
+    try {
+      const policy = this.accounts.restoreRoom(actor, archive.archiveId);
+      databaseRestored = true;
+      restored = this.add(policy);
+      this.emit({ kind: "restore", name });
+      return restored;
+    } catch (error) {
+      if (restored) {
+        const index = this.rooms.indexOf(restored);
+        if (index >= 0) this.rooms.splice(index, 1);
+      }
+      this.workspaces.delete(name);
+      if (databaseRestored) this.accounts.rollbackRoomRestore(archive.archiveId, name);
+      if (existsSync(target) && !existsSync(trashed)) renameSync(target, trashed);
       throw error;
     }
   }
@@ -168,15 +199,20 @@ export class RoomDirectory {
 
   private roomDataPath(name: string): string { return resolve(this.dataDir, "rooms", name); }
 
-  private trashStorage(name: string): string {
+  private trashStorage(name: string, storageName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${name}`): string {
     const source = this.roomDataPath(name);
     const trashRoot = resolve(this.dataDir, ".trash", "rooms");
-    const trashed = resolve(trashRoot, `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${name}`);
+    const trashed = resolve(trashRoot, storageName);
     if (existsSync(source)) {
       mkdirSync(trashRoot, { recursive: true });
       renameSync(source, trashed);
     }
     return trashed;
+  }
+
+  private archivedStoragePath(storageName: string): string {
+    if (!/^[0-9]+-[0-9a-f]{8}-[a-z0-9][a-z0-9-]{0,31}$/.test(storageName)) throw new Error("archived room storage identity is invalid");
+    return resolve(this.dataDir, ".trash", "rooms", storageName);
   }
 
   private emit(event: RoomDirectoryEvent): void {

@@ -403,9 +403,43 @@ test("room owners manage their rooms from the TUI", () => {
   expect((session as unknown as { room: Room }).room.name).toBe("launch");
   stream.emit("data", Buffer.from("/room delete launch\r"));
   expect((session as unknown as { room: Room }).room.name).toBe("mine");
+  stream.emit("data", Buffer.from("/room restore launch\r"));
+  expect((session as unknown as { room: Room }).room.name).toBe("launch");
+  expect(stream.writes.at(-1)).toContain("restored #launch");
   stream.emit("data", Buffer.from("/account\r"));
-  expect(stream.writes.at(-1)).toContain("site member · free · rooms 1/5");
+  expect(stream.writes.at(-1)).toContain("site member · free · rooms 2/5");
 
+  stream.end();
+  accounts.close();
+});
+
+test("Delete on a sidebar room requires its full name and preserves a restorable archive", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-room-archive-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("project", owner, { visibility: "private", contributions: "members", agentMode: "explicit" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  directory.room("project")!.chat(owner, "keep this transcript");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "project", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("\t\x7f"));
+  expect(stream.writes.at(-1)).toContain("Archive #project?");
+  expect(stream.writes.at(-1)).toContain("type project to confirm");
+  stream.emit("data", Buffer.from("wrong\r"));
+  expect(directory.room("project")).toBeDefined();
+  expect(stream.writes.at(-1)).toContain("type project exactly");
+  stream.emit("data", Buffer.from("\x15project\r"));
+  expect(directory.room("project")).toBeUndefined();
+  expect((session as unknown as { room: Room }).room.name).toBe("lobby");
+  expect(accounts.archivedRooms(owner)[0]).toMatchObject({ name: "project", visibility: "private", agentMode: "explicit" });
+
+  stream.emit("data", Buffer.from("/room archives\r"));
+  expect(stream.writes.at(-1)).toContain("archived: #project");
+  stream.emit("data", Buffer.from("/room restore project\r"));
+  expect((session as unknown as { room: Room }).room.name).toBe("project");
+  expect(directory.room("project")!.messages.at(-1)?.text).toBe("keep this transcript");
   stream.end();
   accounts.close();
 });

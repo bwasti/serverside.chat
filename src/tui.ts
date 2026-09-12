@@ -54,7 +54,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/shell", usage: "/shell", description: "show SSH access for the room shell", requiresArgument: false },
   { name: "/edit", usage: "/edit <path>", description: "edit a room file", requiresArgument: true },
   { name: "/permissions", usage: "/permissions [field value]", description: "inspect or change room policy", requiresArgument: false },
-  { name: "/room", usage: "/room <action> <name>", description: "create, rename, or delete a room", requiresArgument: true },
+  { name: "/room", usage: "/room <action> <name>", description: "create, rename, archive, or restore a room", requiresArgument: true },
   { name: "/redeem", usage: "/redeem <invite>", description: "redeem a room invitation", requiresArgument: true },
   { name: "/account", usage: "/account", description: "show account and room limits", requiresArgument: false },
   { name: "/help", usage: "/help", description: "ask the room guide for help", requiresArgument: false },
@@ -90,6 +90,7 @@ export class TuiSession {
   private createRoomVisibility: RoomVisibility = "public";
   private createRoomContributions: ContributionPolicy = "members";
   private createRoomAgentMode: AgentMode = "passive";
+  private deletingRoomName?: string;
   private room: Room;
   private animationTimer?: ReturnType<typeof setInterval>;
   private sidebarAnimationTimer?: ReturnType<typeof setInterval>;
@@ -220,6 +221,16 @@ export class TuiSession {
           this.stream.end();
           return;
         }
+        if (char === "\t" && this.deletingRoomName) {
+          this.deletingRoomName = undefined;
+          this.input = "";
+          this.cursorOffset = 0;
+          this.localNotice = "";
+          this.sidebarFocused = true;
+          this.animateSidebar();
+          dirty = true;
+          continue;
+        }
         if (char === "\t") {
           if (this.sidebarFocused) {
             this.sidebarFocused = false;
@@ -249,6 +260,11 @@ export class TuiSession {
           dirty = true;
           continue;
         }
+        if (this.sidebarFocused && (char === "\x7f" || char === "\b")) {
+          this.beginRoomDeletion();
+          dirty = true;
+          continue;
+        }
         if (this.sidebarFocused) continue;
         if (this.selectedMessageId !== undefined && (char === "\r" || char === "\n")) {
           if (char === "\n" && this.lastWasCarriageReturn) {
@@ -270,7 +286,7 @@ export class TuiSession {
           continue;
         }
         if (this.anonymousSubmissionPending) continue;
-        if (!this.canUseComposer()) continue;
+        if (!this.canUseComposer() && !this.deletingRoomName) continue;
         if (this.creatingRoom && this.createRoomField !== 0) {
           if (char === "\r" || char === "\n") {
             if (char === "\n" && this.lastWasCarriageReturn) {
@@ -318,7 +334,7 @@ export class TuiSession {
         dirty = changed || dirty;
       }
     }
-    if (inputChanged && !this.onCreateRoomScreen() && this.room.canContribute(this.principal)) this.room.setTyping(this.username, Boolean(this.input));
+    if (inputChanged && !this.onCreateRoomScreen() && !this.deletingRoomName && this.room.canContribute(this.principal)) this.room.setTyping(this.username, Boolean(this.input));
     if (dirty) this.render();
   }
 
@@ -342,6 +358,10 @@ export class TuiSession {
     }
     const page = sequence.match(/^\x1b\[([56])~$/);
     if (page && !this.sidebarFocused) { this.scrollChat(page[1] === "5" ? 8 : -8); return { dirty: true, inputChanged: false }; }
+    if (sequence === "\x1b[3~" && this.sidebarFocused) {
+      this.beginRoomDeletion();
+      return { dirty: true, inputChanged: false };
+    }
     if (sequence === "\x1b[3~" && this.selectedMessageId !== undefined) {
       this.beginMessageDeletion();
       return { dirty: true, inputChanged: false };
@@ -471,6 +491,34 @@ export class TuiSession {
     }
     this.deleteConfirmationId = this.selectedMessageId;
     this.localNotice = "";
+  }
+
+  private beginRoomDeletion(): void {
+    if (!this.accounts || !this.directory) {
+      this.localNotice = "room management is unavailable";
+      return;
+    }
+    if (this.createRoomFocused || this.accountFocused) {
+      this.localNotice = "select a room before deleting";
+      return;
+    }
+    if (this.room.policy.system) {
+      this.localNotice = "system rooms cannot be deleted";
+      return;
+    }
+    if (!this.accounts.canManageRoom(this.principal, this.room.name)) {
+      this.localNotice = "deleting a room requires its owner or a site admin";
+      return;
+    }
+    this.deletingRoomName = this.room.name;
+    this.sidebarFocused = false;
+    this.input = "";
+    this.cursorOffset = 0;
+    this.preferredCursorColumn = undefined;
+    this.localNotice = "";
+    this.lastFrame = "";
+    this.room.setTyping(this.username, false);
+    this.animateSidebar();
   }
 
   private handleDeleteConfirmationData(data: Buffer): void {
@@ -628,7 +676,7 @@ export class TuiSession {
   }
 
   private currentHudWidth(): number {
-    if (this.room.name === "lobby" || this.onCreateRoomScreen()) return 0;
+    if (this.room.name === "lobby" || this.onCreateRoomScreen() || this.deletingRoomName) return 0;
     return this.width >= 105 ? Math.min(50, Math.max(36, Math.floor(this.width * 0.32))) : 0;
   }
 
@@ -648,6 +696,26 @@ export class TuiSession {
     if (line === "/quit") {
       this.stream.end();
       return true;
+    }
+    if (this.deletingRoomName) {
+      const target = this.deletingRoomName;
+      if (line !== target) {
+        this.input = line;
+        this.cursorOffset = Array.from(line).length;
+        this.localNotice = `type ${target} exactly to archive this room`;
+        return false;
+      }
+      try {
+        if (!this.directory) throw new Error("room management is unavailable");
+        this.directory.deleteRoom(this.principal, target);
+        this.deletingRoomName = undefined;
+        this.localNotice = `archived #${target} · /room restore ${target} to recover it`;
+      } catch (error) {
+        this.input = line;
+        this.cursorOffset = Array.from(line).length;
+        this.localNotice = error instanceof Error ? error.message : "room deletion failed";
+      }
+      return false;
     }
     if (this.creatingRoom) {
       if (this.createRoomField < 4) {
@@ -776,7 +844,15 @@ export class TuiSession {
       }
       if (command === "/room") {
         if (!this.directory) throw new Error("room management is unavailable");
-        if (extra.length || !value || (field !== "create" && field !== "rename" && field !== "delete")) throw new Error("usage: /room create|rename|delete <name>");
+        if (field === "archives") {
+          if (value || extra.length) throw new Error("usage: /room archives");
+          const archives = this.accounts.archivedRooms(this.principal);
+          this.localNotice = archives.length
+            ? `archived: ${archives.map((archive) => `#${archive.name}`).join(", ")} · /room restore <name>`
+            : "no restorable room archives";
+          return true;
+        }
+        if (extra.length || !value || (field !== "create" && field !== "rename" && field !== "delete" && field !== "restore")) throw new Error("usage: /room archives or /room create|rename|delete|restore <name>");
         if (field === "create") {
           const created = this.directory.createRoom(this.principal, value);
           this.selectRoom(created);
@@ -786,10 +862,14 @@ export class TuiSession {
           const renamed = this.directory.renameRoom(this.principal, previous, value);
           this.selectRoom(renamed);
           this.localNotice = `renamed #${previous} to #${renamed.name}`;
-        } else {
+        } else if (field === "delete") {
           if (value !== this.room.name) throw new Error(`switch to #${value} before deleting it`);
           this.directory.deleteRoom(this.principal, value);
-          this.localNotice = `deleted #${value} · data retained in server trash`;
+          this.localNotice = `archived #${value} · /room restore ${value} to recover it`;
+        } else {
+          const restored = this.directory.restoreRoom(this.principal, value);
+          this.selectRoom(restored);
+          this.localNotice = `restored #${value}`;
         }
         return true;
       }
@@ -1155,6 +1235,8 @@ export class TuiSession {
       this.creatingRoom = false;
     }
     const createRoomScreen = this.onCreateRoomScreen();
+    const deleteRoomScreen = Boolean(this.deletingRoomName);
+    const roomManagementScreen = createRoomScreen || deleteRoomScreen;
     if (this.selectedMessageId !== undefined && !this.room.messages.some((message) => message.id === this.selectedMessageId)) this.selectedMessageId = undefined;
     if (this.replyToMessageId !== undefined && !this.room.messages.some((message) => message.id === this.replyToMessageId)) {
       this.replyToMessageId = undefined;
@@ -1164,8 +1246,8 @@ export class TuiSession {
     const hudWidth = this.currentHudWidth();
     const mainWidth = this.mainWidth();
     const topStatus = this.topStatusRows(mainWidth, this.height);
-    const topRows = topStatus;
-    const writable = this.canUseComposer();
+    const topRows = deleteRoomScreen ? [] : topStatus;
+    const writable = deleteRoomScreen || this.canUseComposer();
     const readOnlyText = this.principal.authenticated
       ? this.room.policy.contributions === "disabled"
         ? "read only · contributions are disabled"
@@ -1187,14 +1269,16 @@ export class TuiSession {
         ? truncate(`  ${this.localNotice}`, mainWidth)
         : selectedMessage
           ? truncate(`  selected @${selectedMessage.author} · ENTER reply${this.room.canDeleteMessage(this.principal) ? " · DELETE remove" : ""} · ↓ cancel`, mainWidth)
-          : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
+          : deleteRoomScreen
+            ? truncate(`  type ${this.deletingRoomName} exactly · TAB cancels`, mainWidth)
+            : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
     const inputLayout = layoutComposer(composerValue, !createRoomScreen && writable ? this.cursorOffset : 0, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - (bottomStatus ? 1 : 0) - 5));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
     if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
     if (inputLayout.cursorRow >= firstInputRow + maximumComposerRows) firstInputRow = inputLayout.cursorRow - maximumComposerRows + 1;
     const inputRows = inputLayout.rows.slice(firstInputRow, firstInputRow + maximumComposerRows).map((row) => row.text);
-    const commandMatches = writable ? this.commandMatches() : [];
+    const commandMatches = writable && !roomManagementScreen ? this.commandMatches() : [];
     const commandCapacity = Math.max(0, Math.min(8, this.height - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - 5));
     const maximumCommandStart = Math.max(0, commandMatches.length - commandCapacity);
     const commandStart = Math.min(maximumCommandStart, Math.max(0, this.commandSelection - Math.floor(commandCapacity / 2)));
@@ -1202,16 +1286,18 @@ export class TuiSession {
       ? commandMatches.slice(commandStart, commandStart + commandCapacity).map((command, offset) => ({ command, index: commandStart + offset }))
       : [];
     const messageRows = Math.max(1, this.height - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - commandChoices.length - 4);
-    const messageCacheRoom = createRoomScreen ? "__new-room__" : this.room.name;
+    const messageCacheRoom = createRoomScreen ? "__new-room__" : deleteRoomScreen ? "__delete-room__" : this.room.name;
     if (this.messageCacheRoom !== messageCacheRoom || this.messageCacheWidth !== mainWidth) {
       this.messageCacheRoom = messageCacheRoom;
       this.messageCacheWidth = mainWidth;
       this.messageCache.clear();
     }
-    const roomMessages = createRoomScreen ? [] : this.room.messages;
+    const roomMessages = roomManagementScreen ? [] : this.room.messages;
     const messages: Array<{ text: string; kind: MessageKind | "form"; id?: number }> = createRoomScreen
       ? this.createRoomFormRows().map((text) => ({ text, kind: "form" }))
-      : roomMessages.flatMap((message) => {
+      : deleteRoomScreen
+        ? this.deleteRoomFormRows().map((text) => ({ text, kind: "form" }))
+        : roomMessages.flatMap((message) => {
           let rows = this.messageCache.get(message.id);
           if (!rows) {
             rows = this.formatMessage(message, mainWidth);
@@ -1237,16 +1323,18 @@ export class TuiSession {
     const visible = messages.slice(Math.max(0, end - messageRows), end);
     while (visible.length < messageRows) {
       const blank: { text: string; kind: MessageKind | "form"; id?: number } = { text: "", kind: "chat" };
-      if (createRoomScreen) visible.push(blank);
+      if (roomManagementScreen) visible.push(blank);
       else visible.unshift(blank);
     }
 
-    const status = createRoomScreen ? "setup  " : this.scrollOffset ? `↑${this.scrollOffset}  ` : "";
+    const status = createRoomScreen ? "setup  " : deleteRoomScreen ? "confirm  " : this.scrollOffset ? `↑${this.scrollOffset}  ` : "";
     const titleWidth = Math.max(1, mainWidth - terminalWidth(status));
     const baseTitle = createRoomScreen
       ? "  + new room"
+      : deleteRoomScreen
+        ? `  delete # ${this.deletingRoomName}`
       : `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
-    let headerPageUrl = !createRoomScreen ? this.room.pageUrl : "";
+    let headerPageUrl = !roomManagementScreen ? this.room.pageUrl : "";
     if (headerPageUrl && this.room.name === "lobby") {
       try { headerPageUrl = new URL(headerPageUrl).origin; } catch { /* keep the room URL */ }
     }
@@ -1299,19 +1387,21 @@ export class TuiSession {
       const columnRow = composerSpacerRow + 1 + index;
       const firstVisibleInputRow = firstInputRow + index === 0;
       const displayText = firstVisibleInputRow && writable && !this.input && !createRoomScreen
-        ? `  type / to see commands`
+        ? deleteRoomScreen ? `  type ${this.deletingRoomName} to confirm` : `  type / to see commands`
         : inputText;
       const padded = pad(truncate(displayText, mainWidth), mainWidth);
       let renderedInput = !writable && !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, COMPOSER) : padded;
       if (firstVisibleInputRow && !createRoomScreen) {
         renderedInput = writable && !this.input
-          ? `${CYAN}›${COMPOSER} ${MUTED}${pad(truncate("type / to see commands", Math.max(0, mainWidth - 2)), Math.max(0, mainWidth - 2))}`
+          ? `${CYAN}›${COMPOSER} ${MUTED}${pad(truncate(deleteRoomScreen ? `type ${this.deletingRoomName} to confirm` : "type / to see commands", Math.max(0, mainWidth - 2)), Math.max(0, mainWidth - 2))}`
           : `${CYAN}›${COMPOSER}${renderedInput.slice(1)}`;
       }
       return `${sidebarComposer}${paneTone}${COMPOSER}${renderedInput}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
     const sidebarFooter = createRoomScreen
       ? `${SIDEBAR}${pad(sidebarWidth <= 3 ? " + " : "  setup", sidebarWidth)}${RESET}`
+      : deleteRoomScreen
+        ? `${SIDEBAR}${pad(sidebarWidth <= 3 ? " ! " : "  archive", sidebarWidth)}${RESET}`
       : sidebarWidth <= 3
         ? `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
         : `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`;
@@ -1422,7 +1512,7 @@ export class TuiSession {
       const marker = roomActive ? " ● " : roomIndex >= 0 && roomIndex < this.rooms.length ? " · " : "   ";
       return `${roomActive ? SIDEBAR_ACTIVE : SIDEBAR}${pad(marker, width)}${RESET}`;
     }
-    if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS  ↑↓" : "  ROOMS", width), width)}${RESET}`;
+    if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS ↑↓ DEL" : "  ROOMS", width), width)}${RESET}`;
     const hasCreate = this.roomCreationAvailable;
     if (hasCreate && index === 1) {
       const style = this.createRoomFocused ? SIDEBAR_ACTIVE : SIDEBAR;
@@ -1540,6 +1630,20 @@ export class TuiSession {
     this.messageCache.clear();
   }
 
+  private deleteRoomFormRows(): string[] {
+    const name = this.deletingRoomName ?? this.room.name;
+    return [
+      `  ${RED}${ESC}1mArchive #${name}?${ESC}22m${CHAT}`,
+      "",
+      `  ${CHAT}The website and chat will go offline immediately.`,
+      `  ${CHAT}Source, versions, database, files, transcript, policy, and memberships are retained.`,
+      `  ${MUTED}Invites and mount credentials are revoked rather than restored.${CHAT}`,
+      "",
+      `  ${YELLOW}Type the full room name to confirm.${CHAT}`,
+      `  ${MUTED}Restore later with  /room restore ${name}${CHAT}`,
+    ];
+  }
+
   private cycleRoomCreationOption(direction: -1 | 1): void {
     if (this.createRoomField === 1) {
       const values: RoomVisibility[] = ["public", "private"];
@@ -1594,6 +1698,7 @@ export class TuiSession {
     this.accountFocused = false;
     this.createRoomFocused = false;
     this.creatingRoom = false;
+    this.deletingRoomName = undefined;
     this.rooms = this.allRooms.filter((room) => room.canView(principal));
     if (!this.rooms.length) throw new Error("account cannot view any rooms");
     this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === preferredRoom));
@@ -1636,6 +1741,7 @@ export class TuiSession {
     this.accountFocused = false;
     this.createRoomFocused = false;
     this.creatingRoom = false;
+    this.deletingRoomName = undefined;
     this.mountPanel = undefined;
     this.shellPanel = false;
     if (room === this.room) return;

@@ -60,7 +60,8 @@ Commands inside the room:
 - `/mount` shows SFTP, SSHFS, and Finder WebDAV setup; `/mount revoke` disables the Finder credential
 - `/room create <name>` creates and enters an owned room
 - `/room rename <name>` renames the current room (owner or site admin)
-- `/room delete <current-name>` recoverably deletes the current room (owner or site admin; the exact name is required)
+- `/room delete <current-name>` archives the current room after its full exact name is supplied (owner or site admin)
+- `/room archives` lists restorable archives; `/room restore <name>` restores the latest archive with that name
 - `/agent <request>` explicitly invokes the agent when room policy permits it
 - `/invite admin|contributor|viewer` creates a one-use 24-hour invite (admin only)
 - `/redeem <invite>` grants an invitation to the signed-in canonical account

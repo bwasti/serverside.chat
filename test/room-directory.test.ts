@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { AccountStore } from "../src/auth";
 import { RoomDirectory } from "../src/room-directory";
 
-test("accounts receive a persistent starter room that owners can rename and recoverably delete", () => {
+test("accounts receive a persistent starter room that owners can rename, archive, and restore", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   accounts.ensureRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
   const member = accounts.createDevelopmentAccount("bob").principal;
+  const collaborator = accounts.createDevelopmentAccount("charlie").principal;
   const directory = new RoomDirectory(accounts, data, "https://example.test");
 
   const starter = directory.ensureStarterRoom(member)!;
@@ -25,12 +26,24 @@ test("accounts receive a persistent starter room that owners can rename and reco
   expect(renamed.messages.at(-1)?.text).toBe("persistent before rename");
   expect(accounts.roleFor(member, "bob-site")).toBe("owner");
   expect(existsSync(join(data, "rooms", "bob-site", "repo", ".git"))).toBe(true);
+  accounts.redeemInvite(collaborator, accounts.createInvite(member, "bob-site", "admin"));
+  renamed.updatePolicy(member, { visibility: "private", agentMode: "explicit" });
 
   directory.deleteRoom(member, "bob-site");
   expect(directory.room("bob-site")).toBeUndefined();
   expect(accounts.roomPolicy("bob-site")).toBeUndefined();
   expect(existsSync(join(data, "rooms", "bob-site"))).toBe(false);
   expect(readdirSync(join(data, ".trash", "rooms")).some((name) => name.endsWith("-bob-site"))).toBe(true);
+  expect(accounts.archivedRooms(member)[0]).toMatchObject({ name: "bob-site", ownerId: member.id, visibility: "private", agentMode: "explicit" });
+  expect(accounts.archivedRooms(collaborator)).toEqual([]);
+
+  const restored = directory.restoreRoom(member, "bob-site");
+  expect(restored.messages.at(-1)?.text).toBe("persistent before rename");
+  expect(restored.policy).toMatchObject({ visibility: "private", agentMode: "explicit" });
+  expect(accounts.roleFor(member, "bob-site")).toBe("owner");
+  expect(accounts.roleFor(collaborator, "bob-site")).toBe("admin");
+  expect(accounts.archivedRooms(member)).toEqual([]);
+  expect(existsSync(join(data, "rooms", "bob-site", "repo", ".git"))).toBe(true);
   accounts.close();
 });
 
@@ -63,5 +76,23 @@ test("normal rooms use isolated site origins while system rooms stay on the cont
   expect(directory.roomNameForSiteHostname("HELLO-WORLD.serverside.chat.")).toBe("hello-world");
   expect(directory.roomNameForSiteHostname("missing.serverside.chat")).toBeUndefined();
   expect(directory.roomNameForSiteHostname("lobby.serverside.chat")).toBeUndefined();
+  accounts.close();
+});
+
+test("free accounts cannot turn room archives into unbounded storage", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-archive-limit-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+
+  for (let index = 0; index < 10; index += 1) {
+    directory.createRoom(owner, "project");
+    directory.deleteRoom(owner, "project");
+  }
+  expect(accounts.archivedRooms(owner)).toHaveLength(10);
+  directory.createRoom(owner, "project");
+  expect(() => directory.deleteRoom(owner, "project")).toThrow("archive limit reached");
+  expect(directory.room("project")).toBeDefined();
+  expect(existsSync(join(data, "rooms", "project", "repo", ".git"))).toBe(true);
   accounts.close();
 });
