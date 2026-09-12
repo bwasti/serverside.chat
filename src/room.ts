@@ -280,7 +280,7 @@ export class Room {
   }
 
   recordCanonicalUpdate(principal: Principal, commit: string, url: string): void {
-    this.post("system", "trunk", `${commit} published by @${principal.handle} · ${url}`.slice(0, 2_000));
+    this.post("system", "trunk", `updated to ${commit} by @${principal.handle} · ${url}`.slice(0, 2_000));
   }
 
   agent(actor: Principal | string, prompt: string): boolean {
@@ -348,7 +348,7 @@ export class Room {
     if (detail === "canonical updated" && link) {
       const commit = link.label.match(/[0-9a-f]{7,40}/)?.[0];
       if (commit) this.agentState.links.splice(0, this.agentState.links.length, ...this.agentState.links.filter((item) => !item.url.includes(commit)));
-      this.post("system", "trunk", `${link.label} · ${link.url}`);
+      this.post("system", "trunk", `updated to ${commit ?? link.label} · ${link.url}`);
     }
     if (detail === "commit created" && link) this.post("commit", "room-agent", link.label, link.url, link.blurb);
     this.saveState();

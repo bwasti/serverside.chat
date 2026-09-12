@@ -148,7 +148,9 @@ test("canonical promotions are authoritatively logged in chat", async () => {
   });
   room.agent("alice", "publish it");
   await trunkLogged;
-  expect(room.messages.some((message) => message.author === "trunk" && message.text === "trunk abc1234 · http://localhost:3000/mine")).toBe(true);
+  expect(room.messages.some((message) => message.author === "trunk" && message.text === "updated to abc1234 · http://localhost:3000/mine")).toBe(true);
+  room.recordCanonicalUpdate({ id: "user:alice", kind: "user", handle: "alice", displayName: "Alice", authenticated: true }, "def5678", "http://localhost:3000/mine");
+  expect(room.messages.at(-1)).toMatchObject({ author: "trunk", text: "updated to def5678 by @alice · http://localhost:3000/mine" });
 });
 
 test("commits become host-rendered updates and suppress agent prose", async () => {
