@@ -176,6 +176,39 @@ test("owner and agent names use distinct Zenburn blue and purple accents", () =>
   tui.stream.end();
 });
 
+test("consecutive messages share an author header and align under a fixed time gutter", () => {
+  const room = new Room("mine", 250, "https://example.test/mine", "alice");
+  const firstAt = new Date(2026, 0, 2, 9, 5);
+  const secondAt = new Date(2026, 0, 2, 9, 6);
+  const thirdAt = new Date(2026, 0, 2, 9, 7);
+  room.messages.push(
+    { id: 1, kind: "chat", author: "alice", text: "first message wraps across this narrow chat width with aligned continuation text", at: firstAt, agentVisible: true },
+    { id: 2, kind: "chat", author: "alice", text: "second message", at: secondAt, agentVisible: true },
+    { id: 3, kind: "chat", author: "bob", text: "third message", at: thirdAt, agentVisible: true },
+  );
+  const tui = open(room);
+  tui.session.resize(40, 30);
+  const lines = tui.stream.writes.at(-1)!.split("\r\n").map((line) => line
+    .replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .slice(3));
+  const time = (at: Date) => at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const aliceHeaders = lines.filter((line) => line.trim() === "alice");
+  const aliceHeader = lines.findIndex((line) => line.trim() === "alice");
+  const firstMessage = lines.findIndex((line) => line.startsWith(`  ${time(firstAt)}  first message`));
+  const secondMessage = lines.findIndex((line) => line.startsWith(`  ${time(secondAt)}  second message`));
+  const bobHeader = lines.findIndex((line) => line.trim() === "bob");
+  const thirdMessage = lines.findIndex((line) => line.startsWith(`  ${time(thirdAt)}  third message`));
+
+  expect(aliceHeaders).toHaveLength(1);
+  expect(firstMessage).toBe(aliceHeader + 1);
+  expect(lines.slice(firstMessage + 1, secondMessage).every((line) => line.startsWith(" ".repeat(9)))).toBe(true);
+  expect(secondMessage).toBeGreaterThan(firstMessage);
+  expect(bobHeader).toBe(secondMessage + 1);
+  expect(thirdMessage).toBe(bobHeader + 1);
+  tui.stream.end();
+});
+
 test("slash commands prefix-match and render above the composer", () => {
   expect(slashCommandMatches("/in").map((command) => command.name)).toEqual(["/invite"]);
   expect(slashCommandMatches("/sh").map((command) => command.name)).toEqual(["/shell"]);

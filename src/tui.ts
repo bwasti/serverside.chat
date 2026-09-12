@@ -103,7 +103,7 @@ export class TuiSession {
   private lastFrame = "";
   private messageCacheRoom = "";
   private messageCacheWidth = 0;
-  private readonly messageCache = new Map<number, string[]>();
+  private readonly messageCache = new Map<number, { showAuthor: boolean; rows: string[] }>();
   private principal: Principal;
   private readonly allRooms: Room[];
   private rooms: Room[];
@@ -1456,13 +1456,14 @@ export class TuiSession {
       ? this.createRoomFormRows().map((text) => ({ text, kind: "form" }))
       : deleteRoomScreen
         ? this.deleteRoomFormRows().map((text) => ({ text, kind: "form" }))
-        : roomMessages.flatMap((message) => {
-          let rows = this.messageCache.get(message.id);
-          if (!rows) {
-            rows = this.formatMessage(message, mainWidth);
-            this.messageCache.set(message.id, rows);
+        : roomMessages.flatMap((message, index) => {
+          const showAuthor = index === 0 || roomMessages[index - 1]!.author !== message.author;
+          let cached = this.messageCache.get(message.id);
+          if (!cached || cached.showAuthor !== showAuthor) {
+            cached = { showAuthor, rows: this.formatMessage(message, mainWidth, showAuthor) };
+            this.messageCache.set(message.id, cached);
           }
-          return rows.map((text) => ({ text, kind: message.kind, id: message.id }));
+          return cached.rows.map((text) => ({ text, kind: message.kind, id: message.id }));
         });
     if (this.messageCache.size > roomMessages.length) {
       const retained = new Set(roomMessages.map((message) => message.id));
@@ -1687,26 +1688,31 @@ export class TuiSession {
     return `${SIDEBAR}${" ".repeat(width)}${RESET}`;
   }
 
-  private formatMessage(message: Message, width: number): string[] {
+  private formatMessage(message: Message, width: number, showAuthor: boolean): string[] {
     const time = message.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-    const marker = message.kind === "agent" ? "✦" : message.kind === "commit" ? "◆" : message.kind === "system" ? "·" : "›";
-    const plainPrefix = ` ${time} ${marker} ${message.author}  `;
+    const gutter = 9;
+    const contentWidth = Math.max(1, width - gutter);
+    const continuation = " ".repeat(gutter);
+    const timestamp = `  ${MUTED}${time}${message.kind === "system" ? MUTED : CHAT}  `;
     const nameTone = message.author === "room-agent" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
     const styledName = `${ESC}1m${nameTone}${message.author}${ESC}22m${message.kind === "system" ? MUTED : CHAT}`;
-    const styledPrefix = ` ${time} ${marker} ${styledName}  `;
+    const authorRows = showAuthor ? [`${continuation}${styledName}`] : [];
     const replyRows = message.replyTo
-      ? wrap(`      ↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, width).map((line) => `${MUTED}${line}${CHAT}`)
+      ? wrap(`↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, contentWidth).map((line) => `${continuation}${MUTED}${line}${message.kind === "system" ? MUTED : CHAT}`)
       : [];
     if (message.kind === "commit" && message.url) {
       const [hash, ...title] = message.text.split(" ");
       const suffix = `${title.join(" ")}${message.detail ? ` — ${message.detail}` : ""}`;
-      const content = truncate(`${hash} ${suffix}`, Math.max(0, width - plainPrefix.length));
-      const after = content.slice(hash.length);
-      return [...replyRows, `${styledPrefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${after}${ESC}23m`];
+      const contentRows = wrap(`${hash} ${suffix}`, contentWidth).map((line, index) => {
+        const prefix = index === 0 ? timestamp : continuation;
+        if (index !== 0 || !line.startsWith(hash)) return `${prefix}${ESC}3m${line}${ESC}23m`;
+        return `${prefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${line.slice(hash.length)}${ESC}23m`;
+      });
+      return [...authorRows, ...replyRows, ...contentRows];
     }
-    const lines = wrap(plainPrefix + message.text.replace(/\s+/g, " "), width);
-    if (lines[0]) lines[0] = lines[0].replace(message.author, styledName);
-    return [...replyRows, ...lines];
+    const contentRows = wrap(message.text.replace(/\s+/g, " "), contentWidth)
+      .map((line, index) => `${index === 0 ? timestamp : continuation}${line}`);
+    return [...authorRows, ...replyRows, ...contentRows];
   }
 
   private typingStatus(width: number): string {
