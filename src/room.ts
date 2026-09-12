@@ -1,6 +1,6 @@
 import type { AccountStore, Principal, RoomPolicy, RoomRole } from "./auth";
 
-export type MessageKind = "chat" | "system" | "agent" | "commit";
+export type MessageKind = "chat" | "system" | "clanker" | "commit";
 
 export interface Message {
   id: number;
@@ -12,18 +12,18 @@ export interface Message {
   detail?: string;
   authorId?: string;
   authorRole?: RoomRole;
-  agentVisible?: boolean;
+  clankerVisible?: boolean;
   replyTo?: { id: number; author: string; excerpt: string };
 }
 
-export interface AgentSnapshot {
+export interface ClankerSnapshot {
   status: "disabled" | "idle" | "queued" | "thinking" | "working" | "error";
   detail: string;
   events: string[];
   links: Array<{ label: string; url: string }>;
 }
 
-export interface AgentRequest {
+export interface ClankerRequest {
   principal: Principal;
   explicit: boolean;
 }
@@ -54,10 +54,10 @@ export class Room {
   filesystemBytes = 0;
   lastRequestAt = 0;
   private readonly egressSamples: Array<{ at: number; bytes: number }> = [];
-  private agentResponder?: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: AgentRequest) => Promise<string>;
-  private agentQueue = Promise.resolve();
+  private clankerResponder?: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: ClankerRequest) => Promise<string>;
+  private clankerQueue = Promise.resolve();
   private passiveTimer?: ReturnType<typeof setTimeout>;
-  readonly agentState: AgentSnapshot = { status: "disabled", detail: "no model", events: [], links: [] };
+  readonly clankerState: ClankerSnapshot = { status: "disabled", detail: "no model", events: [], links: [] };
 
   constructor(name: string, private readonly historyLimit = 250, readonly pageUrl = `http://localhost:3000/${name}`, readonly owner = "owner", private readonly statePath?: string, private readonly accounts?: AccountStore) {
     this.name = name;
@@ -95,13 +95,13 @@ export class Room {
     if (added) for (const listener of this.serviceListeners) listener();
   }
 
-  setAgentResponder(responder: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: AgentRequest) => Promise<string>): void {
-    this.agentResponder = responder;
-    this.updateAgent("idle", "listening");
+  setClankerResponder(responder: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: ClankerRequest) => Promise<string>): void {
+    this.clankerResponder = responder;
+    this.updateClanker("idle", "listening");
   }
 
   get policy(): RoomPolicy {
-    return this.accounts?.roomPolicy(this.name) ?? { name: this.name, ownerId: "local:owner", ownerHandle: this.owner, visibility: "public", contributions: "members", agentMode: "passive", system: false };
+    return this.accounts?.roomPolicy(this.name) ?? { name: this.name, ownerId: "local:owner", ownerHandle: this.owner, visibility: "public", contributions: "members", clankerMode: "passive", system: false };
   }
 
   roleFor(actor: Principal | string): RoomRole | undefined {
@@ -119,12 +119,12 @@ export class Room {
     return this.accounts?.canContribute(principal, this.name) ?? principal.authenticated;
   }
 
-  canInvokeAgent(actor: Principal | string): boolean {
+  canInvokeClanker(actor: Principal | string): boolean {
     const principal = this.resolvePrincipal(actor);
-    return this.accounts?.canInvokeAgent(principal, this.name) ?? principal.authenticated;
+    return this.accounts?.canInvokeClanker(principal, this.name) ?? principal.authenticated;
   }
 
-  updatePolicy(actor: Principal, changes: Partial<Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">>): RoomPolicy {
+  updatePolicy(actor: Principal, changes: Partial<Pick<RoomPolicy, "visibility" | "contributions" | "clankerMode">>): RoomPolicy {
     if (!this.accounts) throw new Error("room policy storage is not configured");
     const policy = this.accounts.updateRoomPolicy(actor, this.name, changes);
     for (const listener of this.serviceListeners) listener();
@@ -136,9 +136,9 @@ export class Room {
     return this.accounts.createInvite(actor, this.name, role);
   }
 
-  addAgentLink(label: string, url: string): void {
-    if (!this.agentState.links.some((link) => link.url === url)) {
-      this.agentState.links.push({ label, url });
+  addClankerLink(label: string, url: string): void {
+    if (!this.clankerState.links.some((link) => link.url === url)) {
+      this.clankerState.links.push({ label, url });
       this.saveState();
     }
   }
@@ -238,7 +238,7 @@ export class Room {
     const clean = text.trim().slice(0, 2_000);
     if (clean) {
       this.post("chat", principal.handle, clean, undefined, undefined, principal, undefined, replyTo);
-      if (this.policy.agentMode === "passive" && this.canInvokeAgent(principal)) this.scheduleAgent(principal);
+      if (this.policy.clankerMode === "passive" && this.canInvokeClanker(principal)) this.scheduleClanker(principal);
     }
     return true;
   }
@@ -250,7 +250,7 @@ export class Room {
     const clean = text.trim().slice(0, 600);
     if (!clean) return false;
     this.post("chat", principal.handle, clean, undefined, undefined, principal, true, replyTo);
-    if (this.policy.agentMode === "passive" && this.agentResponder) this.scheduleAgent(principal);
+    if (this.policy.clankerMode === "passive" && this.clankerResponder) this.scheduleClanker(principal);
     return true;
   }
 
@@ -283,80 +283,80 @@ export class Room {
     this.post("system", "trunk", `updated to ${commit} by @${principal.handle} · ${url}`.slice(0, 2_000));
   }
 
-  agent(actor: Principal | string, prompt: string): boolean {
+  clanker(actor: Principal | string, prompt: string): boolean {
     const principal = this.resolvePrincipal(actor);
-    if (!this.canInvokeAgent(principal)) return false;
+    if (!this.canInvokeClanker(principal)) return false;
     const clean = prompt.trim().slice(0, 2_000);
     if (!clean) {
-      this.post("agent", "room-agent", "Try /agent status, or pass me a prompt.");
+      this.post("clanker", "clanker", "Try /clanker status, or pass me a prompt.");
       return true;
     }
-    this.post("chat", principal.handle, `@room-agent ${clean}`, undefined, undefined, principal);
-    if (this.agentResponder) { this.runAgent(true, principal); return true; }
+    this.post("chat", principal.handle, `@clanker ${clean}`, undefined, undefined, principal);
+    if (this.clankerResponder) { this.runClanker(true, principal); return true; }
     const reply = clean.toLowerCase() === "status"
-      ? `Room '${this.name}' is online with ${this.members.size} connected member(s). The Wasm/AI adapter is not configured yet.`
+      ? `Room '${this.name}' is online with ${this.members.size} connected member(s). The clanker runtime is not configured yet.`
       : "I’m present, but this prototype has no model backend yet. Your prompt was recorded in the room transcript.";
-    this.post("agent", "room-agent", reply);
+    this.post("clanker", "clanker", reply);
     return true;
   }
 
-  private scheduleAgent(requester: Principal): void {
-    if (!this.agentResponder) return;
+  private scheduleClanker(requester: Principal): void {
+    if (!this.clankerResponder) return;
     if (this.passiveTimer) clearTimeout(this.passiveTimer);
-    this.updateAgent("queued", "new room activity");
-    this.passiveTimer = setTimeout(() => this.runAgent(false, requester), 700);
+    this.updateClanker("queued", "new room activity");
+    this.passiveTimer = setTimeout(() => this.runClanker(false, requester), 700);
   }
 
-  private runAgent(explicit: boolean, requester: Principal): void {
-    if (!this.agentResponder) return;
+  private runClanker(explicit: boolean, requester: Principal): void {
+    if (!this.clankerResponder) return;
     if (this.passiveTimer) clearTimeout(this.passiveTimer);
     this.passiveTimer = undefined;
-    this.updateAgent("queued", explicit ? "direct request" : "reviewing conversation");
-    this.agentQueue = this.agentQueue.then(async () => {
+    this.updateClanker("queued", explicit ? "direct request" : "reviewing conversation");
+    this.clankerQueue = this.clankerQueue.then(async () => {
       let committed = false;
-      const visibleHistory = this.messages.filter((message) => message.agentVisible || message.kind === "agent" || message.kind === "commit");
-      const reply = await this.agentResponder!(visibleHistory, (status, detail, link) => {
+      const visibleHistory = this.messages.filter((message) => message.clankerVisible || message.kind === "clanker" || message.kind === "commit");
+      const reply = await this.clankerResponder!(visibleHistory, (status, detail, link) => {
         if (detail === "commit created") committed = true;
-        this.updateAgent(status as AgentSnapshot["status"], detail, link);
+        this.updateClanker(status as ClankerSnapshot["status"], detail, link);
       }, { principal: requester, explicit });
-      if (!committed && reply && reply !== "[silent]") this.post("agent", "room-agent", reply);
-      this.updateAgent("idle", committed || reply === "[silent]" ? "listening" : "response sent");
+      if (!committed && reply && reply !== "[silent]") this.post("clanker", "clanker", reply);
+      this.updateClanker("idle", committed || reply === "[silent]" ? "listening" : "response sent");
     }).catch((error: unknown) => {
       const detail = error instanceof Error ? error.message : "unknown error";
-      this.updateAgent("error", detail);
+      this.updateClanker("error", detail);
     });
   }
 
-  private updateAgent(status: AgentSnapshot["status"], detail: string, link?: { label: string; url: string; blurb?: string }): void {
-    this.agentState.status = status;
-    this.agentState.detail = detail.slice(0, 120);
+  private updateClanker(status: ClankerSnapshot["status"], detail: string, link?: { label: string; url: string; blurb?: string }): void {
+    this.clankerState.status = status;
+    this.clankerState.detail = detail.slice(0, 120);
     const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-    const event = `${time} ${status} · ${this.agentState.detail}`;
-    if (this.agentState.events.at(-1) !== event) this.agentState.events.push(event);
-    if (this.agentState.events.length > 30) this.agentState.events.shift();
+    const event = `${time} ${status} · ${this.clankerState.detail}`;
+    if (this.clankerState.events.at(-1) !== event) this.clankerState.events.push(event);
+    if (this.clankerState.events.length > 30) this.clankerState.events.shift();
     if (status === "error") {
-      const log = `${time} AGENT error ${this.agentState.detail}`;
+      const log = `${time} CLANKER error ${this.clankerState.detail}`;
       if (this.serviceLogs.at(-1) !== log) this.serviceLogs.push(log);
       if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
     }
     if (detail === "preview archived" && link) {
-      this.agentState.links.splice(0, this.agentState.links.length, ...this.agentState.links.filter((existing) => existing.url !== link.url));
-    } else if (link && !this.agentState.links.some((existing) => existing.url === link.url)) {
-      this.agentState.links.unshift(link);
-      if (this.agentState.links.length > 5) this.agentState.links.pop();
+      this.clankerState.links.splice(0, this.clankerState.links.length, ...this.clankerState.links.filter((existing) => existing.url !== link.url));
+    } else if (link && !this.clankerState.links.some((existing) => existing.url === link.url)) {
+      this.clankerState.links.unshift(link);
+      if (this.clankerState.links.length > 5) this.clankerState.links.pop();
     }
     if (detail === "canonical updated" && link) {
       const commit = link.label.match(/[0-9a-f]{7,40}/)?.[0];
-      if (commit) this.agentState.links.splice(0, this.agentState.links.length, ...this.agentState.links.filter((item) => !item.url.includes(commit)));
+      if (commit) this.clankerState.links.splice(0, this.clankerState.links.length, ...this.clankerState.links.filter((item) => !item.url.includes(commit)));
       this.post("system", "trunk", `updated to ${commit ?? link.label} · ${link.url}`);
     }
-    if (detail === "commit created" && link) this.post("commit", "room-agent", link.label, link.url, link.blurb);
+    if (detail === "commit created" && link) this.post("commit", "clanker", link.label, link.url, link.blurb);
     this.saveState();
     for (const listener of this.serviceListeners) listener();
   }
 
-  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal, agentVisible?: boolean, replyTo?: Message["replyTo"]): void {
-    const message: Message = { id: this.nextId++, kind, author: stripTerminalControls(author), text: stripTerminalControls(text), at: new Date(), url, detail: detail ? stripTerminalControls(detail) : undefined, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: agentVisible ?? (principal ? this.canInvokeAgent(principal) : kind !== "chat"), replyTo };
+  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal, clankerVisible?: boolean, replyTo?: Message["replyTo"]): void {
+    const message: Message = { id: this.nextId++, kind, author: stripTerminalControls(author), text: stripTerminalControls(text), at: new Date(), url, detail: detail ? stripTerminalControls(detail) : undefined, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, clankerVisible: clankerVisible ?? (principal ? this.canInvokeClanker(principal) : kind !== "chat"), replyTo };
     this.messages.push(message);
     if (this.messages.length > this.historyLimit) this.messages.shift();
     this.saveState();
@@ -371,15 +371,18 @@ export class Room {
       if (Array.isArray(state.messages)) for (const raw of state.messages.slice(-this.historyLimit)) {
         if (!raw || typeof raw !== "object") continue;
         const item = raw as Record<string, unknown>;
-        if (typeof item.id !== "number" || typeof item.author !== "string" || typeof item.text !== "string" || !["chat", "system", "agent", "commit"].includes(String(item.kind))) continue;
+        const storedKind = String(item.kind);
+        if (typeof item.id !== "number" || typeof item.author !== "string" || typeof item.text !== "string" || !["chat", "system", "clanker", "agent", "commit"].includes(storedKind)) continue;
+        const kind: MessageKind = storedKind === "agent" ? "clanker" : storedKind as MessageKind;
         const at = new Date(String(item.at));
         if (Number.isNaN(at.getTime())) continue;
         const oldRoomUrl = `http://localhost:3000/${encodeURIComponent(this.name)}`;
         const rawReply = item.replyTo as Record<string, unknown> | undefined;
         const replyTo = rawReply && typeof rawReply.id === "number" && typeof rawReply.author === "string" && typeof rawReply.excerpt === "string"
-          ? { id: rawReply.id, author: stripTerminalControls(rawReply.author).slice(0, 80), excerpt: stripTerminalControls(rawReply.excerpt).slice(0, 120) }
+          ? { id: rawReply.id, author: legacyClankerAuthor(stripTerminalControls(rawReply.author).slice(0, 80)), excerpt: legacyClankerMention(stripTerminalControls(rawReply.excerpt).slice(0, 120)) }
           : undefined;
-        this.messages.push({ id: item.id, kind: item.kind as MessageKind, author: item.author, text: item.text.replaceAll(oldRoomUrl, this.pageUrl), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? item.detail : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, agentVisible: typeof item.agentVisible === "boolean" ? item.agentVisible : item.kind !== "chat", replyTo });
+        const legacyVisible = typeof item.agentVisible === "boolean" ? item.agentVisible : undefined;
+        this.messages.push({ id: item.id, kind, author: legacyClankerAuthor(item.author), text: legacyClankerMention(item.text.replaceAll(oldRoomUrl, this.pageUrl)), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? legacyClankerMention(item.detail) : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, clankerVisible: typeof item.clankerVisible === "boolean" ? item.clankerVisible : legacyVisible ?? kind !== "chat", replyTo });
         this.nextId = Math.max(this.nextId, item.id + 1);
       }
       this.serviceRequests = finiteNumber(state.serviceRequests);
@@ -390,17 +393,17 @@ export class Room {
       this.filesystemBytes = finiteNumber(state.filesystemBytes);
       if (Array.isArray(state.egressSamples)) for (const raw of state.egressSamples) { const sample = raw as Record<string, unknown>; if (typeof sample?.at === "number" && typeof sample.bytes === "number") this.egressSamples.push({ at: sample.at, bytes: sample.bytes }); }
       this.pruneEgress();
-      if (Array.isArray(state.serviceLogs)) this.serviceLogs.push(...state.serviceLogs.filter((value): value is string => typeof value === "string").slice(-50));
-      const agent = state.agentState as Record<string, unknown> | undefined;
-      if (agent) {
-        if (Array.isArray(agent.events)) this.agentState.events.push(...agent.events.filter((value): value is string => typeof value === "string").slice(-30));
-        if (Array.isArray(agent.links)) for (const raw of agent.links.slice(-5)) {
+      if (Array.isArray(state.serviceLogs)) this.serviceLogs.push(...state.serviceLogs.filter((value): value is string => typeof value === "string").slice(-50).map(legacyClankerTelemetry));
+      const clanker = (state.clankerState ?? state.agentState) as Record<string, unknown> | undefined;
+      if (clanker) {
+        if (Array.isArray(clanker.events)) this.clankerState.events.push(...clanker.events.filter((value): value is string => typeof value === "string").slice(-30).map(legacyClankerTelemetry));
+        if (Array.isArray(clanker.links)) for (const raw of clanker.links.slice(-5)) {
           const link = raw as Record<string, unknown>;
-          if (typeof link?.label === "string" && typeof link.url === "string") this.agentState.links.push({ label: link.label, url: rebaseRoomUrl(link.url, this.pageUrl) });
+          if (typeof link?.label === "string" && typeof link.url === "string") this.clankerState.links.push({ label: link.label, url: rebaseRoomUrl(link.url, this.pageUrl) });
         }
-        const lastAgentError = this.agentState.events.at(-1)?.match(/^(\d{2}:\d{2}:\d{2}) error · (.*)$/);
-        if (lastAgentError) {
-          const log = `${lastAgentError[1]} AGENT error ${lastAgentError[2]}`;
+        const lastClankerError = this.clankerState.events.at(-1)?.match(/^(\d{2}:\d{2}:\d{2}) error · (.*)$/);
+        if (lastClankerError) {
+          const log = `${lastClankerError[1]} CLANKER error ${lastClankerError[2]}`;
           if (!this.serviceLogs.includes(log)) this.serviceLogs.push(log);
           if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
         }
@@ -416,7 +419,7 @@ export class Room {
     if (!this.statePath) return;
     mkdirSync(dirname(this.statePath), { recursive: true });
     const temporary = `${this.statePath}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ telemetryVersion: TELEMETRY_VERSION, messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, egressSamples: this.egressSamples, agentState: { events: this.agentState.events, links: this.agentState.links } }, null, 2));
+    writeFileSync(temporary, JSON.stringify({ telemetryVersion: TELEMETRY_VERSION, messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, egressSamples: this.egressSamples, clankerState: { events: this.clankerState.events, links: this.clankerState.links } }, null, 2));
     renameSync(temporary, this.statePath);
   }
 
@@ -452,6 +455,12 @@ function rebaseRoomUrl(value: string, pageUrl: string): string {
     if (old.pathname === current.pathname) return `${pageUrl}${old.search}${old.hash}`;
   } catch { /* Preserve malformed legacy display data rather than dropping history. */ }
   return value;
+}
+
+function legacyClankerAuthor(value: string): string { return value === "room-agent" ? "clanker" : value; }
+function legacyClankerMention(value: string): string { return value.replace(/@room-agent\b/g, "@clanker"); }
+function legacyClankerTelemetry(value: string): string {
+  return legacyClankerMention(value).replace(/\bAGENT\b/g, "CLANKER").replace(/\bagent\b/g, "clanker");
 }
 
 function isRoomRole(value: unknown): value is RoomRole {

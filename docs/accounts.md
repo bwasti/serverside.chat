@@ -1,6 +1,6 @@
 # Accounts and room policy
 
-Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript cannot read or mutate this database. The internal user ID is canonical; Google/GitHub provider subjects, browser sessions, SSH keys, and future scoped agent credentials are separate credentials that resolve to it. Display handles and email addresses are never credentials.
+Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript cannot read or mutate this database. The internal user ID is canonical; Google/GitHub provider subjects, browser sessions, SSH keys, and future scoped clanker credentials are separate credentials that resolve to it. Display handles and email addresses are never credentials.
 
 ## Site roles, plans, and room ownership
 
@@ -12,7 +12,7 @@ Site roles and room roles are independent:
 - `lobby` is a public, host-managed system room. It is the default landing room, every authenticated account receives contributor membership, and it does not consume an ownership slot. It cannot be renamed, deleted, or reconfigured through room commands.
 - A `free` account may own at most five rooms. The data model reserves a 25-room `pro` allowance, but no upgrade or billing path is enabled. Site admins retain a hard 100-room ceiling.
 
-Room deletion requires typing the current room's exact name. Pressing Delete on a highlighted sidebar room opens the confirmation screen; the equivalent command is `/room delete <current-name>`. Active clients are moved to another visible room, while the repository, SQLite database, scratch files, transcript, deployment state, policy, ownership, and membership graph are archived under `.data/.trash/rooms/` plus host-owned metadata. Existing invites, agent credentials, and mount credentials are revoked rather than revived later. Owners and site admins can discover archives with `/room archives` and restore the latest matching archive with `/room restore <name>`, provided the name remains free and the owner remains within its active-room quota. Free accounts may retain ten deleted rooms, pro accounts fifty, and site-admin owners two hundred; reaching that bound blocks further deletion instead of silently purging data. Renaming atomically moves the complete active room state and updates HTTP/Wasm routing for the new URL.
+Room deletion requires typing the current room's exact name. Pressing Delete on a highlighted sidebar room opens the confirmation screen; the equivalent command is `/room delete <current-name>`. Active clients are moved to another visible room, while the repository, SQLite database, scratch files, transcript, deployment state, policy, ownership, and membership graph are archived under `.data/.trash/rooms/` plus host-owned metadata. Existing invites, clanker credentials, and mount credentials are revoked rather than revived later. Owners and site admins can discover archives with `/room archives` and restore the latest matching archive with `/room restore <name>`, provided the name remains free and the owner remains within its active-room quota. Free accounts may retain ten deleted rooms, pro accounts fifty, and site-admin owners two hundred; reaching that bound blocks further deletion instead of silently purging data. Renaming atomically moves the complete active room state and updates HTTP/Wasm routing for the new URL.
 
 ## SSH enrollment
 
@@ -30,7 +30,7 @@ OAuth identities from different providers are never merged by matching email or 
 
 The rooms sidebar treats the bottom `@handle` row as a selectable account destination. Anonymous sessions can open the canonical OAuth flow there. Authenticated sessions can inspect their site role, plan, room allowance, linked provider names, and active SSH-key count; they can also update their display name or create a short-lived account-bound link for attaching another Google or GitHub identity. These changes remain host-owned and are recorded in the account audit log.
 
-Room-bar ordering is a canonical-account preference, not shared room state. While the sidebar is focused, Shift-Up and Shift-Down move the selected room and persist the complete visible ordering for that account; new or newly visible rooms append without disturbing it. Anonymous sessions keep the default order. Shift-Enter opens the selected room's policy editor. The host rechecks room-admin authority when the editor opens and again when it saves visibility, contribution, and agent settings.
+Room-bar ordering is a canonical-account preference, not shared room state. While the sidebar is focused, Shift-Up and Shift-Down move the selected room and persist the complete visible ordering for that account; new or newly visible rooms append without disturbing it. Anonymous sessions keep the default order. Shift-Enter opens the selected room's policy editor. The host rechecks room-admin authority when the editor opens and again when it saves visibility, contribution, and clanker settings.
 
 Prototype owner accounts that existed before OAuth can run `ssh -p 2222 serverside.chat account`. The server returns a random, hashed-at-rest, single-use HTTPS link valid for ten minutes. Choosing Google or GitHub consumes that bootstrap token, binds the verified provider subject to the existing internal account, and issues the normal browser session. This is a migration path, not the routine browser sign-in flow.
 
@@ -46,7 +46,7 @@ Finder sends the credential through HTTP Basic authentication only over the exis
 | --- | --- | --- |
 | Visibility | `public`, `private` | Public rooms allow anonymous reading; private rooms require membership. |
 | Contributions | `members`, `admins`, `disabled` | Members means owner/admin/contributor; admins means owner/admin; disabled blocks normal chat for everyone. |
-| Agent | `passive`, `explicit`, `disabled` | Passive reviews permitted chat; explicit runs only for `/agent`; disabled rejects all agent invocation. |
+| Clanker | `passive`, `explicit`, `disabled` | Passive reviews permitted chat; explicit runs only for `/clanker`; disabled rejects all clanker invocation. |
 
 Room `owner` and room `admin` can inspect or change these controls with `/permissions`. Only a room owner or site admin can rename or delete a room. Disabling contributions does not lock administrators out of the host policy commands.
 
@@ -56,10 +56,10 @@ Room owners, room admins, and site admins can moderate persisted chat messages. 
 
 - Room visibility is checked before an SSH room is listed and before HTTP execution or WebSocket upgrade.
 - Chat authorization is checked before persistence, broadcast, typing presence, or model routing.
-- The model receives only messages the host marked agent-visible at insertion time.
-- Agent invocation requires both contribution authority and a non-disabled agent policy.
+- The model receives only messages the host marked clanker-visible at insertion time.
+- Clanker invocation requires both contribution authority and a non-disabled clanker policy.
 - Message deletion requires room-admin authority (which includes the room owner and a site admin) and is audited.
-- Canonical promotion requires the owner identity and an explicit `/agent` run; prompt text cannot grant it.
+- Canonical promotion requires the owner identity and an explicit `/clanker` run; prompt text cannot grant it.
 - Policy changes, logins, invitation creation and redemption, mount credential lifecycle, and remote filesystem mutations are written to `audit_events`.
 
 Before pairing, the browser TUI uses a stable source-IP principal to distinguish approximate people from concurrent connections; it does not pretend that an IP address is an authenticated account. That principal can browse public rooms and submit messages only to the host-managed lobby moderation gate. After SSH approval, HTTP pages, service WebSockets, and the browser TUI resolve the session cookie to the same durable account. Private resources therefore use the normal room membership check rather than a special invitation URL.

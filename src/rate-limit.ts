@@ -27,7 +27,7 @@ export const RATE_LIMITS = {
   anonymousChat: { capacity: 2, refillPerSecond: 1 / 30, baseBackoffMs: 15_000, maxBackoffMs: 15 * 60_000 },
   authenticatedChat: { capacity: 8, refillPerSecond: 1 / 3, baseBackoffMs: 2_000, maxBackoffMs: 2 * 60_000 },
   authenticatedCommand: { capacity: 12, refillPerSecond: 1, baseBackoffMs: 1_000, maxBackoffMs: 60_000 },
-  agentRequest: { capacity: 2, refillPerSecond: 1 / 30, baseBackoffMs: 10_000, maxBackoffMs: 10 * 60_000 },
+  clankerRequest: { capacity: 2, refillPerSecond: 1 / 30, baseBackoffMs: 10_000, maxBackoffMs: 10 * 60_000 },
   sshConnection: { capacity: 10, refillPerSecond: 1 / 15, baseBackoffMs: 5_000, maxBackoffMs: 10 * 60_000 },
   sshOperation: { capacity: 120, refillPerSecond: 30, baseBackoffMs: 1_000, maxBackoffMs: 60_000 },
 } as const satisfies Record<string, RateLimitPolicy>;

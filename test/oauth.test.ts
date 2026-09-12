@@ -55,7 +55,7 @@ test("a bootstrap link consolidates a newly-created OAuth-only account", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-oauth-consolidate-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const canonical = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", canonical, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", canonical, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const accidental = accounts.authenticateIdentity({ provider: "github", subject: "42", handle: "alice" }).principal;
   const oldSession = accounts.createWebSession(accidental);
 

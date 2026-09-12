@@ -45,7 +45,7 @@ test("binary capability writes are atomic, quota-bounded, and optimistic", () =>
   expect(() => workspace.writeFileBytes("large.bin", Buffer.alloc(512 * 1024 + 1))).toThrow("512 KiB");
 });
 
-test("agent patches are unique and tracked files can be safely restored from HEAD", () => {
+test("clanker patches are unique and tracked files can be safely restored from HEAD", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-patch-"));
   const workspace = new RoomWorkspace(data, "patch-room");
   const original = workspace.readFile("index.html");
@@ -108,7 +108,7 @@ test("stable promotion requires rebased linear history", () => {
   expect(workspace.promotePreview(rebasedPreview.id).commit).toBe(rebasedPreview.commit);
 });
 
-test("agent can resolve a conflicted rebase and preserve linear history", () => {
+test("clanker can resolve a conflicted rebase and preserve linear history", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "conflict-room");
   workspace.createBranch("feature");

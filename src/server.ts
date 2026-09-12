@@ -6,7 +6,7 @@ import { Server, utils, type Connection, type ServerChannel, type Session } from
 import { AccountStore, type Principal } from "./auth";
 import { TuiSession } from "./tui";
 import { startWebServer } from "./web";
-import { FireworksAgent, FireworksGuideAgent } from "./agent";
+import { FireworksClanker, FireworksGuideClanker } from "./clanker";
 import { parseSshEntryCommand } from "./ssh-command";
 import { OAuthService, type OAuthProviderConfig } from "./oauth";
 import { RoomDirectory } from "./room-directory";
@@ -41,33 +41,33 @@ const ownerPrincipal = accounts.ensureLocalOwner(roomOwner, roomOwner);
 accounts.ensureSiteAdmin(ownerPrincipal);
 enrollBootstrapKeys(accounts, ownerPrincipal);
 const roomDefaults = [
-  { name: "hello-world", visibility: "public", contributions: "members", agentMode: "passive" },
+  { name: "hello-world", visibility: "public", contributions: "members", clankerMode: "passive" },
 ] as const;
 accounts.seedRoomsOnce(ownerPrincipal, [...roomDefaults]);
-accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contributions: "members", agentMode: "passive" });
+accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contributions: "members", clankerMode: "passive" });
 const fireworksKey = process.env.FIREWORKS_API_KEY;
 const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/deepseek-v4p1-flash";
 const fireworksClassifierModel = process.env.FIREWORKS_CLASSIFIER_MODEL ?? "accounts/fireworks/models/glm-5p3-flash";
-let agent: FireworksAgent | undefined;
-let guideAgent: FireworksGuideAgent | undefined;
+let clanker: FireworksClanker | undefined;
+let guideClanker: FireworksGuideClanker | undefined;
 let anonymousLobbyGate: AnonymousLobbyGate | undefined;
 let reportModerationError = (error: unknown) => console.error("Lobby moderation error:", error instanceof Error ? error.message : "unknown provider failure");
 if (fireworksKey) {
-  const prompt = ["prompts/room-agent/system.md", "prompts/room-agent/context.md", "prompts/room-agent/project.md"]
+  const prompt = ["prompts/clanker/system.md", "prompts/clanker/context.md", "prompts/clanker/project.md"]
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
-  agent = new FireworksAgent(fireworksKey, fireworksModel, prompt);
-  guideAgent = new FireworksGuideAgent(fireworksKey, fireworksModel, readFileSync("prompts/lobby-agent/system.md", "utf8").trim());
+  clanker = new FireworksClanker(fireworksKey, fireworksModel, prompt);
+  guideClanker = new FireworksGuideClanker(fireworksKey, fireworksModel, readFileSync("prompts/lobby-clanker/system.md", "utf8").trim());
   anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()), Date.now, (error) => reportModerationError(error));
 }
 const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: string) => anonymousLobbyGate.review(principal, text) : undefined;
 const rateLimiter = new AdaptiveRateLimiter();
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
-  if (room.name === "lobby" && guideAgent) {
-    room.setAgentResponder((history, activity) => guideAgent.respond(history, activity));
+  if (room.name === "lobby" && guideClanker) {
+    room.setClankerResponder((history, activity) => guideClanker.respond(history, activity));
     return;
   }
-  if (agent) room.setAgentResponder(async (history, activity, request) => {
-    try { return await agent.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit)); }
+  if (clanker) room.setClankerResponder(async (history, activity, request) => {
+    try { return await clanker.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit)); }
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }, roomSiteDomain);
@@ -203,7 +203,7 @@ server.listen(port, host, () => {
   console.log(`serverside.chat listening on ssh://${host}:${port}`);
   console.log(`Connect with: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null localhost -p ${port}`);
   console.log(`Room pages listening on http://${webHost}:${webServer.port}`);
-  console.log(fireworksKey ? `Room agent enabled: ${fireworksModel}; classifier: ${fireworksClassifierModel}` : "Room agent disabled: FIREWORKS_API_KEY is not set");
+  console.log(fireworksKey ? `Room clanker enabled: ${fireworksModel}; classifier: ${fireworksClassifierModel}` : "Room clanker disabled: FIREWORKS_API_KEY is not set");
 });
 
 function sanitizeUsername(value: string): string {

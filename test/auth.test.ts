@@ -11,8 +11,8 @@ function setup() {
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   const member = accounts.ensureLocalOwner("bob");
-  accounts.ensureRoom("public-room", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
-  accounts.ensureRoom("private-room", owner, { visibility: "private", contributions: "admins", agentMode: "disabled" });
+  accounts.ensureRoom("public-room", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
+  accounts.ensureRoom("private-room", owner, { visibility: "private", contributions: "admins", clankerMode: "disabled" });
   return { accounts, owner, member };
 }
 
@@ -32,9 +32,14 @@ test("legacy account databases gain site-role and plan defaults", () => {
   legacy.close();
 
   const accounts = new AccountStore(path);
+  const migrated = new Database(path, { readonly: true });
+  const roomColumns = (migrated.query("PRAGMA table_info(rooms)").all() as Array<{ name: string }>).map(({ name }) => name);
+  expect(roomColumns).toContain("clanker_mode");
+  expect(roomColumns).not.toContain("agent_mode");
+  migrated.close();
   const principal = accounts.ensureLocalOwner("legacy");
   expect(accounts.accountProfile(principal)).toMatchObject({ siteRole: "member", plan: "free", roomLimit: 5 });
-  expect(accounts.ensureRoom("legacy-room", principal, { visibility: "public", contributions: "members", agentMode: "passive" }).system).toBe(false);
+  expect(accounts.ensureRoom("legacy-room", principal, { visibility: "public", contributions: "members", clankerMode: "passive" }).system).toBe(false);
   accounts.close();
 });
 
@@ -43,10 +48,10 @@ test("the lobby is a reserved quota-free room that signed-in accounts can use", 
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   const member = accounts.ensureLocalOwner("bob");
-  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
 
   accounts.ensureSystemMembership(member, "lobby");
-  expect(accounts.roomPolicy("lobby")).toMatchObject({ system: true, visibility: "public", agentMode: "passive" });
+  expect(accounts.roomPolicy("lobby")).toMatchObject({ system: true, visibility: "public", clankerMode: "passive" });
   expect(accounts.roleFor(member, "lobby")).toBe("contributor");
   expect(accounts.canContribute(member, "lobby")).toBe(true);
   expect(accounts.canEditSource(member, "lobby")).toBe(false);
@@ -171,19 +176,19 @@ test("an SSH invite is granted to the canonical account during browser key linki
   accounts.close();
 });
 
-test("public visibility is independent from contribution and agent authority", () => {
+test("public visibility is independent from contribution and clanker authority", () => {
   const { accounts, owner, member } = setup();
   const guest = anonymousPrincipal("SHA256:guest", "alice");
   expect(accounts.canView(guest, "public-room")).toBe(true);
   expect(accounts.canContribute(guest, "public-room")).toBe(false);
-  expect(accounts.canInvokeAgent(guest, "public-room")).toBe(false);
+  expect(accounts.canInvokeClanker(guest, "public-room")).toBe(false);
   expect(accounts.canView(member, "private-room")).toBe(false);
 
   const invite = accounts.createInvite(owner, "public-room", "contributor");
   expect(accounts.redeemInvite(member, invite)).toEqual({ roomName: "public-room", role: "contributor" });
   expect(accounts.canContribute(member, "public-room")).toBe(true);
   expect(accounts.canEditSource(member, "public-room")).toBe(true);
-  expect(accounts.canInvokeAgent(member, "public-room")).toBe(true);
+  expect(accounts.canInvokeClanker(member, "public-room")).toBe(true);
   expect(accounts.canPromote(member, "public-room")).toBe(false);
   expect(accounts.canPromote(owner, "public-room")).toBe(true);
   accounts.close();
@@ -212,7 +217,7 @@ test("default room seeding happens once and does not resurrect deleted rooms", (
   const path = join(data, "accounts.sqlite");
   const first = new AccountStore(path);
   const owner = first.ensureLocalOwner("alice");
-  const defaults = [{ name: "mine", visibility: "public", contributions: "members", agentMode: "passive" }] as const;
+  const defaults = [{ name: "mine", visibility: "public", contributions: "members", clankerMode: "passive" }] as const;
   first.seedRoomsOnce(owner, [...defaults]);
   first.deleteRoom(owner, "mine");
   first.close();
@@ -232,7 +237,7 @@ test("invite redemption never downgrades an existing room role", () => {
   accounts.close();
 });
 
-test("admin-only and disabled-agent room policies are enforced by Room", () => {
+test("admin-only and disabled-clanker room policies are enforced by Room", () => {
   const { accounts, owner, member } = setup();
   const contributorInvite = accounts.createInvite(owner, "private-room", "contributor");
   accounts.redeemInvite(member, contributorInvite);
@@ -240,28 +245,28 @@ test("admin-only and disabled-agent room policies are enforced by Room", () => {
 
   expect(room.canView(member)).toBe(true);
   expect(room.chat(member, "untrusted contribution")).toBe(false);
-  expect(room.agent(member, "change the page")).toBe(false);
+  expect(room.clanker(member, "change the page")).toBe(false);
   expect(room.messages).toEqual([]);
   expect(room.chat(owner, "owner note")).toBe(true);
-  expect(room.messages.at(-1)).toMatchObject({ authorId: owner.id, authorRole: "owner", agentVisible: false });
+  expect(room.messages.at(-1)).toMatchObject({ authorId: owner.id, authorRole: "owner", clankerVisible: false });
   accounts.close();
 });
 
 test("room policies persist and only admins can change them", () => {
   const { accounts, owner, member } = setup();
   expect(() => accounts.updateRoomPolicy(member, "public-room", { visibility: "private" })).toThrow("requires an admin");
-  const updated = accounts.updateRoomPolicy(owner, "public-room", { visibility: "private", contributions: "admins", agentMode: "explicit" });
-  expect(updated).toMatchObject({ visibility: "private", contributions: "admins", agentMode: "explicit" });
+  const updated = accounts.updateRoomPolicy(owner, "public-room", { visibility: "private", contributions: "admins", clankerMode: "explicit" });
+  expect(updated).toMatchObject({ visibility: "private", contributions: "admins", clankerMode: "explicit" });
   accounts.close();
 });
 
-test("explicit agent mode does not react passively and preserves authenticated context", async () => {
+test("explicit clanker mode does not react passively and preserves authenticated context", async () => {
   const { accounts, owner, member } = setup();
-  accounts.updateRoomPolicy(owner, "public-room", { agentMode: "explicit" });
+  accounts.updateRoomPolicy(owner, "public-room", { clankerMode: "explicit" });
   accounts.redeemInvite(member, accounts.createInvite(owner, "public-room", "contributor"));
   const room = new Room("public-room", 250, "http://example.test/public-room", owner.handle, undefined, accounts);
   const calls: Array<{ explicit: boolean; authors: string[] }> = [];
-  room.setAgentResponder(async (history, _activity, request) => {
+  room.setClankerResponder(async (history, _activity, request) => {
     calls.push({ explicit: request.explicit, authors: history.map((message) => message.author) });
     return "[silent]";
   });
@@ -269,7 +274,7 @@ test("explicit agent mode does not react passively and preserves authenticated c
   room.chat(member, "context for later");
   await Bun.sleep(0);
   expect(calls).toEqual([]);
-  room.agent(member, "inspect it");
+  room.clanker(member, "inspect it");
   await Bun.sleep(0);
   expect(calls).toEqual([{ explicit: true, authors: ["bob", "bob"] }]);
   accounts.close();

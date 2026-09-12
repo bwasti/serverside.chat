@@ -64,7 +64,7 @@ export class RoomDirectory {
   createRoom(
     actor: Principal,
     name: string,
-    defaults?: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">,
+    defaults?: Pick<RoomPolicy, "visibility" | "contributions" | "clankerMode">,
   ): Room {
     const policy = this.accounts.createRoom(actor, name, defaults);
     try {
@@ -83,7 +83,7 @@ export class RoomDirectory {
     if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(newName)) throw new Error("room names use 1-32 lowercase letters, numbers, and dashes");
     const oldRoom = this.room(oldName);
     if (!oldRoom) throw new Error("room not found");
-    if (agentBusy(oldRoom)) throw new Error("wait for the room agent to finish before renaming");
+    if (clankerBusy(oldRoom)) throw new Error("wait for the room clanker to finish before renaming");
     if (!this.accounts.canManageRoom(actor, oldName)) throw new Error("renaming a room requires its owner or a site admin");
     if (this.accounts.roomPolicy(newName)) throw new Error("room name is already in use");
     const oldDirectory = this.roomDataPath(oldName);
@@ -112,7 +112,7 @@ export class RoomDirectory {
   deleteRoom(actor: Principal, name: string): void {
     const room = this.room(name);
     if (!room) throw new Error("room not found");
-    if (agentBusy(room)) throw new Error("wait for the room agent to finish before deleting");
+    if (clankerBusy(room)) throw new Error("wait for the room clanker to finish before deleting");
     if (!this.accounts.canManageRoom(actor, name)) throw new Error("deleting a room requires its owner or a site admin");
     const source = this.roomDataPath(name);
     const archiveId = crypto.randomUUID();
@@ -170,8 +170,8 @@ export class RoomDirectory {
     const workspace = new RoomWorkspace(this.dataDir, policy.name);
     this.workspaces.set(policy.name, workspace);
     room.setVersionGraph(workspace.versionGraph());
-    room.addAgentLink("head", `${room.pageUrl}?__ref=head`);
-    for (const preview of workspace.visiblePreviews()) room.addAgentLink(preview.description, `${room.pageUrl}?__ref=${preview.id}`);
+    room.addClankerLink("head", `${room.pageUrl}?__ref=head`);
+    for (const preview of workspace.visiblePreviews()) room.addClankerLink(preview.description, `${room.pageUrl}?__ref=${preview.id}`);
     this.configureRoom(room, workspace);
     return room;
   }
@@ -207,6 +207,6 @@ export class RoomDirectory {
   }
 }
 
-function agentBusy(room: Room): boolean {
-  return room.agentState.status === "queued" || room.agentState.status === "thinking" || room.agentState.status === "working";
+function clankerBusy(room: Room): boolean {
+  return room.clankerState.status === "queued" || room.clankerState.status === "thinking" || room.clankerState.status === "working";
 }

@@ -116,4 +116,4 @@ The current prototype uses one shared room working tree, matching the collaborat
 
 ## Capability separation
 
-The source capability is never installed in the deployed website worker. The worker retains only immutable deployment assets plus its separate runtime database, scratch storage, logging, and realtime APIs. Human sessions receive source capabilities according to membership. The room agent receives its predefined source/version tools. Canonical publication remains a distinct owner capability.
+The source capability is never installed in the deployed website worker. The worker retains only immutable deployment assets plus its separate runtime database, scratch storage, logging, and realtime APIs. Human sessions receive source capabilities according to membership. The room clanker receives its predefined source/version tools. Canonical publication remains a distinct owner capability.

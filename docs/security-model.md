@@ -16,19 +16,19 @@ Room roles govern participation:
 
 - `owner`: manage invitations and room policy; contribute under member/admin policy; exclusively authorize canonical promotion.
 - `admin`: manage invitations and room policy; contribute under member/admin policy; cannot promote canonical.
-- `contributor`: chat and invoke the agent when contribution and agent policies allow it.
-- `viewer`: read a visible room; no chat or agent authority.
-- `anonymous`: browse public rooms and pages; no normal-room chat, typing presence, or builder-agent visibility. The host-managed lobby alone accepts bounded, rate-limited messages after a separate AI moderation decision.
+- `contributor`: chat and invoke the clanker when contribution and clanker policies allow it.
+- `viewer`: read a visible room; no chat or clanker authority.
+- `anonymous`: browse public rooms and pages; no normal-room chat, typing presence, or clanker visibility. The host-managed lobby alone accepts bounded, rate-limited messages after a separate clanker moderation decision.
 
-Room creation, rename, archive, and restoration are host operations. Names and host-generated archive identifiers are validated before database or filesystem access. Rename carries the database authority records and room-owned storage together. Deletion removes live routing but atomically snapshots ownership, policy, and memberships while moving storage to a bounded server-owned archive; old bearer credentials are deliberately not restored. Restoration requires the original owner or a site admin, an unused original name, available active-room quota, and the matching archived storage. Active agent work blocks rename and deletion. Persisted-message deletion is a separate audited operation available to the room owner, room admins, and site admins; the client cannot grant itself that authority.
+Room creation, rename, archive, and restoration are host operations. Names and host-generated archive identifiers are validated before database or filesystem access. Rename carries the database authority records and room-owned storage together. Deletion removes live routing but atomically snapshots ownership, policy, and memberships while moving storage to a bounded server-owned archive; old bearer credentials are deliberately not restored. Restoration requires the original owner or a site admin, an unused original name, available active-room quota, and the matching archived storage. Active clanker work blocks rename and deletion. Persisted-message deletion is a separate audited operation available to the room owner, room admins, and site admins; the client cannot grant itself that authority.
 
-Canonical promotion is owner-only and is granted to the agent only during an explicit owner `/agent` invocation. Passive transcript text never supplies promotion authority. A stronger future approval should be signed, expiring, and bound to the exact room and candidate commit.
+Canonical promotion is owner-only and is granted to the clanker only during an explicit owner `/clanker` invocation. Passive transcript text never supplies promotion authority. A stronger future approval should be signed, expiring, and bound to the exact room and candidate commit.
 
 ## Browser and socket identity
 
 The canonical authority is an internal account ID. Google/GitHub identities, browser cookies, and SSH keys are credentials mapped to that account; handles and emails are not authentication factors. SSH public-key signatures are verified before lookup. Unknown verified keys receive anonymous authority and a random, expiring HTTPS link; only a browser authenticated to a canonical account can attach the key. A key cannot create an account or reassign itself from another account. The requested SSH username is never proof of identity.
 
-HTTP and WebSocket requests without a valid session receive anonymous authority. Public pages and service sockets remain readable; private rooms return 404, and existing unauthorized sockets are closed if a room becomes private. The browser TUI permits anonymous composition only in `lobby`. Each message is capped at 600 bytes, checked against per-identity and global rate limits, and persisted or shown to the guide only after a fail-closed AI moderator returns a schema-constrained `ALLOW` verdict. The browser uses xterm.js only as a renderer connected directly to the constrained TUI—it never receives a PTY or system shell.
+HTTP and WebSocket requests without a valid session receive anonymous authority. Public pages and service sockets remain readable; private rooms return 404, and existing unauthorized sockets are closed if a room becomes private. The browser TUI permits anonymous composition only in `lobby`. Each message is capped at 600 bytes, checked against per-identity and global rate limits, and persisted or shown to the guide only after a fail-closed clanker moderator returns a schema-constrained `ALLOW` verdict. The browser uses xterm.js only as a renderer connected directly to the constrained TUI—it never receives a PTY or system shell.
 
 Personal room ordering is stored by canonical user ID and contains room names only; it grants no visibility or membership. Every render intersects that preference with current host authorization. The room settings screen is likewise only a client affordance over the same host-owned `updateRoomPolicy` check used by slash commands.
 
@@ -40,7 +40,7 @@ The temporary development login deliberately provides no external identity proof
 
 ## Outbound network accounting
 
-Network policy and counters live in the host. Each operation is charged to `(room, principal)` for request bytes, response bytes, calls, concurrency, and wall time. Service-wide ceilings provide a second bound. Owner-approved agents receive their own principal and budget, so one collaborator cannot silently spend another collaborator's allowance.
+Network policy and counters live in the host. Each operation is charged to `(room, principal)` for request bytes, response bytes, calls, concurrency, and wall time. Service-wide ceilings provide a second bound. Owner-approved clankers receive their own principal and budget, so one collaborator cannot silently spend another collaborator's allowance.
 
 Before outbound fetch is enabled, the host must enforce HTTPS, permitted ports, DNS resolution and revalidation, private/link-local/loopback/cloud-metadata denial, redirect limits, decompressed-response limits, header filtering, timeouts, and audit logs. The worker receives no raw socket capability.
 
@@ -52,6 +52,6 @@ The host remains the version authority. Clients invoke bounded operations such a
 
 ## Current state
 
-QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, canonical accounts, Google/GitHub OAuth flows, browser sessions, browser-authorized multi-key SSH linking, durable room memberships, hashed invitations, host-enforced chat/agent policies, a constrained room shell, virtual SFTP source access, and scoped WebDAV mounts are implemented. Real OAuth buttons appear when provider credentials are configured. Per-user source overlays, agent credential issuance, outbound fetch, account recovery, and broader user-facing credential/membership management are not yet wired.
+QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, canonical accounts, Google/GitHub OAuth flows, browser sessions, browser-authorized multi-key SSH linking, durable room memberships, hashed invitations, host-enforced chat/clanker policies, a constrained room shell, virtual SFTP source access, and scoped WebDAV mounts are implemented. Real OAuth buttons appear when provider credentials are configured. Per-user source overlays, clanker credential issuance, outbound fetch, account recovery, and broader user-facing credential/membership management are not yet wired.
 
 The prototype enforces 128 aggregate live SSH/browser connections, 100 WebSockets, 32 concurrent HTTP executions, and 64 MiB of response egress per rolling hour per room. Adaptive per-principal or per-address token buckets additionally cover every public protocol and costly chat action; repeated violations receive exponentially longer cooldowns. These buckets are shared across reconnects within one server process and remain bounded in memory. The exact policies and the horizontal-scaling boundary are documented in [`rate-limits.md`](rate-limits.md).

@@ -29,7 +29,7 @@ function setup() {
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   const viewer = accounts.ensureLocalOwner("bob");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   return { accounts, owner, viewer, directory, workspace: directory.workspaces.get("mine")! };
 }

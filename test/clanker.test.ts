@@ -2,12 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FireworksAgent, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, ROOM_AGENT_FINALIZATION_WINDOW_MS, ROOM_AGENT_MAX_TURNS, ROOM_AGENT_PROVIDER_TIMEOUT_MS, ROOM_AGENT_RUN_TIMEOUT_MS, shouldGuideRespond } from "../src/agent";
+import { FireworksClanker, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, ROOM_CLANKER_FINALIZATION_WINDOW_MS, ROOM_CLANKER_MAX_TURNS, ROOM_CLANKER_PROVIDER_TIMEOUT_MS, ROOM_CLANKER_RUN_TIMEOUT_MS, shouldGuideRespond } from "../src/clanker";
 import type { Message } from "../src/room";
 import { RoomWorkspace } from "../src/workspace";
 
 test("social greetings are deterministically swallowed before model routing", () => {
-  for (const message of ["hi", "Hi Alice", "@room-agent hello", "hey everyone!", "thanks", "cool"]) {
+  for (const message of ["hi", "Hi Alice", "@clanker hello", "hey everyone!", "thanks", "cool"]) {
     expect(isTrivialSocialMessage(message)).toBe(true);
   }
   for (const message of ["make the button red", "what does worker.js do?", "hi, can you fix the page?"]) {
@@ -33,36 +33,36 @@ test("the lobby guide admits product questions but not social or unrelated chat"
   }
 });
 
-test("room agent runs reserve finalization time within bounded production budgets", () => {
-  expect(ROOM_AGENT_RUN_TIMEOUT_MS).toBe(15 * 60_000);
-  expect(ROOM_AGENT_PROVIDER_TIMEOUT_MS).toBe(5 * 60_000);
-  expect(ROOM_AGENT_FINALIZATION_WINDOW_MS).toBe(2 * 60_000);
-  expect(ROOM_AGENT_MAX_TURNS).toBe(64);
+test("room clanker runs reserve finalization time within bounded production budgets", () => {
+  expect(ROOM_CLANKER_RUN_TIMEOUT_MS).toBe(15 * 60_000);
+  expect(ROOM_CLANKER_PROVIDER_TIMEOUT_MS).toBe(5 * 60_000);
+  expect(ROOM_CLANKER_FINALIZATION_WINDOW_MS).toBe(2 * 60_000);
+  expect(ROOM_CLANKER_MAX_TURNS).toBe(64);
 });
 
 test("turn-limit failures are concise and confirm that work is preserved", async () => {
   let calls = 0;
-  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     timeoutMs: 1_000,
     attempts: 1,
     maxTurns: 2,
     fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: `call-${++calls}`, type: "function", function: { name: "git_status", arguments: "{}" } }] } }] }),
   });
-  await expect(agent.respond("test", "https://test.example", [message("chat", "build a notes app")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("2-turn limit reached · work preserved");
+  await expect(clanker.respond("test", "https://test.example", [message("chat", "build a notes app")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("2-turn limit reached · work preserved");
   expect(calls).toBe(2);
 });
 
-test("concrete work remains pending across a follow-up until a commit or agent blocker", () => {
-  const history = [message("chat", "create a notes app"), message("chat", "cmon bot, do this")];
+test("concrete work remains pending across a follow-up until a commit or clanker blocker", () => {
+  const history = [message("chat", "create a notes app"), message("chat", "cmon clanker, do this")];
   expect(hasPendingConcreteWork(history)).toBe(true);
-  expect(hasPendingConcreteWork([...history, message("agent", "A required capability is unavailable.")])).toBe(false);
+  expect(hasPendingConcreteWork([...history, message("clanker", "A required capability is unavailable.")])).toBe(false);
   expect(hasPendingConcreteWork([...history, message("commit", "abc1234 Build notes app")])).toBe(false);
 });
 
 test("transient provider failures retry within the completion budget", async () => {
   let calls = 0;
   const activity: string[] = [];
-  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     timeoutMs: 1_000,
     attempts: 2,
     retryDelayMs: 0,
@@ -73,14 +73,14 @@ test("transient provider failures retry within the completion budget", async () 
         : Response.json({ choices: [{ message: { role: "assistant", content: "worker.js serves the room." } }] });
     },
   });
-  const reply = await agent.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), (status, detail) => activity.push(`${status}:${detail}`), "alice", "alice", false, () => []);
+  const reply = await clanker.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), (status, detail) => activity.push(`${status}:${detail}`), "alice", "alice", false, () => []);
   expect(reply).toBe("worker.js serves the room.");
   expect(calls).toBe(2);
   expect(activity.some((entry) => entry.includes("retrying provider · 2/2"))).toBe(true);
 });
 
-test("a provider timeout becomes an explicit bounded agent failure", async () => {
-  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+test("a provider timeout becomes an explicit bounded clanker failure", async () => {
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     timeoutMs: 1_000,
     providerTimeoutMs: 10,
     attempts: 1,
@@ -88,11 +88,11 @@ test("a provider timeout becomes an explicit bounded agent failure", async () =>
       init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
     }),
   });
-  await expect(agent.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("provider timed out after 10ms");
+  await expect(clanker.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("provider timed out after 10ms");
 });
 
 test("an overall run deadline has a distinct concise failure", async () => {
-  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     timeoutMs: 20,
     providerTimeoutMs: 1_000,
     attempts: 1,
@@ -100,13 +100,13 @@ test("an overall run deadline has a distinct concise failure", async () => {
       init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
     }),
   });
-  await expect(agent.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("20ms run limit reached · work preserved");
+  await expect(clanker.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("20ms run limit reached · work preserved");
 });
 
 test("concrete work receives a time-reserved finalization attempt", async () => {
   let calls = 0;
   const activity: string[] = [];
-  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     timeoutMs: 60,
     providerTimeoutMs: 1_000,
     finalizationWindowMs: 20,
@@ -118,23 +118,23 @@ test("concrete work receives a time-reserved finalization attempt", async () => 
       });
     },
   });
-  await expect(agent.respond("test", "https://test.example", [message("chat", "fix the page")], workspace(), (status, detail) => activity.push(`${status}:${detail}`), "alice", "alice", false, () => [])).rejects.toThrow("60ms run limit reached · work preserved");
+  await expect(clanker.respond("test", "https://test.example", [message("chat", "fix the page")], workspace(), (status, detail) => activity.push(`${status}:${detail}`), "alice", "alice", false, () => [])).rejects.toThrow("60ms run limit reached · work preserved");
   expect(calls).toBe(2);
   expect(activity.some((entry) => entry.includes("finalizing"))).toBe(true);
 });
 
 test("pending implementation work gets one corrective continuation instead of silence", async () => {
   let calls = 0;
-  const agent = new FireworksAgent("test", "test-model", "test prompt", {
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     timeoutMs: 1_000,
     attempts: 1,
     fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: ++calls === 1 ? "[silent]" : "A required capability is unavailable." } }] }),
   });
-  const history = [message("chat", "create a notes app"), message("chat", "cmon bot, do this")];
-  const reply = await agent.respond("test", "https://test.example", history, workspace(), () => {}, "alice", "alice", false, () => []);
+  const history = [message("chat", "create a notes app"), message("chat", "cmon clanker, do this")];
+  const reply = await clanker.respond("test", "https://test.example", history, workspace(), () => {}, "alice", "alice", false, () => []);
   expect(reply).toBe("A required capability is unavailable.");
   expect(calls).toBe(2);
 });
 
-function workspace(): RoomWorkspace { return new RoomWorkspace(mkdtempSync(join(tmpdir(), "serverside-chat-agent-")), "test"); }
-function message(kind: Message["kind"], text: string): Message { return { id: Math.floor(Math.random() * 1_000_000), kind, author: kind === "agent" ? "room-agent" : "alice", text, at: new Date(), agentVisible: true }; }
+function workspace(): RoomWorkspace { return new RoomWorkspace(mkdtempSync(join(tmpdir(), "serverside-chat-clanker-")), "test"); }
+function message(kind: Message["kind"], text: string): Message { return { id: Math.floor(Math.random() * 1_000_000), kind, author: kind === "clanker" ? "clanker" : "alice", text, at: new Date(), clankerVisible: true }; }

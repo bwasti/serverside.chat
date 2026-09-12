@@ -12,7 +12,7 @@ function setup() {
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice", "Alice Example");
   const viewer = accounts.ensureLocalOwner("bob");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const workspace = new RoomWorkspace(data, "mine");
   const room = new Room("mine", 250, "https://serverside.chat/mine", owner.handle, undefined, accounts);
   return { accounts, owner, viewer, workspace, room };

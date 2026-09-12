@@ -141,7 +141,7 @@ export class RoomCapabilitySession {
         this.requireWrite();
         const preview = this.workspace.createPreview(freeText(remainder, "usage: preview <description>"));
         const url = `${this.room.pageUrl}?__ref=${preview.id}`;
-        this.room.addAgentLink(preview.description, url);
+        this.room.addClankerLink(preview.description, url);
         this.refreshVersions();
         this.audit("version.preview", preview.id);
         return { output: `${preview.id} ${preview.description}\n${url}` };
@@ -221,7 +221,7 @@ export class RoomCapabilitySession {
     }
     const preview = this.workspace.createPreview(`Edit ${posix.basename(path)}`);
     const url = `${this.room.pageUrl}?__ref=${preview.id}`;
-    this.room.addAgentLink(preview.description, url);
+    this.room.addClankerLink(preview.description, url);
     this.refreshVersions();
     this.audit("version.preview", preview.id);
     return { revision: saved.revision, message: `preview ${preview.id} · ${url}` };

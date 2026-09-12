@@ -107,7 +107,7 @@ test("main chat canvas uses the same darkest Zenburn background as version contr
   expect(frame).toContain("# mine  public");
   expect(frame).toContain("\x1b]8;;http://localhost:3000/mine\x1b\\localhost:3000/mine\x1b]8;;\x1b\\");
   expect(frame).not.toContain("SITE");
-  expect(frame).not.toContain("AGENT");
+  expect(frame).not.toContain("CLANKER");
   expect(frame).toContain("DB ");
   expect(frame).toContain("CONN ");
   expect(frame).toContain("FILES ");
@@ -147,7 +147,7 @@ test("empty-composer arrows select messages for replies and confirmed admin dele
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-message-actions-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   const room = directory.room("mine")!;
   room.chat(owner, "message to reply to");
@@ -196,16 +196,16 @@ test("Escape returns message navigation to the composer, then opens and closes t
   tui.stream.end();
 });
 
-test("owner and agent names use distinct Zenburn blue and purple accents", () => {
+test("owner and clanker names use distinct Zenburn blue and purple accents", () => {
   const room = new Room("mine", 250, "https://example.test/mine", "alice");
   room.messages.push(
-    { id: 1, kind: "chat", author: "alice", text: "owner note", at: new Date(), agentVisible: true },
-    { id: 2, kind: "agent", author: "room-agent", text: "agent note", at: new Date(), agentVisible: true },
+    { id: 1, kind: "chat", author: "alice", text: "owner note", at: new Date(), clankerVisible: true },
+    { id: 2, kind: "clanker", author: "clanker", text: "clanker note", at: new Date(), clankerVisible: true },
   );
   const tui = open(room);
   const frame = tui.stream.writes.at(-1)!;
   expect(frame).toContain("\x1b[38;5;110malice");
-  expect(frame).toContain("\x1b[38;5;176mroom-agent");
+  expect(frame).toContain("\x1b[38;5;176mclanker");
   tui.stream.end();
 });
 
@@ -215,9 +215,9 @@ test("consecutive messages share an author header and align under a fixed time g
   const secondAt = new Date(2026, 0, 2, 9, 6);
   const thirdAt = new Date(2026, 0, 2, 9, 7);
   room.messages.push(
-    { id: 1, kind: "chat", author: "alice", text: "first message wraps across this narrow chat width with aligned continuation text", at: firstAt, agentVisible: true },
-    { id: 2, kind: "chat", author: "alice", text: "second message", at: secondAt, agentVisible: true },
-    { id: 3, kind: "chat", author: "bob", text: "third message", at: thirdAt, agentVisible: true },
+    { id: 1, kind: "chat", author: "alice", text: "first message wraps across this narrow chat width with aligned continuation text", at: firstAt, clankerVisible: true },
+    { id: 2, kind: "chat", author: "alice", text: "second message", at: secondAt, clankerVisible: true },
+    { id: 3, kind: "chat", author: "bob", text: "third message", at: thirdAt, clankerVisible: true },
   );
   const tui = open(room);
   tui.session.resize(40, 30);
@@ -250,9 +250,9 @@ test("consecutive messages share an author header and align under a fixed time g
 test("trunk updates render as quiet status rows without an author heading", () => {
   const room = new Room("mine", 250, "https://example.test/mine", "alice");
   room.messages.push(
-    { id: 1, kind: "chat", author: "alice", text: "ship it", at: new Date(2026, 0, 2, 9, 5), agentVisible: true },
-    { id: 2, kind: "system", author: "trunk", text: "updated to abc1234 by @alice", at: new Date(2026, 0, 2, 9, 6), agentVisible: true },
-    { id: 3, kind: "chat", author: "bob", text: "looks good", at: new Date(2026, 0, 2, 9, 7), agentVisible: true },
+    { id: 1, kind: "chat", author: "alice", text: "ship it", at: new Date(2026, 0, 2, 9, 5), clankerVisible: true },
+    { id: 2, kind: "system", author: "trunk", text: "updated to abc1234 by @alice", at: new Date(2026, 0, 2, 9, 6), clankerVisible: true },
+    { id: 3, kind: "chat", author: "bob", text: "looks good", at: new Date(2026, 0, 2, 9, 7), clankerVisible: true },
   );
   const tui = open(room);
   tui.session.resize(60, 20);
@@ -288,8 +288,15 @@ test("slash commands prefix-match and render above the composer", () => {
 test("command palette arrows cycle and Enter expands commands with arguments", () => {
   const tui = open();
   tui.stream.emit("data", Buffer.from("/\r"));
-  expect(tui.state().input).toBe("/agent ");
-  expect(tui.state().cursorOffset).toBe(7);
+  expect(tui.state().input).toBe("/clanker ");
+  expect(tui.state().cursorOffset).toBe(9);
+  tui.stream.end();
+});
+
+test("clanker command forwards its complete prompt", () => {
+  const tui = open();
+  tui.stream.emit("data", Buffer.from("/clanker build it\r"));
+  expect(tui.room.messages.find((message) => message.kind === "chat")?.text).toBe("@clanker build it");
   tui.stream.end();
 });
 
@@ -297,7 +304,7 @@ test("invite defaults to a complete contributor share URL", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-invite-url-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "private", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "private", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   const stream = new FakeStream();
   new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
@@ -327,10 +334,10 @@ test("typing presence renders for other room members", () => {
   bob.stream.end();
 });
 
-test("chat reserves a distinct status row for concise passive and active agent state", () => {
+test("chat reserves a distinct status row for concise passive and active clanker state", () => {
   const room = new Room("mine");
   room.chat("alice", "latest message");
-  room.setAgentResponder(async () => "[silent]");
+  room.setClankerResponder(async () => "[silent]");
   const tui = open(room);
   tui.session.resize(80, 12);
   let frame = tui.stream.writes.at(-1)!;
@@ -340,18 +347,18 @@ test("chat reserves a distinct status row for concise passive and active agent s
   const readyRow = messageRow + 1;
   const composerRow = lines.findIndex((line) => visible(line).includes("type / to see commands"));
   expect(messageRow).toBeGreaterThan(-1);
-  expect(frame).not.toContain("agent listening passively");
-  expect(visible(lines[readyRow]!)).not.toContain("agent");
+  expect(frame).not.toContain("clanker listening passively");
+  expect(visible(lines[readyRow]!)).not.toContain("clanker");
   expect(composerRow).toBeGreaterThan(readyRow);
   expect(lines[readyRow]).toContain("\x1b[48;5;236m");
 
-  room.agentState.status = "thinking";
-  room.agentState.detail = "reading the room";
+  room.clankerState.status = "thinking";
+  room.clankerState.detail = "reading the room";
   tui.session.resize(80, 12);
   frame = tui.stream.writes.at(-1)!;
-  expect(frame).toContain("agent thinking");
+  expect(frame).toContain("clanker thinking");
   expect(frame).not.toContain("reading the room");
-  expect(frame).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] agent thinking/);
+  expect(frame).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] clanker thinking/);
   tui.stream.end();
 });
 
@@ -429,9 +436,9 @@ test("Shift-arrows persist a different room-bar order for each account", () => {
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const alice = accounts.ensureLocalOwner("alice");
   const bob = accounts.createDevelopmentAccount("bob").principal;
-  accounts.ensureSystemRoom("lobby", alice, { visibility: "public", contributions: "members", agentMode: "passive" });
-  accounts.ensureRoom("alpha", alice, { visibility: "public", contributions: "members", agentMode: "passive" });
-  accounts.ensureRoom("beta", alice, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureSystemRoom("lobby", alice, { visibility: "public", contributions: "members", clankerMode: "passive" });
+  accounts.ensureRoom("alpha", alice, { visibility: "public", contributions: "members", clankerMode: "passive" });
+  accounts.ensureRoom("beta", alice, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   const first = new FakeStream();
   new TuiSession(first as unknown as ServerChannel, directory.rooms, alice, accounts, "alpha", undefined, undefined, undefined, directory);
@@ -453,7 +460,7 @@ test("Shift-Enter opens keyboard-only room permission settings for admins", () =
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-room-settings-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   const stream = new FakeStream();
   new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
@@ -461,7 +468,7 @@ test("Shift-Enter opens keyboard-only room permission settings for admins", () =
   stream.emit("data", Buffer.from("\t\x1b[13;2u"));
   expect(stream.writes.at(-1)).toContain("ROOM SETTINGS  #mine");
   stream.emit("data", Buffer.from("\x1b[C\x1b[B\x1b[C\x1b[B\x1b[C\x1b[B\r"));
-  expect(directory.room("mine")!.policy).toMatchObject({ visibility: "private", contributions: "admins", agentMode: "explicit" });
+  expect(directory.room("mine")!.policy).toMatchObject({ visibility: "private", contributions: "admins", clankerMode: "explicit" });
   expect(stream.writes.at(-1)).toContain("room settings saved");
   stream.end();
   accounts.close();
@@ -489,10 +496,10 @@ test("wide version control HUD reserves its lower third for live service logs", 
   tui.stream.end();
 });
 
-test("agent failures render as distinct live-log entries", () => {
-  const rendered = renderServiceLog("12:34:56 AGENT error provider returned no usable completion");
+test("clanker failures render as distinct live-log entries", () => {
+  const rendered = renderServiceLog("12:34:56 CLANKER error provider returned no usable completion");
   expect(rendered).toContain("12:34:56");
-  expect(rendered).toContain("AGENT");
+  expect(rendered).toContain("CLANKER");
   expect(rendered).toContain("error");
   expect(rendered).toContain("provider returned no usable completion");
 });
@@ -512,7 +519,7 @@ test("lobby replaces the developer dashboard with a padded quick-start", () => {
   expect(frame).toContain("\x1b]8;;http://localhost:3000\x1b\\localhost:3000\x1b]8;;\x1b\\");
   expect(visibleMain(lines[1]!)).toBe("ssh -p 2222 serverside.chat");
   expect(visibleMain(lines[2]!)).toBe("");
-  expect(visibleMain(lines[3]!)).toBe("Each chat room comes paired with a website server and a bot to help you build.");
+  expect(visibleMain(lines[3]!)).toBe("Each chat room comes paired with a website server and a clanker to help you build.");
   expect(visibleMain(lines[4]!)).toBe("");
   expect(visibleMain(lines[5]!)).toBe("TAB           open the room bar");
   expect(visibleMain(lines[6]!)).toBe("/mount        instructions to mount the room's filesystem");
@@ -549,8 +556,8 @@ test("an SSH viewer becomes its canonical account after browser key linking", as
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-auth-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "explicit" });
-  accounts.ensureRoom("secret", owner, { visibility: "private", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "explicit" });
+  accounts.ensureRoom("secret", owner, { visibility: "private", contributions: "members", clankerMode: "passive" });
   const lobby = new Room("lobby", 250, "http://example.test/lobby", owner.handle, undefined, accounts);
   const secret = new Room("secret", 250, "http://example.test/secret", owner.handle, undefined, accounts);
   const guest = accounts.principalForKey("ssh-ed25519", Buffer.from("guest-key"), "charlie");
@@ -578,7 +585,7 @@ test("an SSH viewer becomes its canonical account after browser key linking", as
   expect(state.room.name).toBe("secret");
   expect(state.principal).toMatchObject({ handle: "charlie", authenticated: true });
   stream.emit("data", Buffer.from("now I can contribute\r"));
-  expect(secret.messages.at(-1)).toMatchObject({ author: "charlie", text: "now I can contribute", authorRole: "contributor", agentVisible: true });
+  expect(secret.messages.at(-1)).toMatchObject({ author: "charlie", text: "now I can contribute", authorRole: "contributor", clankerVisible: true });
 
   stream.end();
   accounts.close();
@@ -589,7 +596,7 @@ test("an authenticated non-member sees an invitation prompt instead of sign-in",
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   const viewer = accounts.createDevelopmentAccount("bob").principal;
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const room = new Room("mine", 250, "https://example.test/mine", owner.handle, undefined, accounts);
   const stream = new FakeStream();
   new TuiSession(stream as unknown as ServerChannel, [room], viewer, accounts, undefined, "https://example.test/?signin=1");
@@ -604,7 +611,7 @@ test("room owners manage their rooms from the TUI", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-rooms-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   const stream = new FakeStream();
   const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
@@ -629,8 +636,8 @@ test("Delete on a sidebar room requires its full name and preserves a restorable
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-room-archive-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
-  accounts.ensureRoom("project", owner, { visibility: "private", contributions: "members", agentMode: "explicit" });
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
+  accounts.ensureRoom("project", owner, { visibility: "private", contributions: "members", clankerMode: "explicit" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   directory.room("project")!.chat(owner, "keep this transcript");
   const stream = new FakeStream();
@@ -645,7 +652,7 @@ test("Delete on a sidebar room requires its full name and preserves a restorable
   stream.emit("data", Buffer.from("\x15project\r"));
   expect(directory.room("project")).toBeUndefined();
   expect((session as unknown as { room: Room }).room.name).toBe("lobby");
-  expect(accounts.archivedRooms(owner)[0]).toMatchObject({ name: "project", visibility: "private", agentMode: "explicit" });
+  expect(accounts.archivedRooms(owner)[0]).toMatchObject({ name: "project", visibility: "private", clankerMode: "explicit" });
 
   stream.emit("data", Buffer.from("/room archives\r"));
   expect(stream.writes.at(-1)).toContain("archived: #project");
@@ -661,7 +668,7 @@ test("the sidebar identity opens keyboard-driven account settings", () => {
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice", "Alice");
   accounts.ensureSiteAdmin(owner);
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   const stream = new FakeStream();
   new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", "https://example.test/?signin=1", undefined, undefined, directory);
@@ -686,7 +693,7 @@ test("an anonymous sidebar identity opens the canonical sign-in action", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-account-anon-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   const guest = anonymousPrincipal("SHA256:account-guest");
   const stream = new FakeStream();
@@ -706,7 +713,7 @@ test("room contributors open the same Wasm editor inside the chat TUI", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-editor-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   const stream = new FakeStream();
   const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
@@ -726,7 +733,7 @@ test("mount command shows keyboard-first SFTP, SSHFS, and Finder WebDAV instruct
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-mount-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   const stream = new FakeStream();
   const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
@@ -753,7 +760,7 @@ test("shell command shows exact SSH access instructions for the current room", (
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-shell-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   const stream = new FakeStream();
   const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
@@ -774,7 +781,7 @@ test("room creation is a keyboard-only policy form", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-new-room-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   directory.prepareAccount(owner);
   const stream = new FakeStream();
@@ -811,7 +818,7 @@ test("room creation is a keyboard-only policy form", async () => {
   expect(stream.writes.at(-1)).toContain("[ Create room ]");
   stream.emit("data", Buffer.from("\r"));
   expect((session as unknown as { room: Room }).room.name).toBe("project");
-  expect(accounts.roomPolicy("project")).toMatchObject({ visibility: "private", contributions: "admins", agentMode: "explicit" });
+  expect(accounts.roomPolicy("project")).toMatchObject({ visibility: "private", contributions: "admins", clankerMode: "explicit" });
 
   stream.end();
   accounts.close();
@@ -821,7 +828,7 @@ test("anonymous lobby input is persisted only after the review callback allows i
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-anonymous-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   const lobby = directory.room("lobby")!;
   const guest = anonymousPrincipal("SHA256:tui-guest");
@@ -840,7 +847,7 @@ test("anonymous lobby input is persisted only after the review callback allows i
   stream.emit("data", Buffer.from(" do rooms work?\r"));
   await Bun.sleep(1);
   expect(reviewed).toEqual(["how do rooms work?"]);
-  expect(lobby.messages.at(-1)).toMatchObject({ author: guest.handle, text: "how do rooms work?", agentVisible: true });
+  expect(lobby.messages.at(-1)).toMatchObject({ author: guest.handle, text: "how do rooms work?", clankerVisible: true });
   const count = lobby.messages.length;
   stream.emit("data", Buffer.from("unsafe\r"));
   await Bun.sleep(1);

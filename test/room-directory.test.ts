@@ -9,7 +9,7 @@ test("accounts can create a persistent room that owners can rename, archive, and
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const member = accounts.createDevelopmentAccount("bob").principal;
   const collaborator = accounts.createDevelopmentAccount("charlie").principal;
   const directory = new RoomDirectory(accounts, data, "https://example.test");
@@ -27,19 +27,19 @@ test("accounts can create a persistent room that owners can rename, archive, and
   expect(accounts.roleFor(member, "bob-site")).toBe("owner");
   expect(existsSync(join(data, "rooms", "bob-site", "repo", ".git"))).toBe(true);
   accounts.redeemInvite(collaborator, accounts.createInvite(member, "bob-site", "admin"));
-  renamed.updatePolicy(member, { visibility: "private", agentMode: "explicit" });
+  renamed.updatePolicy(member, { visibility: "private", clankerMode: "explicit" });
 
   directory.deleteRoom(member, "bob-site");
   expect(directory.room("bob-site")).toBeUndefined();
   expect(accounts.roomPolicy("bob-site")).toBeUndefined();
   expect(existsSync(join(data, "rooms", "bob-site"))).toBe(false);
   expect(readdirSync(join(data, ".trash", "rooms")).some((name) => name.endsWith("-bob-site"))).toBe(true);
-  expect(accounts.archivedRooms(member)[0]).toMatchObject({ name: "bob-site", ownerId: member.id, visibility: "private", agentMode: "explicit" });
+  expect(accounts.archivedRooms(member)[0]).toMatchObject({ name: "bob-site", ownerId: member.id, visibility: "private", clankerMode: "explicit" });
   expect(accounts.archivedRooms(collaborator)).toEqual([]);
 
   const restored = directory.restoreRoom(member, "bob-site");
   expect(restored.messages.at(-1)?.text).toBe("persistent before rename");
-  expect(restored.policy).toMatchObject({ visibility: "private", agentMode: "explicit" });
+  expect(restored.policy).toMatchObject({ visibility: "private", clankerMode: "explicit" });
   expect(accounts.roleFor(member, "bob-site")).toBe("owner");
   expect(accounts.roleFor(collaborator, "bob-site")).toBe("admin");
   expect(accounts.archivedRooms(member)).toEqual([]);
@@ -52,7 +52,7 @@ test("account preparation grants lobby access without creating a room", () => {
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
   const member = accounts.ensureLocalOwner("bob");
-  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
 
   expect(directory.prepareAccount(member)).toBeUndefined();
@@ -66,8 +66,8 @@ test("normal rooms use isolated site origins while system rooms stay on the cont
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-origins-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
-  accounts.ensureRoom("hello-world", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
+  accounts.ensureRoom("hello-world", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat", undefined, "serverside.chat");
 
   expect(directory.room("hello-world")?.pageUrl).toBe("https://hello-world.serverside.chat");

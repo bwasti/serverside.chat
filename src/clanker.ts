@@ -6,16 +6,16 @@ interface ToolCall { id: string; type: "function"; function: { name: string; arg
 interface ApiMessage { role: string; content?: string | null; tool_calls?: ToolCall[]; [key: string]: unknown }
 interface ApiResponse { choices?: Array<{ message?: ApiMessage }>; error?: { message?: string } }
 type RoomIntent = "IGNORE" | "WORK" | "TECHNICAL";
-export type AgentActivity = (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void;
+export type ClankerActivity = (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void;
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
-export const ROOM_AGENT_RUN_TIMEOUT_MS = 15 * 60_000;
-export const ROOM_AGENT_PROVIDER_TIMEOUT_MS = 5 * 60_000;
-export const ROOM_AGENT_FINALIZATION_WINDOW_MS = 2 * 60_000;
-export const ROOM_AGENT_MAX_TURNS = 64;
-const ROOM_AGENT_PROVIDER_ATTEMPTS = 2;
+export const ROOM_CLANKER_RUN_TIMEOUT_MS = 15 * 60_000;
+export const ROOM_CLANKER_PROVIDER_TIMEOUT_MS = 5 * 60_000;
+export const ROOM_CLANKER_FINALIZATION_WINDOW_MS = 2 * 60_000;
+export const ROOM_CLANKER_MAX_TURNS = 64;
+const ROOM_CLANKER_PROVIDER_ATTEMPTS = 2;
 
-export interface FireworksAgentOptions {
+export interface FireworksClankerOptions {
   baseUrl?: string;
   timeoutMs?: number;
   providerTimeoutMs?: number;
@@ -51,7 +51,7 @@ const tools = [
   fn("promote_preview", "Make an existing preview commit canonical. Only use after an explicit human publish request.", { preview_id: { type: "string" } }, ["preview_id"]),
 ];
 
-export class FireworksAgent {
+export class FireworksClanker {
   private readonly baseUrl: string;
   private readonly runTimeoutMs: number;
   private readonly providerTimeoutMs: number;
@@ -61,18 +61,18 @@ export class FireworksAgent {
   private readonly retryDelayMs: number;
   private readonly fetcher: Fetcher;
 
-  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, options: FireworksAgentOptions = {}) {
+  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, options: FireworksClankerOptions = {}) {
     this.baseUrl = options.baseUrl ?? "https://api.fireworks.ai/inference/v1";
-    this.runTimeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? ROOM_AGENT_RUN_TIMEOUT_MS));
-    this.providerTimeoutMs = Math.max(1, Math.floor(options.providerTimeoutMs ?? ROOM_AGENT_PROVIDER_TIMEOUT_MS));
-    this.finalizationWindowMs = Math.max(1, Math.min(Math.floor(this.runTimeoutMs / 3) || 1, Math.floor(options.finalizationWindowMs ?? ROOM_AGENT_FINALIZATION_WINDOW_MS)));
-    this.attempts = Math.max(1, Math.min(3, Math.floor(options.attempts ?? ROOM_AGENT_PROVIDER_ATTEMPTS)));
-    this.maxTurns = Math.max(1, Math.min(128, Math.floor(options.maxTurns ?? ROOM_AGENT_MAX_TURNS)));
+    this.runTimeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? ROOM_CLANKER_RUN_TIMEOUT_MS));
+    this.providerTimeoutMs = Math.max(1, Math.floor(options.providerTimeoutMs ?? ROOM_CLANKER_PROVIDER_TIMEOUT_MS));
+    this.finalizationWindowMs = Math.max(1, Math.min(Math.floor(this.runTimeoutMs / 3) || 1, Math.floor(options.finalizationWindowMs ?? ROOM_CLANKER_FINALIZATION_WINDOW_MS)));
+    this.attempts = Math.max(1, Math.min(3, Math.floor(options.attempts ?? ROOM_CLANKER_PROVIDER_ATTEMPTS)));
+    this.maxTurns = Math.max(1, Math.min(128, Math.floor(options.maxTurns ?? ROOM_CLANKER_MAX_TURNS)));
     this.retryDelayMs = Math.max(0, Math.min(10_000, Math.floor(options.retryDelayMs ?? 1_000)));
     this.fetcher = options.fetcher ?? fetch;
   }
 
-  async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: AgentActivity, requester: string, owner: string, canPromote: boolean, serviceLogs: (limit?: number) => string[]): Promise<string> {
+  async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: ClankerActivity, requester: string, owner: string, canPromote: boolean, serviceLogs: (limit?: number) => string[]): Promise<string> {
     const latest = [...history].reverse().find((message) => message.kind === "chat");
     if (!latest || isTrivialSocialMessage(latest.text)) return "[silent]";
     const concreteWorkPending = hasPendingConcreteWork(history);
@@ -82,7 +82,7 @@ export class FireworksAgent {
     const intent: RoomIntent = looksLikeTechnicalQuestion(latest.text) && !isConcreteWorkRequest(latest.text) ? "TECHNICAL" : "WORK";
     const messages: ChatMessage[] = [
       { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nAuthenticated user who triggered this run: ${requester}\nCanonical promotion capability for this run: ${canPromote ? "granted" : "not granted"}.` },
-      ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "agent" ? "assistant" : "user", content: message.kind === "agent" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}` })),
+      ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "clanker" ? "assistant" : "user", content: message.kind === "clanker" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}` })),
     ];
     const deadline = Date.now() + this.runTimeoutMs;
     const finalizationAt = deadline - this.finalizationWindowMs;
@@ -119,9 +119,9 @@ export class FireworksAgent {
             messages.push({ role: "system", content: "A concrete implementation request is still pending. Inspection alone is not completion. Continue with repository tools until you create a commit and preview, or return one terse sentence naming a genuine capability, permission, or ambiguity blocker. Do not return [silent]." });
             continue;
           }
-          throw new Error("agent stopped without a commit or blocker");
+          throw new Error("clanker stopped without a commit or blocker");
         }
-        activity("working", reply === "[silent]" ? (raw === "[silent]" ? "agent chose silence" : "response suppressed") : "response admitted");
+        activity("working", reply === "[silent]" ? (raw === "[silent]" ? "clanker chose silence" : "response suppressed") : "response admitted");
         return reply;
       }
       for (const call of message.tool_calls) {
@@ -143,7 +143,7 @@ export class FireworksAgent {
     throw new Error(`${this.maxTurns}-turn limit reached · work preserved`);
   }
 
-  private async complete(messages: ChatMessage[], activity: AgentActivity, completionDeadline: number, runDeadline: number): Promise<ApiMessage> {
+  private async complete(messages: ChatMessage[], activity: ClankerActivity, completionDeadline: number, runDeadline: number): Promise<ApiMessage> {
     let lastFailure = "provider request failed";
     for (let attempt = 1; attempt <= this.attempts; attempt++) {
       const remaining = completionDeadline - Date.now();
@@ -182,7 +182,7 @@ class CompletionDeadlineReached extends Error {}
 
 export function hasPendingConcreteWork(history: Message[]): boolean {
   let resolvedThrough = -1;
-  for (let index = 0; index < history.length; index++) if (history[index]!.kind === "agent" || history[index]!.kind === "commit") resolvedThrough = index;
+  for (let index = 0; index < history.length; index++) if (history[index]!.kind === "clanker" || history[index]!.kind === "commit") resolvedThrough = index;
   return history.slice(resolvedThrough + 1).some((message) => message.kind === "chat" && isConcreteWorkRequest(message.text));
 }
 
@@ -195,18 +195,18 @@ function formatDuration(milliseconds: number): string {
   return `${milliseconds}ms`;
 }
 
-export class FireworksGuideAgent {
+export class FireworksGuideClanker {
   constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
 
-  async respond(history: Message[], activity: AgentActivity): Promise<string> {
+  async respond(history: Message[], activity: ClankerActivity): Promise<string> {
     const latest = [...history].reverse().find((message) => message.kind === "chat");
     if (!latest || !shouldGuideRespond(latest.text)) return "[silent]";
     activity("thinking", "answering a site question");
     const messages: ChatMessage[] = [
       { role: "system", content: this.systemPrompt },
-      ...history.filter((message) => message.kind === "chat" || message.kind === "agent").slice(-24).map((message) => ({
-        role: message.kind === "agent" ? "assistant" : "user",
-        content: message.kind === "agent" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}`,
+      ...history.filter((message) => message.kind === "chat" || message.kind === "clanker").slice(-24).map((message) => ({
+        role: message.kind === "clanker" ? "assistant" : "user",
+        content: message.kind === "clanker" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}`,
       })),
     ];
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -225,25 +225,25 @@ export class FireworksGuideAgent {
 
 export function shouldGuideRespond(value: string): boolean {
   if (isTrivialSocialMessage(value)) return false;
-  const text = value.toLowerCase().replace(/^@room-agent\s*[:,]?\s*/, "").trim();
+  const text = value.toLowerCase().replace(/^@clanker\s*[:,]?\s*/, "").trim();
   if (!text) return false;
   return text.includes("?")
     || /^(help|how|what|why|where|when|which|who|does|do|is|are|can|could|should|would)\b/.test(text)
-    || /\b(serverside(?:\.chat)?|room|page|site|agent|invite|publish|deploy|commit|preview|ssh|browser|sign[ -]?in|login|auth|permission|role|owner|admin|member|account|shortcut|hotkey|tab|enter|arrow|wasm|database|files|limit|url|history|git)\b/.test(text);
+    || /\b(serverside(?:\.chat)?|room|page|site|clanker|invite|publish|deploy|commit|preview|ssh|browser|sign[ -]?in|login|auth|permission|role|owner|admin|member|account|shortcut|hotkey|tab|enter|arrow|wasm|database|files|limit|url|history|git)\b/.test(text);
 }
 
 export function isTrivialSocialMessage(value: string): boolean {
-  const text = value.toLowerCase().replace(/^@room-agent\s*[:,]?\s*/, "").replace(/[^a-z0-9' ]/g, " ").replace(/\s+/g, " ").trim();
+  const text = value.toLowerCase().replace(/^@clanker\s*[:,]?\s*/, "").replace(/[^a-z0-9' ]/g, " ").replace(/\s+/g, " ").trim();
   return /^(hi|hello|hey|hiya|yo|sup|good (morning|afternoon|evening)|thanks|thank you|thx|ok|okay|cool|nice|great|lol|bye|goodbye)( (all|everyone|folks|team|guys|alice|there))*$/.test(text);
 }
 
 export function isConcreteWorkRequest(value: string): boolean {
-  const text = value.toLowerCase().replace(/^@room-agent\s*[:,]?\s*/, "").trim();
+  const text = value.toLowerCase().replace(/^@clanker\s*[:,]?\s*/, "").trim();
   return /\b(fix|build|implement|create|make|change|update|edit|add|remove|delete|archive|restore|revert|deploy|publish|promote|investigate|debug|inspect|check|test|refactor|rename|move|resolve)\b/.test(text);
 }
 
 function looksLikeTechnicalQuestion(value: string): boolean {
-  const text = value.toLowerCase().replace(/^@room-agent\s*[:,]?\s*/, "").trim();
+  const text = value.toLowerCase().replace(/^@clanker\s*[:,]?\s*/, "").trim();
   return text.includes("?") || /^(what|why|when|where|which|who|how|does|do|is|are|can|could|should|would)\b/.test(text);
 }
 

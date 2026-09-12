@@ -3,13 +3,13 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 
-export type PrincipalKind = "user" | "anonymous" | "agent" | "system";
+export type PrincipalKind = "user" | "anonymous" | "clanker" | "system";
 export type RoomRole = "owner" | "admin" | "contributor" | "viewer";
 export type SiteRole = "admin" | "member";
 export type AccountPlan = "free" | "pro";
 export type RoomVisibility = "public" | "private";
 export type ContributionPolicy = "members" | "admins" | "disabled";
-export type AgentMode = "passive" | "explicit" | "disabled";
+export type ClankerMode = "passive" | "explicit" | "disabled";
 
 export interface Principal {
   id: string;
@@ -29,7 +29,7 @@ export interface RoomPolicy {
   ownerHandle: string;
   visibility: RoomVisibility;
   contributions: ContributionPolicy;
-  agentMode: AgentMode;
+  clankerMode: ClankerMode;
   system: boolean;
 }
 
@@ -96,8 +96,8 @@ export interface OAuthFlow {
 }
 
 interface UserRow { id: string; handle: string; display_name: string; status: string }
-interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode; system: number; created_at?: number }
-interface ArchivedRoomRow { id: string; original_name: string; owner_user_id: string; owner_handle: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; agent_mode: AgentMode; room_created_at: number; storage_name: string; archived_at: number }
+interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; clanker_mode: ClankerMode; system: number; created_at?: number }
+interface ArchivedRoomRow { id: string; original_name: string; owner_user_id: string; owner_handle: string; visibility: RoomVisibility; contribution_policy: ContributionPolicy; clanker_mode: ClankerMode; room_created_at: number; storage_name: string; archived_at: number }
 interface InviteRow { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number }
 
 const ROLE_WEIGHT: Record<RoomRole, number> = { viewer: 0, contributor: 1, admin: 2, owner: 3 };
@@ -145,7 +145,7 @@ export class AccountStore {
         owner_user_id TEXT NOT NULL REFERENCES users(id),
         visibility TEXT NOT NULL CHECK(visibility IN ('public','private')),
         contribution_policy TEXT NOT NULL CHECK(contribution_policy IN ('members','admins','disabled')),
-        agent_mode TEXT NOT NULL CHECK(agent_mode IN ('passive','explicit','disabled')),
+        clanker_mode TEXT NOT NULL CHECK(clanker_mode IN ('passive','explicit','disabled')),
         system INTEGER NOT NULL DEFAULT 0 CHECK(system IN (0,1)),
         created_at INTEGER NOT NULL
       );
@@ -170,7 +170,7 @@ export class AccountStore {
         owner_user_id TEXT NOT NULL REFERENCES users(id),
         visibility TEXT NOT NULL CHECK(visibility IN ('public','private')),
         contribution_policy TEXT NOT NULL CHECK(contribution_policy IN ('members','admins','disabled')),
-        agent_mode TEXT NOT NULL CHECK(agent_mode IN ('passive','explicit','disabled')),
+        clanker_mode TEXT NOT NULL CHECK(clanker_mode IN ('passive','explicit','disabled')),
         room_created_at INTEGER NOT NULL,
         storage_name TEXT NOT NULL UNIQUE,
         archived_at INTEGER NOT NULL,
@@ -236,7 +236,7 @@ export class AccountStore {
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS agent_credentials (
+      CREATE TABLE IF NOT EXISTS clanker_credentials (
         id TEXT PRIMARY KEY,
         owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         room_name TEXT NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
@@ -269,6 +269,29 @@ export class AccountStore {
         value TEXT NOT NULL
       );
     `);
+    this.db.transaction(() => {
+      const columns = (table: string) => new Set(
+        (this.db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
+      );
+      const rooms = columns("rooms");
+      if (rooms.has("agent_mode") && !rooms.has("clanker_mode")) {
+        this.db.exec("ALTER TABLE rooms RENAME COLUMN agent_mode TO clanker_mode");
+      }
+      const archives = columns("room_archives");
+      if (archives.has("agent_mode") && !archives.has("clanker_mode")) {
+        this.db.exec("ALTER TABLE room_archives RENAME COLUMN agent_mode TO clanker_mode");
+      }
+      const hasLegacyCredentials = Boolean(this.db.query(
+        "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'agent_credentials'",
+      ).get());
+      if (hasLegacyCredentials) {
+        this.db.exec(`
+          INSERT OR IGNORE INTO clanker_credentials(id, owner_user_id, room_name, token_hash, scopes, created_at, expires_at, revoked_at)
+          SELECT id, owner_user_id, room_name, token_hash, scopes, created_at, expires_at, revoked_at FROM agent_credentials;
+          DROP TABLE agent_credentials;
+        `);
+      }
+    })();
     const userColumns = new Set((this.db.query("PRAGMA table_info(users)").all() as Array<{ name: string }>).map((column) => column.name));
     if (!userColumns.has("site_role")) this.db.exec("ALTER TABLE users ADD COLUMN site_role TEXT NOT NULL DEFAULT 'member' CHECK(site_role IN ('admin','member'))");
     if (!userColumns.has("plan")) this.db.exec("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free' CHECK(plan IN ('free','pro'))");
@@ -287,21 +310,21 @@ export class AccountStore {
     return userPrincipal(row);
   }
 
-  ensureRoom(name: string, owner: Principal, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">): RoomPolicy {
+  ensureRoom(name: string, owner: Principal, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "clankerMode">): RoomPolicy {
     validateRoomName(name);
-    this.db.query("INSERT OR IGNORE INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(name, owner.id, defaults.visibility, defaults.contributions, defaults.agentMode, Date.now());
+    this.db.query("INSERT OR IGNORE INTO rooms(name, owner_user_id, visibility, contribution_policy, clanker_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(name, owner.id, defaults.visibility, defaults.contributions, defaults.clankerMode, Date.now());
     this.db.query("INSERT OR IGNORE INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, 'owner', ?)").run(name, owner.id, Date.now());
     return this.roomPolicy(name)!;
   }
 
-  ensureSystemRoom(name: string, owner: Principal, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">): RoomPolicy {
+  ensureSystemRoom(name: string, owner: Principal, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "clankerMode">): RoomPolicy {
     validateRoomName(name);
     this.db.transaction(() => {
-      this.db.query("INSERT OR IGNORE INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, system, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)")
-        .run(name, owner.id, defaults.visibility, defaults.contributions, defaults.agentMode, Date.now());
-      this.db.query("UPDATE rooms SET visibility = ?, contribution_policy = ?, agent_mode = ?, system = 1 WHERE name = ?")
-        .run(defaults.visibility, defaults.contributions, defaults.agentMode, name);
+      this.db.query("INSERT OR IGNORE INTO rooms(name, owner_user_id, visibility, contribution_policy, clanker_mode, system, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)")
+        .run(name, owner.id, defaults.visibility, defaults.contributions, defaults.clankerMode, Date.now());
+      this.db.query("UPDATE rooms SET visibility = ?, contribution_policy = ?, clanker_mode = ?, system = 1 WHERE name = ?")
+        .run(defaults.visibility, defaults.contributions, defaults.clankerMode, name);
       this.db.query("INSERT OR IGNORE INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, 'owner', ?)").run(name, owner.id, Date.now());
     })();
     return this.roomPolicy(name)!;
@@ -316,7 +339,7 @@ export class AccountStore {
       ON CONFLICT(room_name, user_id) DO UPDATE SET revoked_at = NULL`).run(roomName, principal.id, Date.now());
   }
 
-  seedRoomsOnce(owner: Principal, rooms: Array<{ name: string } & Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">>): void {
+  seedRoomsOnce(owner: Principal, rooms: Array<{ name: string } & Pick<RoomPolicy, "visibility" | "contributions" | "clankerMode">>): void {
     if (this.db.query("SELECT 1 AS found FROM server_settings WHERE key = 'rooms.seeded'").get()) return;
     if (!this.listRooms().length) for (const { name, ...defaults } of rooms) this.ensureRoom(name, owner, defaults);
     this.db.query("INSERT OR IGNORE INTO server_settings(key, value) VALUES ('rooms.seeded', '1')").run();
@@ -376,15 +399,15 @@ export class AccountStore {
     return (this.db.query("SELECT name FROM rooms WHERE owner_user_id = ? AND system = 0 ORDER BY created_at, name").all(principal.id) as Array<{ name: string }>).map((row) => row.name);
   }
 
-  createRoom(actor: Principal, name: string, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "agentMode"> = { visibility: "public", contributions: "members", agentMode: "passive" }): RoomPolicy {
+  createRoom(actor: Principal, name: string, defaults: Pick<RoomPolicy, "visibility" | "contributions" | "clankerMode"> = { visibility: "public", contributions: "members", clankerMode: "passive" }): RoomPolicy {
     if (!actor.authenticated || actor.kind !== "user") throw new Error("sign in before creating a room");
     validateRoomName(name);
     if (this.roomPolicy(name)) throw new Error("room name is already in use");
     const profile = this.accountProfile(actor);
     if (profile.ownedRooms >= profile.roomLimit) throw new Error(`${profile.plan} accounts can own at most ${profile.roomLimit} rooms`);
     this.db.transaction(() => {
-      this.db.query("INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(name, actor.id, defaults.visibility, defaults.contributions, defaults.agentMode, Date.now());
+      this.db.query("INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, clanker_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(name, actor.id, defaults.visibility, defaults.contributions, defaults.clankerMode, Date.now());
       this.db.query("INSERT INTO room_memberships(room_name, user_id, role, created_at) VALUES (?, ?, 'owner', ?)").run(name, actor.id, Date.now());
     })();
     this.audit(actor, name, "room.create");
@@ -399,12 +422,12 @@ export class AccountStore {
     if (!current) throw new Error("room not found");
     if (current.system) throw new Error("system rooms cannot be renamed");
     this.db.transaction(() => {
-      this.db.query(`INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at)
-        SELECT ?, owner_user_id, visibility, contribution_policy, agent_mode, created_at FROM rooms WHERE name = ?`).run(newName, oldName);
+      this.db.query(`INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, clanker_mode, created_at)
+        SELECT ?, owner_user_id, visibility, contribution_policy, clanker_mode, created_at FROM rooms WHERE name = ?`).run(newName, oldName);
       this.db.query(`INSERT INTO room_memberships(room_name, user_id, role, created_at, revoked_at)
         SELECT ?, user_id, role, created_at, revoked_at FROM room_memberships WHERE room_name = ?`).run(newName, oldName);
       this.db.query("UPDATE invites SET room_name = ? WHERE room_name = ?").run(newName, oldName);
-      this.db.query("UPDATE agent_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("UPDATE clanker_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE mount_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE room_preferences SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE audit_events SET room_name = ? WHERE room_name = ?").run(newName, oldName);
@@ -426,7 +449,7 @@ export class AccountStore {
   archiveRoom(actor: Principal, name: string, archiveId: string, storageName: string): ArchivedRoom {
     if (!this.canManageRoom(actor, name)) throw new Error("deleting a room requires its owner or a site admin");
     if (!/^[0-9a-f-]{36}$/.test(archiveId) || !/^[0-9]+-[0-9a-f]{8}-[a-z0-9][a-z0-9-]{0,31}$/.test(storageName)) throw new Error("room archive identity is invalid");
-    const current = this.db.query("SELECT name, owner_user_id, visibility, contribution_policy, agent_mode, system, created_at FROM rooms WHERE name = ?").get(name) as RoomRow | null;
+    const current = this.db.query("SELECT name, owner_user_id, visibility, contribution_policy, clanker_mode, system, created_at FROM rooms WHERE name = ?").get(name) as RoomRow | null;
     if (!current) throw new Error("room not found");
     if (current.system) throw new Error("system rooms cannot be deleted");
     const owner = this.db.query("SELECT site_role, plan FROM users WHERE id = ? AND status = 'active'").get(current.owner_user_id) as { site_role: SiteRole; plan: AccountPlan } | null;
@@ -436,19 +459,19 @@ export class AccountStore {
     if (archiveCount >= archiveLimit) throw new Error(`archive limit reached · restore an archived room before deleting another`);
     const archivedAt = Date.now();
     this.db.transaction(() => {
-      this.db.query(`INSERT INTO room_archives(id, original_name, owner_user_id, visibility, contribution_policy, agent_mode, room_created_at, storage_name, archived_at, archived_by_principal_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(archiveId, name, current.owner_user_id, current.visibility, current.contribution_policy, current.agent_mode, current.created_at ?? archivedAt, storageName, archivedAt, actor.id);
+      this.db.query(`INSERT INTO room_archives(id, original_name, owner_user_id, visibility, contribution_policy, clanker_mode, room_created_at, storage_name, archived_at, archived_by_principal_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(archiveId, name, current.owner_user_id, current.visibility, current.contribution_policy, current.clanker_mode, current.created_at ?? archivedAt, storageName, archivedAt, actor.id);
       this.db.query(`INSERT INTO archived_room_memberships(archive_id, user_id, role, created_at, revoked_at)
         SELECT ?, user_id, role, created_at, revoked_at FROM room_memberships WHERE room_name = ?`).run(archiveId, name);
       this.audit(actor, name, "room.archive", archiveId);
       this.db.query("DELETE FROM rooms WHERE name = ?").run(name);
     })();
-    return this.archivedRoomFromRow({ id: archiveId, original_name: name, owner_user_id: current.owner_user_id, owner_handle: this.userHandle(current.owner_user_id), visibility: current.visibility, contribution_policy: current.contribution_policy, agent_mode: current.agent_mode, room_created_at: current.created_at ?? archivedAt, storage_name: storageName, archived_at: archivedAt });
+    return this.archivedRoomFromRow({ id: archiveId, original_name: name, owner_user_id: current.owner_user_id, owner_handle: this.userHandle(current.owner_user_id), visibility: current.visibility, contribution_policy: current.contribution_policy, clanker_mode: current.clanker_mode, room_created_at: current.created_at ?? archivedAt, storage_name: storageName, archived_at: archivedAt });
   }
 
   archivedRooms(actor: Principal): ArchivedRoom[] {
     if (!actor.authenticated || actor.kind !== "user") return [];
-    const rows = this.db.query(`SELECT a.id, a.original_name, a.owner_user_id, u.handle AS owner_handle, a.visibility, a.contribution_policy, a.agent_mode, a.room_created_at, a.storage_name, a.archived_at
+    const rows = this.db.query(`SELECT a.id, a.original_name, a.owner_user_id, u.handle AS owner_handle, a.visibility, a.contribution_policy, a.clanker_mode, a.room_created_at, a.storage_name, a.archived_at
       FROM room_archives a JOIN users u ON u.id = a.owner_user_id
       WHERE a.restored_at IS NULL AND (? = 1 OR a.owner_user_id = ?)
       ORDER BY a.archived_at DESC`).all(this.isSiteAdmin(actor) ? 1 : 0, actor.id) as ArchivedRoomRow[];
@@ -465,8 +488,8 @@ export class AccountStore {
     const limit = owner.site_role === "admin" ? ACCOUNT_ROOM_LIMITS.siteAdmin : ACCOUNT_ROOM_LIMITS[owner.plan];
     if (ownedRooms >= limit) throw new Error(`${owner.plan} accounts can own at most ${limit} rooms`);
     this.db.transaction(() => {
-      this.db.query("INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, agent_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(archive.name, archive.ownerId, archive.visibility, archive.contributions, archive.agentMode, this.archiveCreatedAt(archive.archiveId));
+      this.db.query("INSERT INTO rooms(name, owner_user_id, visibility, contribution_policy, clanker_mode, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(archive.name, archive.ownerId, archive.visibility, archive.contributions, archive.clankerMode, this.archiveCreatedAt(archive.archiveId));
       this.db.query(`INSERT INTO room_memberships(room_name, user_id, role, created_at, revoked_at)
         SELECT ?, user_id, role, created_at, revoked_at FROM archived_room_memberships WHERE archive_id = ?`).run(archive.name, archive.archiveId);
       this.db.query("UPDATE room_archives SET restored_at = ? WHERE id = ? AND restored_at IS NULL").run(Date.now(), archive.archiveId);
@@ -503,7 +526,7 @@ export class AccountStore {
   }
 
   private archivedRoomFromRow(row: ArchivedRoomRow): ArchivedRoom {
-    return { archiveId: row.id, storageName: row.storage_name, archivedAt: row.archived_at, name: row.original_name, ownerId: row.owner_user_id, ownerHandle: row.owner_handle, visibility: row.visibility, contributions: row.contribution_policy, agentMode: row.agent_mode, system: false };
+    return { archiveId: row.id, storageName: row.storage_name, archivedAt: row.archived_at, name: row.original_name, ownerId: row.owner_user_id, ownerHandle: row.owner_handle, visibility: row.visibility, contributions: row.contribution_policy, clankerMode: row.clanker_mode, system: false };
   }
 
   private archiveCreatedAt(archiveId: string): number {
@@ -519,22 +542,22 @@ export class AccountStore {
   }
 
   roomPolicy(name: string): RoomPolicy | undefined {
-    const room = this.db.query("SELECT name, owner_user_id, visibility, contribution_policy, agent_mode, system FROM rooms WHERE name = ?").get(name) as RoomRow | null;
+    const room = this.db.query("SELECT name, owner_user_id, visibility, contribution_policy, clanker_mode, system FROM rooms WHERE name = ?").get(name) as RoomRow | null;
     if (!room) return undefined;
     const owner = this.db.query("SELECT id, handle, display_name, status FROM users WHERE id = ?").get(room.owner_user_id) as UserRow;
-    return { name: room.name, ownerId: room.owner_user_id, ownerHandle: owner.handle, visibility: room.visibility, contributions: room.contribution_policy, agentMode: room.agent_mode, system: room.system === 1 };
+    return { name: room.name, ownerId: room.owner_user_id, ownerHandle: owner.handle, visibility: room.visibility, contributions: room.contribution_policy, clankerMode: room.clanker_mode, system: room.system === 1 };
   }
 
-  updateRoomPolicy(actor: Principal, roomName: string, changes: Partial<Pick<RoomPolicy, "visibility" | "contributions" | "agentMode">>): RoomPolicy {
+  updateRoomPolicy(actor: Principal, roomName: string, changes: Partial<Pick<RoomPolicy, "visibility" | "contributions" | "clankerMode">>): RoomPolicy {
     if (!this.isAdmin(actor, roomName)) throw new Error("room administration requires an admin");
     const current = this.roomPolicy(roomName);
     if (!current) throw new Error("room not found");
     if (current.system) throw new Error("system room policy is host-managed");
     const visibility = changes.visibility ?? current.visibility;
     const contributions = changes.contributions ?? current.contributions;
-    const agentMode = changes.agentMode ?? current.agentMode;
-    this.db.query("UPDATE rooms SET visibility = ?, contribution_policy = ?, agent_mode = ? WHERE name = ?").run(visibility, contributions, agentMode, roomName);
-    this.audit(actor, roomName, "room.policy.update", JSON.stringify({ visibility, contributions, agentMode }));
+    const clankerMode = changes.clankerMode ?? current.clankerMode;
+    this.db.query("UPDATE rooms SET visibility = ?, contribution_policy = ?, clanker_mode = ? WHERE name = ?").run(visibility, contributions, clankerMode, roomName);
+    this.audit(actor, roomName, "room.policy.update", JSON.stringify({ visibility, contributions, clankerMode }));
     return this.roomPolicy(roomName)!;
   }
 
@@ -740,9 +763,9 @@ export class AccountStore {
     return Boolean(policy && !policy.system && this.canContribute(principal, roomName));
   }
 
-  canInvokeAgent(principal: Principal, roomName: string): boolean {
+  canInvokeClanker(principal: Principal, roomName: string): boolean {
     const policy = this.roomPolicy(roomName);
-    return Boolean(policy && policy.agentMode !== "disabled" && this.canContribute(principal, roomName));
+    return Boolean(policy && policy.clankerMode !== "disabled" && this.canContribute(principal, roomName));
   }
 
   canPromote(principal: Principal, roomName: string): boolean { return this.roleFor(principal, roomName) === "owner"; }
@@ -851,7 +874,7 @@ export class AccountStore {
     const established = count("SELECT COUNT(*) AS count FROM rooms WHERE owner_user_id = ?")
       + count("SELECT COUNT(*) AS count FROM room_memberships WHERE user_id = ? AND revoked_at IS NULL")
       + count("SELECT COUNT(*) AS count FROM ssh_keys WHERE user_id = ?")
-      + count("SELECT COUNT(*) AS count FROM agent_credentials WHERE owner_user_id = ?")
+      + count("SELECT COUNT(*) AS count FROM clanker_credentials WHERE owner_user_id = ?")
       + count("SELECT COUNT(*) AS count FROM mount_credentials WHERE user_id = ?")
       + Math.max(0, count("SELECT COUNT(*) AS count FROM identities WHERE user_id = ?") - 1);
     if (established) throw new Error("this identity is already linked to another account and cannot be merged automatically");

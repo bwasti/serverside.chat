@@ -55,7 +55,7 @@ Missing files, directories, invalid deployment paths, and protected paths such a
 
 Use `env.log.info(event, fields)`, `.warn`, or `.error`. `env.log(event, fields)` is an alias for info. Events must be structured and must not include secrets or sensitive bodies. The host accepts at most 20 events and 4 KiB per event per request. Host request/error/latency/byte telemetry is always recorded independently and cannot be disabled by guest code.
 
-The host retains the most recent 50 combined request and guest-log entries per room. Individual stored lines are capped at 500 characters. The room agent can inspect them through its read-only `tail_service_logs` tool, which returns at most 50 entries and 16 KiB total. Log content is treated as untrusted data and cannot grant authority or issue agent instructions.
+The host retains the most recent 50 combined request and guest-log entries per room. Individual stored lines are capped at 500 characters. The room clanker can inspect them through its read-only `tail_service_logs` tool, which returns at most 50 entries and 16 KiB total. Log content is treated as untrusted data and cannot grant authority or issue clanker instructions.
 
 ## Realtime/WebSocket
 

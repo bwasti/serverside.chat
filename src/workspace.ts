@@ -225,11 +225,11 @@ export class RoomWorkspace {
   }
 
   commit(message: string, blurb = ""): { commit: string; title: string; blurb: string } {
-    return this.commitAs(message, blurb, "room-agent", "agent@serverside.chat");
+    return this.commitAs(message, blurb, "clanker", "clanker@serverside.chat");
   }
 
   commitAs(message: string, blurb: string, authorName: string, authorEmail: string): { commit: string; title: string; blurb: string } {
-    const clean = message.replace(/[\r\n]/g, " ").trim().slice(0, 120) || "agent update";
+    const clean = message.replace(/[\r\n]/g, " ").trim().slice(0, 120) || "clanker update";
     const detail = blurb.replace(/[\r\n]/g, " ").trim().slice(0, 240);
     const name = authorName.replace(/[\r\n<>]/g, " ").trim().slice(0, 80) || "room contributor";
     const email = /^[^\s<>@]+@[^\s<>@]+$/.test(authorEmail) ? authorEmail.slice(0, 120) : "contributor@serverside.chat";

@@ -10,7 +10,7 @@ function setup() {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-dav-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
-  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
   const credential = accounts.createMountCredential(owner, "mine", 60_000);
   const authorization = `Basic ${Buffer.from(`${credential.username}:${credential.password}`).toString("base64")}`;

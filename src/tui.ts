@@ -1,4 +1,4 @@
-import type { AccountStore, AgentMode, ContributionPolicy, MountCredential, Principal, RoomRole, RoomVisibility } from "./auth";
+import type { AccountStore, ClankerMode, ContributionPolicy, MountCredential, Principal, RoomRole, RoomVisibility } from "./auth";
 import { ROOM_LIMITS, type Message, type MessageKind, type Room } from "./room";
 import type { RoomDirectory, RoomDirectoryEvent } from "./room-directory";
 import { parseArguments, RoomCapabilitySession } from "./room-shell";
@@ -49,7 +49,7 @@ export interface SlashCommand {
 }
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "/agent", usage: "/agent <request>", description: "ask the room agent", requiresArgument: true },
+  { name: "/clanker", usage: "/clanker <request>", description: "ask the room clanker", requiresArgument: true },
   { name: "/invite", usage: "/invite [role]", description: "create a contributor invite link", requiresArgument: false },
   { name: "/mount", usage: "/mount [revoke]", description: "mount or revoke room files", requiresArgument: false },
   { name: "/shell", usage: "/shell", description: "show SSH access for the room shell", requiresArgument: false },
@@ -85,13 +85,13 @@ export class TuiSession {
   private sidebarFocused = false;
   private accountFocused = false;
   private accountPanel?: { field: number; editing: boolean; linkUrl?: string };
-  private roomSettings?: { field: number; visibility: RoomVisibility; contributions: ContributionPolicy; agentMode: AgentMode };
+  private roomSettings?: { field: number; visibility: RoomVisibility; contributions: ContributionPolicy; clankerMode: ClankerMode };
   private createRoomFocused = false;
   private creatingRoom = false;
   private createRoomField = 0;
   private createRoomVisibility: RoomVisibility = "public";
   private createRoomContributions: ContributionPolicy = "members";
-  private createRoomAgentMode: AgentMode = "passive";
+  private createRoomClankerMode: ClankerMode = "passive";
   private deletingRoomName?: string;
   private room: Room;
   private animationTimer?: ReturnType<typeof setInterval>;
@@ -784,7 +784,7 @@ export class TuiSession {
         const created = this.directory.createRoom(this.principal, line.trim(), {
           visibility: this.createRoomVisibility,
           contributions: this.createRoomContributions,
-          agentMode: this.createRoomAgentMode,
+          clankerMode: this.createRoomClankerMode,
         });
         this.creatingRoom = false;
         this.createRoomFocused = false;
@@ -804,9 +804,9 @@ export class TuiSession {
       return false;
     }
     const accepted = line === "/help"
-      ? this.room.agent(this.principal, "")
-      : line.startsWith("/agent")
-        ? this.room.agent(this.principal, line.slice(6))
+      ? this.room.clanker(this.principal, "")
+      : line === "/clanker" || line.startsWith("/clanker ")
+        ? this.room.clanker(this.principal, line.slice("/clanker".length))
         : this.room.chat(this.principal, line, replyToId);
     if (!accepted && line) this.localNotice = "room policy does not allow that action";
     return false;
@@ -814,12 +814,12 @@ export class TuiSession {
 
   private allowSubmission(line: string): boolean {
     if (!this.rateLimiter) return true;
-    const explicitAgent = line === "/help" || line.startsWith("/agent");
-    const command = line.startsWith("/") && !explicitAgent;
-    const policy = explicitAgent
-      ? RATE_LIMITS.agentRequest
+    const explicitClanker = line === "/help" || line === "/clanker" || line.startsWith("/clanker ");
+    const command = line.startsWith("/") && !explicitClanker;
+    const policy = explicitClanker
+      ? RATE_LIMITS.clankerRequest
       : command ? RATE_LIMITS.authenticatedCommand : this.principal.authenticated ? RATE_LIMITS.authenticatedChat : RATE_LIMITS.anonymousChat;
-    const scope = explicitAgent ? "agent" : command ? "command" : "chat";
+    const scope = explicitClanker ? "clanker" : command ? "command" : "chat";
     const decision = this.rateLimiter.consume(`tui:${scope}:${this.principal.id}`, policy);
     if (decision.allowed) return true;
     this.localNotice = `slow down · retry in ${retrySeconds(decision)}s`;
@@ -940,16 +940,16 @@ export class TuiSession {
       }
       if (!field) {
         const policy = this.room.policy;
-        this.localNotice = `${policy.visibility} · ${policy.contributions} contribute · ${policy.agentMode} agent`;
+        this.localNotice = `${policy.visibility} · ${policy.contributions} contribute · ${policy.clankerMode} clanker`;
         return true;
       }
-      if (!value) throw new Error("usage: /permissions visibility|contributions|agent value");
+      if (!value) throw new Error("usage: /permissions visibility|contributions|clanker value");
       if (field === "visibility" && (value === "public" || value === "private")) this.room.updatePolicy(this.principal, { visibility: value as RoomVisibility });
       else if (field === "contributions" && (value === "members" || value === "admins" || value === "disabled")) this.room.updatePolicy(this.principal, { contributions: value as ContributionPolicy });
-      else if (field === "agent" && (value === "passive" || value === "explicit" || value === "disabled")) this.room.updatePolicy(this.principal, { agentMode: value as AgentMode });
+      else if (field === "clanker" && (value === "passive" || value === "explicit" || value === "disabled")) this.room.updatePolicy(this.principal, { clankerMode: value as ClankerMode });
       else throw new Error("invalid permission setting");
       const policy = this.room.policy;
-      this.localNotice = `${policy.visibility} · ${policy.contributions} contribute · ${policy.agentMode} agent`;
+      this.localNotice = `${policy.visibility} · ${policy.contributions} contribute · ${policy.clankerMode} clanker`;
     } catch (error) {
       this.localNotice = error instanceof Error ? error.message : "permission command failed";
     }
@@ -970,7 +970,7 @@ export class TuiSession {
       this.localNotice = "system room policy is host-managed";
       return;
     }
-    this.roomSettings = { field: 0, visibility: policy.visibility, contributions: policy.contributions, agentMode: policy.agentMode };
+    this.roomSettings = { field: 0, visibility: policy.visibility, contributions: policy.contributions, clankerMode: policy.clankerMode };
     this.sidebarFocused = false;
     this.input = "";
     this.cursorOffset = 0;
@@ -1020,7 +1020,7 @@ export class TuiSession {
           this.room.updatePolicy(this.principal, {
             visibility: settings.visibility,
             contributions: settings.contributions,
-            agentMode: settings.agentMode,
+            clankerMode: settings.clankerMode,
           });
           this.roomSettings = undefined;
           this.localNotice = "room settings saved";
@@ -1040,7 +1040,7 @@ export class TuiSession {
     if (!this.roomSettings) return;
     if (this.roomSettings.field === 0) this.roomSettings.visibility = cycle(["public", "private"] as const, this.roomSettings.visibility, direction);
     else if (this.roomSettings.field === 1) this.roomSettings.contributions = cycle(["members", "admins", "disabled"] as const, this.roomSettings.contributions, direction);
-    else if (this.roomSettings.field === 2) this.roomSettings.agentMode = cycle(["passive", "explicit", "disabled"] as const, this.roomSettings.agentMode, direction);
+    else if (this.roomSettings.field === 2) this.roomSettings.clankerMode = cycle(["passive", "explicit", "disabled"] as const, this.roomSettings.clankerMode, direction);
   }
 
   private renderRoomSettings(): void {
@@ -1058,7 +1058,7 @@ export class TuiSession {
       "",
       row(0, "Visibility", this.roomSettings.visibility, this.roomSettings.visibility === "public" ? "anyone can view" : "members only"),
       row(1, "Contributions", this.roomSettings.contributions, this.roomSettings.contributions === "members" ? "contributors and admins" : this.roomSettings.contributions === "admins" ? "admins only" : "read only"),
-      row(2, "Agent", this.roomSettings.agentMode, this.roomSettings.agentMode === "passive" ? "listens when useful" : this.roomSettings.agentMode === "explicit" ? "/agent only" : "disabled"),
+      row(2, "Clanker", this.roomSettings.clankerMode, this.roomSettings.clankerMode === "passive" ? "listens when useful" : this.roomSettings.clankerMode === "explicit" ? "/clanker only" : "disabled"),
       "",
       row(3, "", "save", ""),
     ];
@@ -1616,12 +1616,12 @@ export class TuiSession {
   private topStatusRows(width: number, height: number): string[] {
     if (this.onCreateRoomScreen()) {
       const title = truncate("  Configure the room before entering it.", width);
-      const defaults = truncate("  Defaults are public · members contribute · passive agent.", width);
+      const defaults = truncate("  Defaults are public · members contribute · passive clanker.", width);
       return height < 12 ? [title] : [title, defaults];
     }
     if (this.room.name === "lobby") {
       const ssh = `    ${MUTED}ssh -p 2222 serverside.chat${STATUS}`;
-      const description = "    Each chat room comes paired with a website server and a bot to help you build.";
+      const description = "    Each chat room comes paired with a website server and a clanker to help you build.";
       const instruction = (command: string, detail: string) => `    ${CYAN}${pad(command, 14)}${STATUS}${detail}`;
       const help = `    ${ESC}1mask here for help${ESC}22m${STATUS}`;
       if (height < 15) return [ssh, `    ${MUTED}TAB${STATUS} rooms     ${MUTED}/${STATUS} commands     ask here for help`];
@@ -1740,7 +1740,7 @@ export class TuiSession {
     const continuation = " ".repeat(gutter);
     const baseTone = message.kind === "system" ? CHAT_MUTED : CHAT;
     const timestamp = `  ${MUTED}${time}${baseTone}  `;
-    const nameTone = message.author === "room-agent" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
+    const nameTone = message.author === "clanker" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
     const displayAuthor = truncate(message.author, contentWidth);
     const styledName = `${ESC}1m${nameTone}${displayAuthor}${ESC}22m${baseTone}`;
     if (message.kind === "system" && message.author === "trunk") {
@@ -1779,17 +1779,17 @@ export class TuiSession {
 
   private ambientStatus(width: number): string {
     const typing = this.typingStatus(width).trim();
-    const agent = this.conciseAgentStatus();
-    if (typing || this.agentIsActive()) return truncate(`  ${[typing, agent].filter(Boolean).join(" · ")}`, width);
-    return this.anonymousLobbyStatus(width) || truncate(`  ${agent}`, width);
+    const clanker = this.conciseClankerStatus();
+    if (typing || this.clankerIsActive()) return truncate(`  ${[typing, clanker].filter(Boolean).join(" · ")}`, width);
+    return this.anonymousLobbyStatus(width) || truncate(`  ${clanker}`, width);
   }
 
-  private conciseAgentStatus(): string {
-    const status = this.room.agentState.status;
-    if (this.room.policy.agentMode === "disabled" || status === "disabled") return "agent disabled";
-    if (status === "queued" || status === "thinking" || status === "working") return `${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]} agent ${status}`;
-    if (status === "error") return "agent error";
-    return this.room.policy.agentMode === "passive" ? "" : "agent waits for /agent";
+  private conciseClankerStatus(): string {
+    const status = this.room.clankerState.status;
+    if (this.room.policy.clankerMode === "disabled" || status === "disabled") return "clanker disabled";
+    if (status === "queued" || status === "thinking" || status === "working") return `${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]} clanker ${status}`;
+    if (status === "error") return "clanker error";
+    return this.room.policy.clankerMode === "passive" ? "" : "clanker waits for /clanker";
   }
 
   private anonymousLobbyStatus(width: number): string {
@@ -1862,7 +1862,7 @@ export class TuiSession {
     this.createRoomField = 0;
     this.createRoomVisibility = "public";
     this.createRoomContributions = "members";
-    this.createRoomAgentMode = "passive";
+    this.createRoomClankerMode = "passive";
     this.localNotice = "";
   }
 
@@ -1898,8 +1898,8 @@ export class TuiSession {
       const values: ContributionPolicy[] = ["members", "admins", "disabled"];
       this.createRoomContributions = cycle(values, this.createRoomContributions, direction);
     } else if (this.createRoomField === 3) {
-      const values: AgentMode[] = ["passive", "explicit", "disabled"];
-      this.createRoomAgentMode = cycle(values, this.createRoomAgentMode, direction);
+      const values: ClankerMode[] = ["passive", "explicit", "disabled"];
+      this.createRoomClankerMode = cycle(values, this.createRoomClankerMode, direction);
     }
   }
 
@@ -1908,15 +1908,15 @@ export class TuiSession {
     const contributions = this.createRoomContributions === "members"
       ? "owner and invited contributors"
       : this.createRoomContributions === "admins" ? "owner and room admins only" : "read only";
-    const agent = this.createRoomAgentMode === "passive"
+    const clanker = this.createRoomClankerMode === "passive"
       ? "listens and acts when useful"
-      : this.createRoomAgentMode === "explicit" ? "responds only to /agent" : "no room agent";
+      : this.createRoomClankerMode === "explicit" ? "responds only to /clanker" : "no room clanker";
     const name = this.input || `${MUTED}required${CHAT}`;
     return [
       this.createRoomFormRow(0, "Name", name, "URL: serverside.chat/<name>"),
       this.createRoomFormRow(1, "Visibility", this.createRoomVisibility, visibility, true),
       this.createRoomFormRow(2, "Contributions", this.createRoomContributions === "admins" ? "admins only" : this.createRoomContributions, contributions, true),
-      this.createRoomFormRow(3, "Agent", this.createRoomAgentMode === "explicit" ? "/agent only" : this.createRoomAgentMode, agent, true),
+      this.createRoomFormRow(3, "Clanker", this.createRoomClankerMode === "explicit" ? "/clanker only" : this.createRoomClankerMode, clanker, true),
       this.createRoomFormRow(4, "", "Create room", ""),
     ];
   }
@@ -2012,12 +2012,12 @@ export class TuiSession {
     this.render();
   }
 
-  private agentIsActive(): boolean {
-    return this.room.agentState.status === "queued" || this.room.agentState.status === "thinking" || this.room.agentState.status === "working";
+  private clankerIsActive(): boolean {
+    return this.room.clankerState.status === "queued" || this.room.clankerState.status === "thinking" || this.room.clankerState.status === "working";
   }
 
   private syncAnimation(): void {
-    const animating = this.agentIsActive() || Date.now() - this.room.lastRequestAt < 1_200;
+    const animating = this.clankerIsActive() || Date.now() - this.room.lastRequestAt < 1_200;
     if (animating && !this.animationTimer) {
       this.animationTimer = setInterval(() => this.render(), 250);
     } else if (!animating && this.animationTimer) {
@@ -2113,8 +2113,8 @@ function renderVersionRow(value: string, url: string | undefined, width: number)
 
 export function renderServiceLog(value: string): string {
   const safe = value.replace(/[\r\n]/g, " ");
-  const agentError = safe.match(/^(\d{2}:\d{2}:\d{2}) AGENT error (.*)$/);
-  if (agentError) return `  ${MUTED}${agentError[1]}${HUD} ${CYAN}AGENT ${RED}error${HUD} ${agentError[2]}`;
+  const clankerError = safe.match(/^(\d{2}:\d{2}:\d{2}) CLANKER error (.*)$/);
+  if (clankerError) return `  ${MUTED}${clankerError[1]}${HUD} ${CYAN}CLANKER ${RED}error${HUD} ${clankerError[2]}`;
   const request = safe.match(/^(\d{2}:\d{2}:\d{2}) (\d{3}) (.*)$/);
   if (request) {
     const status = Number(request[2]);
