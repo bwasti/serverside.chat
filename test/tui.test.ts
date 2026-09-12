@@ -158,7 +158,12 @@ test("empty-composer arrows select messages for replies and confirmed admin dele
 
   stream.emit("data", Buffer.from("\x1b[A"));
   expect((session as unknown as { selectedMessageId?: number }).selectedMessageId).toBe(targetId);
-  expect(stream.writes.at(-1)).toContain("selected @alice · ENTER reply · DELETE remove");
+  expect(stream.writes.at(-1)).toContain("selected @alice · ENTER reply · P pin · DELETE remove");
+  stream.emit("data", Buffer.from("p"));
+  expect(room.messages.at(-1)!.pinnedAt).toBeInstanceOf(Date);
+  expect(stream.writes.at(-1)).toContain("◆");
+  stream.emit("data", Buffer.from("p"));
+  expect(room.messages.at(-1)!.pinnedAt).toBeUndefined();
   expect(stream.writes.at(-1)).toContain("\x1b[48;5;59m");
   stream.emit("data", Buffer.from("\r"));
   expect(stream.writes.at(-1)).toContain("replying to @alice  message to reply to");
@@ -513,7 +518,7 @@ test("clanker failures render as distinct live-log entries", () => {
   expect(rendered).toContain("provider returned no usable completion");
 });
 
-test("lobby replaces the developer dashboard with a padded quick-start", () => {
+test("lobby leaves guidance to persistent pinned messages", () => {
   const lobby = new Room("lobby");
   const tui = open(lobby);
   tui.session.resize(120, 24);
@@ -526,19 +531,9 @@ test("lobby replaces the developer dashboard with a padded quick-start", () => {
     .slice(3)
     .trim();
   expect(frame).toContain("\x1b]8;;http://localhost:3000\x1b\\localhost:3000\x1b]8;;\x1b\\");
-  expect(visibleMain(lines[1]!)).toBe("ssh -p 2222 serverside.chat");
-  expect(visibleMain(lines[2]!)).toBe("");
-  expect(visibleMain(lines[3]!)).toBe("Each chat room comes paired with a website server and a clanker to help you build.");
-  expect(visibleMain(lines[4]!)).toBe("");
-  expect(visibleMain(lines[5]!)).toBe("TAB           open the room bar");
-  expect(visibleMain(lines[6]!)).toBe("/mount        instructions to mount the room's filesystem");
-  expect(visibleMain(lines[7]!)).toBe("/shell        show the SSH command for the room shell");
-  expect(visibleMain(lines[8]!)).toBe("/invite       create a contributor invite link");
-  expect(visibleMain(lines[9]!)).toBe("/edit         open a room file in the terminal editor");
-  expect(visibleMain(lines[10]!)).toBe("/permissions  view or change the room's access rules");
-  expect(visibleMain(lines[11]!)).toBe("/             see all commands");
-  expect(visibleMain(lines[12]!)).toBe("");
-  expect(visibleMain(lines[13]!)).toBe("ask here for help");
+  expect(visibleMain(lines[1]!)).toBe("");
+  expect(frame).not.toContain("ssh -p 2222 serverside.chat");
+  expect(frame).not.toContain("Each chat room comes paired");
   expect(frame).not.toContain("live preview");
   expect(frame).not.toContain("VERSION CONTROL");
   expect(frame).not.toContain("LIVE LOGS");

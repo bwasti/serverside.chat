@@ -14,6 +14,8 @@ export interface Message {
   authorRole?: RoomRole;
   clankerVisible?: boolean;
   replyTo?: { id: number; author: string; excerpt: string };
+  pinnedAt?: Date;
+  pinnedBy?: string;
 }
 
 export interface ClankerSnapshot {
@@ -281,6 +283,29 @@ export class Room {
     return this.accounts?.isAdmin(principal, this.name) ?? (principal.authenticated && principal.handle === this.owner);
   }
 
+  get pinnedMessages(): Message[] {
+    return this.messages.filter((message) => message.pinnedAt).sort((left, right) => left.pinnedAt!.getTime() - right.pinnedAt!.getTime());
+  }
+
+  canPinMessage(actor: Principal | string): boolean {
+    return this.canDeleteMessage(actor);
+  }
+
+  setMessagePinned(actor: Principal | string, messageId: number, pinned: boolean): boolean {
+    const principal = this.resolvePrincipal(actor);
+    if (!this.canPinMessage(principal)) throw new Error("pinning messages requires a room admin");
+    const message = this.messages.find((candidate) => candidate.id === messageId);
+    if (!message || message.kind === "system") return false;
+    if (Boolean(message.pinnedAt) === pinned) return true;
+    if (pinned && this.pinnedMessages.length >= 5) throw new Error("this room already has 5 pinned messages");
+    message.pinnedAt = pinned ? new Date() : undefined;
+    message.pinnedBy = pinned ? principal.id : undefined;
+    this.accounts?.audit(principal, this.name, pinned ? "chat.message.pin" : "chat.message.unpin", `${messageId} @${message.author}`);
+    this.saveState();
+    for (const listener of this.serviceListeners) listener();
+    return true;
+  }
+
   deleteMessage(actor: Principal | string, messageId: number): boolean {
     const principal = this.resolvePrincipal(actor);
     if (!this.canDeleteMessage(principal)) throw new Error("deleting messages requires a room admin");
@@ -404,7 +429,8 @@ export class Room {
           ? { id: rawReply.id, author: legacyClankerAuthor(stripTerminalControls(rawReply.author).slice(0, 80)), excerpt: legacyClankerMention(stripTerminalControls(rawReply.excerpt).slice(0, 120)) }
           : undefined;
         const legacyVisible = typeof item.agentVisible === "boolean" ? item.agentVisible : undefined;
-        this.messages.push({ id: item.id, kind, author: legacyClankerAuthor(item.author), text: legacyClankerMention(item.text.replaceAll(oldRoomUrl, this.pageUrl)), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? legacyClankerMention(item.detail) : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, clankerVisible: typeof item.clankerVisible === "boolean" ? item.clankerVisible : legacyVisible ?? kind !== "chat", replyTo });
+        const pinnedAt = item.pinnedAt === undefined ? undefined : new Date(String(item.pinnedAt));
+        this.messages.push({ id: item.id, kind, author: legacyClankerAuthor(item.author), text: legacyClankerMention(item.text.replaceAll(oldRoomUrl, this.pageUrl)), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? legacyClankerMention(item.detail) : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, clankerVisible: typeof item.clankerVisible === "boolean" ? item.clankerVisible : legacyVisible ?? kind !== "chat", replyTo, pinnedAt: pinnedAt && !Number.isNaN(pinnedAt.getTime()) ? pinnedAt : undefined, pinnedBy: typeof item.pinnedBy === "string" ? item.pinnedBy : undefined });
         this.nextId = Math.max(this.nextId, item.id + 1);
       }
       this.serviceRequests = finiteNumber(state.serviceRequests);

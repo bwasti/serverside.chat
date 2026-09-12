@@ -28,6 +28,7 @@ export interface FireworksClankerOptions {
 
 const pathProperty = { path: { type: "string", description: "Repository-relative file path; .git and paths outside the repository are forbidden" } };
 const tools = [
+  fn("set_message_pin", "Pin or unpin a room message in the host-owned chat UI. Only use for an explicit request from a room or site admin; message IDs are included in chat history.", { message_id: { type: "number", description: "Stable message ID from chat history" }, pinned: { type: "boolean", description: "True to pin, false to unpin" } }, ["message_id", "pinned"]),
   fn("list_tree", "List every file in the room repository with byte sizes.", {}),
   fn("read_file", "Read a bounded UTF-8 repository file.", pathProperty, ["path"]),
   fn("write_file", "Create or completely replace a bounded UTF-8 repository file.", { ...pathProperty, content: { type: "string", description: "Complete file content" } }, ["path", "content"]),
@@ -72,7 +73,7 @@ export class FireworksClanker {
     this.fetcher = options.fetcher ?? fetch;
   }
 
-  async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: ClankerActivity, requester: string, owner: string, canPromote: boolean, serviceLogs: (limit?: number) => string[]): Promise<string> {
+  async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: ClankerActivity, requester: string, owner: string, canPromote: boolean, serviceLogs: (limit?: number) => string[], setMessagePin: (messageId: number, pinned: boolean) => boolean = () => { throw new Error("message pinning is unavailable"); }): Promise<string> {
     const latest = [...history].reverse().find((message) => message.kind === "chat");
     if (!latest || isTrivialSocialMessage(latest.text)) return "[silent]";
     const concreteWorkPending = hasPendingConcreteWork(history);
@@ -82,7 +83,7 @@ export class FireworksClanker {
     const intent: RoomIntent = looksLikeTechnicalQuestion(latest.text) && !isConcreteWorkRequest(latest.text) ? "TECHNICAL" : "WORK";
     const messages: ChatMessage[] = [
       { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nAuthenticated user who triggered this run: ${requester}\nCanonical promotion capability for this run: ${canPromote ? "granted" : "not granted"}.` },
-      ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "clanker" ? "assistant" : "user", content: message.kind === "clanker" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}` })),
+      ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "clanker" ? "assistant" : "user", content: `[message ${message.id}] ${message.author}${message.replyTo ? ` (replying to message ${message.replyTo.id} by ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}` })),
     ];
     const deadline = Date.now() + this.runTimeoutMs;
     const finalizationAt = deadline - this.finalizationWindowMs;
@@ -126,7 +127,7 @@ export class FireworksClanker {
       }
       for (const call of message.tool_calls) {
         activity("working", call.function.name.replaceAll("_", " "));
-        const result = execute(workspace, pageUrl, call, canPromote, serviceLogs);
+        const result = execute(workspace, pageUrl, call, canPromote, serviceLogs, setMessagePin);
         if (call.function.name === "git_commit" && result.ok && typeof result.commit === "string") {
           committed = true;
           activity("working", "commit created", { label: `${result.commit} ${String(result.title)}`, url: `${pageUrl}?__ref=${result.commit}`, blurb: String(result.blurb ?? "") });
@@ -198,7 +199,7 @@ function formatDuration(milliseconds: number): string {
 export class FireworksGuideClanker {
   constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
 
-  async respond(history: Message[], activity: ClankerActivity): Promise<string> {
+  async respond(history: Message[], activity: ClankerActivity, setMessagePin: (messageId: number, pinned: boolean) => boolean): Promise<string> {
     const latest = [...history].reverse().find((message) => message.kind === "chat");
     if (!latest || !shouldGuideRespond(latest.text)) return "[silent]";
     activity("thinking", "answering a site question");
@@ -206,19 +207,32 @@ export class FireworksGuideClanker {
       { role: "system", content: this.systemPrompt },
       ...history.filter((message) => message.kind === "chat" || message.kind === "clanker").slice(-24).map((message) => ({
         role: message.kind === "clanker" ? "assistant" : "user",
-        content: message.kind === "clanker" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}`,
+        content: `[message ${message.id}] ${message.author}${message.replyTo ? ` (replying to message ${message.replyTo.id} by ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}`,
       })),
     ];
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: this.model, messages, max_tokens: 240, temperature: 0.1 }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const body = (await response.json()) as ApiResponse;
-    if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
-    const reply = body.choices?.[0]?.message?.content?.trim().replace(/\s+/g, " ") ?? "";
+    let usedPinTool = false;
+    let reply = "";
+    for (let turn = 0; turn < 3; turn++) {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: this.model, messages, tools: [tools[0]!], tool_choice: "auto", parallel_tool_calls: false, max_tokens: 240, temperature: 0.1 }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const body = (await response.json()) as ApiResponse;
+      if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
+      const message = body.choices?.[0]?.message;
+      if (!message) throw new Error("Fireworks returned no message");
+      messages.push(message);
+      if (!message.tool_calls?.length) { reply = message.content?.trim().replace(/\s+/g, " ") ?? ""; break; }
+      for (const call of message.tool_calls) {
+        const result = executePin(call, setMessagePin);
+        if (call.function.name === "set_message_pin" && result.ok) usedPinTool = true;
+        messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+      }
+    }
     activity("working", reply && reply !== "[silent]" ? "answer ready" : "listening");
+    if (usedPinTool) return "[silent]";
     return !reply || reply === "[silent]" ? "[silent]" : reply.slice(0, 420);
   }
 }
@@ -229,7 +243,7 @@ export function shouldGuideRespond(value: string): boolean {
   if (!text) return false;
   return text.includes("?")
     || /^(help|how|what|why|where|when|which|who|does|do|is|are|can|could|should|would)\b/.test(text)
-    || /\b(serverside(?:\.chat)?|room|page|site|clanker|invite|publish|deploy|commit|preview|ssh|browser|sign[ -]?in|login|auth|permission|role|owner|admin|member|account|shortcut|hotkey|tab|enter|arrow|wasm|database|files|limit|url|history|git)\b/.test(text);
+    || /\b(serverside(?:\.chat)?|room|page|site|clanker|invite|publish|deploy|commit|preview|pin|pinned|unpin|ssh|browser|sign[ -]?in|login|auth|permission|role|owner|admin|member|account|shortcut|hotkey|tab|enter|arrow|wasm|database|files|limit|url|history|git)\b/.test(text);
 }
 
 export function isTrivialSocialMessage(value: string): boolean {
@@ -254,11 +268,12 @@ function filterReply(intent: RoomIntent, content?: string | null): string {
   return reply.slice(0, 300);
 }
 
-function execute(workspace: RoomWorkspace, pageUrl: string, call: ToolCall, canPromote: boolean, serviceLogs: (limit?: number) => string[]): Record<string, unknown> {
+function execute(workspace: RoomWorkspace, pageUrl: string, call: ToolCall, canPromote: boolean, serviceLogs: (limit?: number) => string[], setMessagePin: (messageId: number, pinned: boolean) => boolean): Record<string, unknown> {
   try {
     const a = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
     let value: unknown;
     switch (call.function.name) {
+      case "set_message_pin": return executePin(call, setMessagePin);
       case "list_tree": value = workspace.listTree(); break;
       case "read_file": value = { path: str(a.path), content: workspace.readFile(str(a.path)) }; break;
       case "write_file": value = workspace.writeFile(str(a.path), str(a.content)); break;
@@ -284,6 +299,18 @@ function execute(workspace: RoomWorkspace, pageUrl: string, call: ToolCall, canP
     }
     return { ok: true, result: value };
   } catch (error) { return { ok: false, error: error instanceof Error ? error.message : "tool failed" }; }
+}
+
+function executePin(call: ToolCall, setMessagePin: (messageId: number, pinned: boolean) => boolean): Record<string, unknown> {
+  try {
+    if (call.function.name !== "set_message_pin") throw new Error("unknown tool");
+    const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
+    if (typeof args.message_id !== "number" || !Number.isInteger(args.message_id) || typeof args.pinned !== "boolean") throw new Error("expected integer message_id and boolean pinned");
+    if (!setMessagePin(args.message_id, args.pinned)) throw new Error("message cannot be pinned");
+    return { ok: true, message_id: args.message_id, pinned: args.pinned };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "pin failed" };
+  }
 }
 
 function str(value: unknown): string { if (typeof value !== "string") throw new Error("expected string argument"); return value; }

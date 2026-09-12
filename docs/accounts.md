@@ -50,7 +50,7 @@ Finder sends the credential through HTTP Basic authentication only over the exis
 
 Room `owner` and room `admin` can inspect or change these controls with `/permissions`. Only a room owner or site admin can rename or delete a room. Disabling contributions does not lock administrators out of the host policy commands.
 
-Room owners, room admins, and site admins can moderate persisted chat messages. With an empty composer, Up selects a message; Enter creates a durable reply reference, and Delete opens a keyboard confirmation before removal. The deletion is saved immediately and written to the host audit log. Reply references retain a bounded author/excerpt snapshot so a discussion remains intelligible if its target is later removed.
+Room owners, room admins, and site admins can moderate persisted chat messages. With an empty composer, Up selects a message; Enter creates a durable reply reference, P pins or unpins it, and Delete opens a keyboard confirmation before removal. Up to five non-system messages can remain pinned above each room transcript. Pin changes persist in host-owned room state and are audited; the clanker can request the same operation by stable message ID, but the host applies the triggering user's current admin authority. Deletion is also saved immediately and audited. Reply references retain a bounded author/excerpt snapshot so a discussion remains intelligible if its target is later removed.
 
 ## Enforcement boundaries
 

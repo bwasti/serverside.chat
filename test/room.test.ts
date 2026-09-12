@@ -245,6 +245,29 @@ test("replies persist while room and site admins can moderate messages", () => {
   accounts.close();
 });
 
+test("room admins can persistently pin chat messages while contributors cannot", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-message-pins-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  const contributor = accounts.createDevelopmentAccount("bob").principal;
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
+  accounts.redeemInvite(contributor, accounts.createInvite(owner, "mine", "contributor"));
+  const statePath = join(data, "room-state.json");
+  const room = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath, accounts);
+  room.chat(owner, "Welcome guide");
+  const message = room.messages.at(-1)!;
+
+  expect(() => room.setMessagePinned(contributor, message.id, true)).toThrow("requires a room admin");
+  expect(room.setMessagePinned(owner, message.id, true)).toBe(true);
+  expect(room.pinnedMessages.map((item) => item.id)).toEqual([message.id]);
+
+  const restored = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath, accounts);
+  expect(restored.pinnedMessages[0]).toMatchObject({ id: message.id, text: "Welcome guide", pinnedBy: owner.id });
+  expect(restored.setMessagePinned(owner, message.id, false)).toBe(true);
+  expect(restored.pinnedMessages).toEqual([]);
+  accounts.close();
+});
+
 test("clanker-facing service logs are bounded and ordered", () => {
   const room = new Room("mine");
   for (let index = 0; index < 60; index++) room.recordServiceLog(`${index} ${"x".repeat(700)}`);

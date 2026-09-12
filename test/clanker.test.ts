@@ -136,5 +136,26 @@ test("pending implementation work gets one corrective continuation instead of si
   expect(calls).toBe(2);
 });
 
+test("clanker receives stable message IDs and can use the permission-checked pin capability", async () => {
+  let calls = 0;
+  let requestBody = "";
+  const pins: Array<[number, boolean]> = [];
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
+    attempts: 1,
+    fetcher: async (_input, init) => {
+      requestBody = String(init?.body ?? "");
+      calls++;
+      return calls === 1
+        ? Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "pin-1", type: "function", function: { name: "set_message_pin", arguments: '{"message_id":42,"pinned":true}' } }] } }] })
+        : Response.json({ choices: [{ message: { role: "assistant", content: "[silent]" } }] });
+    },
+  });
+  const history: Message[] = [{ id: 42, kind: "chat", author: "alice", text: "pin this guide", at: new Date(), clankerVisible: true }];
+  const reply = await clanker.respond("test", "https://test.example", history, workspace(), () => {}, "alice", "alice", false, () => [], (id, pinned) => { pins.push([id, pinned]); return true; });
+  expect(reply).toBe("[silent]");
+  expect(pins).toEqual([[42, true]]);
+  expect(requestBody).toContain("[message 42] alice: pin this guide");
+});
+
 function workspace(): RoomWorkspace { return new RoomWorkspace(mkdtempSync(join(tmpdir(), "serverside-chat-clanker-")), "test"); }
 function message(kind: Message["kind"], text: string): Message { return { id: Math.floor(Math.random() * 1_000_000), kind, author: kind === "clanker" ? "clanker" : "alice", text, at: new Date(), clankerVisible: true }; }

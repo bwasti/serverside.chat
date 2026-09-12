@@ -291,6 +291,11 @@ export class TuiSession {
           dirty = true;
           continue;
         }
+        if (this.selectedMessageId !== undefined && (char === "p" || char === "P")) {
+          this.toggleSelectedPin();
+          dirty = true;
+          continue;
+        }
         if (this.anonymousSubmissionPending) continue;
         if (!this.canUseComposer() && !this.deletingRoomName) continue;
         if (this.creatingRoom && this.createRoomField !== 0) {
@@ -541,6 +546,23 @@ export class TuiSession {
     }
     this.deleteConfirmationId = this.selectedMessageId;
     this.localNotice = "";
+  }
+
+  private toggleSelectedPin(): void {
+    if (this.selectedMessageId === undefined) return;
+    const message = this.room.messages.find((candidate) => candidate.id === this.selectedMessageId);
+    if (!message) return;
+    if (!this.room.canPinMessage(this.principal)) {
+      this.localNotice = "pinning messages requires a room admin";
+      return;
+    }
+    try {
+      const pinned = !message.pinnedAt;
+      if (!this.room.setMessagePinned(this.principal, message.id, pinned)) this.localNotice = "that message cannot be pinned";
+      else this.localNotice = pinned ? `pinned @${message.author}'s message` : `unpinned @${message.author}'s message`;
+    } catch (error) {
+      this.localNotice = error instanceof Error ? error.message : "could not update pin";
+    }
   }
 
   private beginRoomDeletion(): void {
@@ -1442,7 +1464,7 @@ export class TuiSession {
       : this.localNotice
         ? truncate(`  ${this.localNotice}`, mainWidth)
         : selectedMessage
-          ? truncate(`  selected @${selectedMessage.author} · ENTER reply${this.room.canDeleteMessage(this.principal) ? " · DELETE remove" : ""} · ↓ cancel`, mainWidth)
+          ? truncate(`  selected @${selectedMessage.author} · ENTER reply${this.room.canPinMessage(this.principal) && selectedMessage.kind !== "system" ? ` · P ${selectedMessage.pinnedAt ? "unpin" : "pin"}` : ""}${this.room.canDeleteMessage(this.principal) ? " · DELETE remove" : ""} · ↓ cancel`, mainWidth)
           : deleteRoomScreen
             ? truncate(`  type ${this.deletingRoomName} exactly · TAB cancels`, mainWidth)
             : createRoomScreen ? "" : ambientStatus;
@@ -1619,29 +1641,7 @@ export class TuiSession {
       const defaults = truncate("  Defaults are public · members contribute · passive clanker.", width);
       return height < 12 ? [title] : [title, defaults];
     }
-    if (this.room.name === "lobby") {
-      const ssh = `    ${MUTED}ssh -p 2222 serverside.chat${STATUS}`;
-      const description = "    Each chat room comes paired with a website server and a clanker to help you build.";
-      const instruction = (command: string, detail: string) => `    ${CYAN}${pad(command, 14)}${STATUS}${detail}`;
-      const help = `    ${ESC}1mask here for help${ESC}22m${STATUS}`;
-      if (height < 15) return [ssh, `    ${MUTED}TAB${STATUS} rooms     ${MUTED}/${STATUS} commands     ask here for help`];
-      if (height < 20) return [ssh, "", description, "", instruction("TAB", "open the room bar"), instruction("/", "see all commands"), help];
-      return [
-        ssh,
-        "",
-        description,
-        "",
-        instruction("TAB", "open the room bar"),
-        instruction("/mount", "instructions to mount the room's filesystem"),
-        instruction("/shell", "show the SSH command for the room shell"),
-        instruction("/invite", "create a contributor invite link"),
-        instruction("/edit", "open a room file in the terminal editor"),
-        instruction("/permissions", "view or change the room's access rules"),
-        instruction("/", "see all commands"),
-        "",
-        help,
-      ];
-    }
+    if (this.room.name === "lobby") return this.pinnedStatusRows(width, height);
     const sitePulse = Date.now() - this.room.lastRequestAt < 1_200 ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
     const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
     const healthTone = this.room.serviceErrors ? RED : GREEN;
@@ -1649,7 +1649,30 @@ export class TuiSession {
     const medium = `${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}   err ${this.room.serviceErrors}`;
     const compact = `${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}`;
     const site = [full, medium, compact].find((candidate) => visibleLength(candidate) <= width) ?? compact;
-    return [centerAnsi(site, width)];
+    return [centerAnsi(site, width), ...this.pinnedStatusRows(width, height)];
+  }
+
+  private pinnedStatusRows(width: number, height: number): string[] {
+    const pins = this.room.pinnedMessages;
+    if (!pins.length) return [];
+    const capacity = Math.max(1, Math.min(8, Math.floor(height / 3)));
+    const rows: string[] = [];
+    let truncated = false;
+    for (const message of pins) {
+      const content = `@${message.author}  ${message.text.replace(/\s+/g, " ")}`;
+      const wrapped = wrap(content, Math.max(1, width - 4));
+      const available = capacity - rows.length;
+      for (let index = 0; index < wrapped.length && rows.length < capacity; index++) {
+        const marker = index === 0 ? `${YELLOW}◆${STATUS}` : " ";
+        rows.push(`  ${marker} ${wrapped[index]}`);
+      }
+      if (rows.length >= capacity) {
+        truncated = message !== pins.at(-1) || wrapped.length > available;
+        break;
+      }
+    }
+    if (truncated) rows[capacity - 1] = `  ${MUTED}… more pinned content${STATUS}`;
+    return rows;
   }
 
   private hudRow(index: number, width: number): string {

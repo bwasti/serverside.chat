@@ -468,7 +468,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     #accountform{display:grid;gap:10px}#accountform label{color:#9fafaf;font-size:12px}#accountform input{box-sizing:border-box;width:100%;margin-top:5px;border:1px solid #5f5f5f;border-radius:5px;background:#3f3f3f;color:#dcdccc;padding:9px;font:14px ui-monospace,SFMono-Regular,Menlo,monospace;outline:none}#accountform input:focus{border-color:#8cd0d3}
     #pairactions{display:flex;gap:8px;margin-top:14px}#pairactions button,#accountform button,#linkactions button{border:1px solid #5f5f5f;border-radius:5px;background:#4f4f4f;color:#dcdccc;padding:7px 11px;cursor:pointer;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}#pairactions .primary,#accountform .primary,#linkactions .primary{border-color:#8cd0d3;background:#5f7f7f;color:#dcdccc}
     .xterm{width:100%;height:100%;padding:0}.xterm-viewport{overflow-y:hidden!important}
-    @media (hover:none) and (pointer:coarse), (max-width:700px){#mobilekeys{display:flex}}
+    html.mobile-device #mobilekeys{display:flex}
   </style>
 </head>
 <body>
@@ -497,9 +497,10 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const showSignIn=()=>{const linking=Boolean(accountCode||currentAccount);pairtitle.textContent=inviteToken?'accept room invite':linking?'add a sign-in method':'create your account';pairdescription.textContent=inviteToken?'Sign in to accept this invitation with your serverside.chat account.':accountCode?'Choose an OAuth provider to attach it to your existing serverside.chat account.':sshCode?'Create an account, then attach the SSH key that sent you here.':linking?'Attach another OAuth provider to @'+currentAccount+'.':'Sign in to contribute to serverside.chat.';accountform.hidden=${developmentAuth ? "Boolean(accountCode||currentAccount)" : "true"};const warning=document.getElementById('devwarning');if(warning)warning.hidden=linking;linkactions.hidden=true;autherror.textContent='';pairing.hidden=false;document.getElementById('handle')?.focus()};
     const showSshLink=()=>{pairtitle.textContent='link SSH key';pairdescription.textContent='Attach this verified SSH key to @'+currentAccount+'. You can link more keys later.';accountform.hidden=true;linkactions.hidden=false;autherror.textContent='';pairing.hidden=false};
     const activateLink=(_event,value)=>{try{const target=new URL(value,location.href);if(target.origin===location.origin&&target.searchParams.get('signin')==='1'){showSignIn();return}if(target.protocol==='http:'||target.protocol==='https:')window.open(target.href,'_blank','noopener')}catch{}};
+    const mobileDevice=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1)||navigator.userAgentData?.mobile===true;
+    document.documentElement.classList.toggle('mobile-device',mobileDevice);
     const terminalHost = document.getElementById('terminal');
     const compactScreen = matchMedia('(max-width:600px)');
-    const mobileScreen = matchMedia('(hover:none) and (pointer:coarse), (max-width:700px)');
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:compactScreen.matches?13:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#3f3f3f',foreground:'#dcdccc',cursor:'#f0dfaf',cursorAccent:'#3f3f3f',selectionBackground:'#5f5f5f',black:'#3f3f3f',red:'#cc9393',green:'#7f9f7f',yellow:'#f0dfaf',blue:'#8cd0d3',magenta:'#dc8cc3',cyan:'#93e0e3',white:'#dcdccc',brightBlack:'#7f7f7f',brightRed:'#dca3a3',brightGreen:'#9fc59f',brightYellow:'#f8f1c7',brightBlue:'#94bff3',brightMagenta:'#ec93d3',brightCyan:'#93e0e3',brightWhite:'#ffffff'},linkHandler:{activate:activateLink}});
     const fit = new FitAddon.FitAddon();
     terminal.loadAddon(fit); terminal.open(terminalHost); fit.fit();
@@ -509,7 +510,7 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     let socket, retry=250, resizeFrame, settleFrame;
     const refit=()=>{cancelAnimationFrame(resizeFrame);cancelAnimationFrame(settleFrame);resizeFrame=requestAnimationFrame(()=>{fit.fit();settleFrame=requestAnimationFrame(()=>fit.fit())})};
     const syncViewport=()=>{const viewport=window.visualViewport;document.body.style.height=(viewport?.height||innerHeight)+'px';refit()};
-    const focusInput=()=>{if(mobileScreen.matches)mobileInput.focus({preventScroll:true});else terminal.focus()};
+    const focusInput=()=>{if(mobileDevice)mobileInput.focus({preventScroll:true});else terminal.focus()};
     const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
     const connect = () => {
       state.textContent='connecting…'; state.hidden=false;

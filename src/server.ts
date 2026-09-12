@@ -63,11 +63,11 @@ const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: s
 const rateLimiter = new AdaptiveRateLimiter();
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
   if (room.name === "lobby" && guideClanker) {
-    room.setClankerResponder((history, activity) => guideClanker.respond(history, activity));
+    room.setClankerResponder((history, activity, request) => guideClanker.respond(history, activity, (messageId, pinned) => room.setMessagePinned(request.principal, messageId, pinned)));
     return;
   }
   if (clanker) room.setClankerResponder(async (history, activity, request) => {
-    try { return await clanker.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit)); }
+    try { return await clanker.respond(room.name, room.pageUrl, history, workspace, activity, request.principal.handle, room.owner, request.explicit && accounts.canPromote(request.principal, room.name), (limit) => room.tailServiceLogs(limit), (messageId, pinned) => room.setMessagePinned(request.principal, messageId, pinned)); }
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }, roomSiteDomain);
