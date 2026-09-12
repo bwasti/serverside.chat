@@ -121,6 +121,19 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
           return Response.json({ error: error instanceof Error ? error.message : "could not link SSH key" }, { status: 400 });
         }
       }
+      if (url.pathname === "/_auth/invite/redeem" && request.method === "POST") {
+        if (!accounts) return Response.json({ error: "account storage is unavailable" }, { status: 503 });
+        if (!requestPrincipal.authenticated) return Response.json({ error: "sign in before accepting an invite" }, { status: 401 });
+        if (!sameOriginRequest(request)) return Response.json({ error: "cross-origin invite rejected" }, { status: 403 });
+        try {
+          const body = await boundedJson(request);
+          if (typeof body.token !== "string") throw new Error("invite is invalid or expired");
+          const redeemed = accounts.redeemInvite(requestPrincipal, body.token);
+          return Response.json({ accepted: true, ...redeemed });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "could not accept invite" }, { status: 400 });
+        }
+      }
       if (url.pathname === "/_auth/status" && request.method === "GET") {
         return Response.json(requestPrincipal.authenticated ? { authenticated: true, handle: requestPrincipal.handle } : { authenticated: false }, { headers: { "cache-control": "no-store" } });
       }
@@ -133,7 +146,8 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         return handleWebDavRequest(request, accounts, directory, rateLimiter, clientAddress);
       }
       const roomRoute = url.pathname.match(/^\/room\/([a-z0-9][a-z0-9-]{0,31})\/?$/);
-      if (request.method === "GET" && (url.pathname === "/" || roomRoute)) {
+      const inviteRoute = url.pathname.match(/^\/invite\/([a-zA-Z0-9_-]{20,64})\/?$/);
+      if (request.method === "GET" && (url.pathname === "/" || roomRoute || inviteRoute)) {
         if (roomRoute && (!directory.room(roomRoute[1]!) || (accounts && !accounts.canView(requestPrincipal, roomRoute[1]!)))) return new Response("room not found\n", { status: 404 });
         return new Response(browserTuiHtml(oauth?.available() ?? [], developmentAuth), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
@@ -463,11 +477,14 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     const accountform = document.getElementById('accountform');
     const linkactions = document.getElementById('linkactions');
     const autherror = document.getElementById('autherror');
-    const sshCode = new URL(location.href).searchParams.get('ssh');
-    const accountCode = new URL(location.href).searchParams.get('account');
-    const initialAuthError = new URL(location.href).searchParams.get('auth_error');
+    const pageUrl = new URL(location.href);
+    const sshCode = pageUrl.searchParams.get('ssh');
+    const accountCode = pageUrl.searchParams.get('account');
+    const initialAuthError = pageUrl.searchParams.get('auth_error');
+    const inviteMatch = location.pathname.match(new RegExp('^/invite/([a-zA-Z0-9_-]{20,64})/?$'));
+    const inviteToken = inviteMatch?.[1];
     let currentAccount;
-    const showSignIn=()=>{const linking=Boolean(accountCode||currentAccount);pairtitle.textContent=linking?'add a sign-in method':'create your account';pairdescription.textContent=accountCode?'Choose an OAuth provider to attach it to your existing serverside.chat account.':sshCode?'Create an account, then attach the SSH key that sent you here.':linking?'Attach another OAuth provider to @'+currentAccount+'.':'Sign in to contribute to serverside.chat.';accountform.hidden=${developmentAuth ? "Boolean(accountCode||currentAccount)" : "true"};const warning=document.getElementById('devwarning');if(warning)warning.hidden=linking;linkactions.hidden=true;autherror.textContent='';pairing.hidden=false;document.getElementById('handle')?.focus()};
+    const showSignIn=()=>{const linking=Boolean(accountCode||currentAccount);pairtitle.textContent=inviteToken?'accept room invite':linking?'add a sign-in method':'create your account';pairdescription.textContent=inviteToken?'Sign in to accept this invitation with your serverside.chat account.':accountCode?'Choose an OAuth provider to attach it to your existing serverside.chat account.':sshCode?'Create an account, then attach the SSH key that sent you here.':linking?'Attach another OAuth provider to @'+currentAccount+'.':'Sign in to contribute to serverside.chat.';accountform.hidden=${developmentAuth ? "Boolean(accountCode||currentAccount)" : "true"};const warning=document.getElementById('devwarning');if(warning)warning.hidden=linking;linkactions.hidden=true;autherror.textContent='';pairing.hidden=false;document.getElementById('handle')?.focus()};
     const showSshLink=()=>{pairtitle.textContent='link SSH key';pairdescription.textContent='Attach this verified SSH key to @'+currentAccount+'. You can link more keys later.';accountform.hidden=true;linkactions.hidden=false;autherror.textContent='';pairing.hidden=false};
     const activateLink=(_event,value)=>{try{const target=new URL(value,location.href);if(target.origin===location.origin&&target.searchParams.get('signin')==='1'){showSignIn();return}if(target.protocol==='http:'||target.protocol==='https:')window.open(target.href,'_blank','noopener')}catch{}};
     const terminal = new Terminal({cursorBlink:true,scrollback:0,fontSize:14,fontFamily:'SFMono-Regular,Menlo,Monaco,Consolas,monospace',theme:{background:'#3f3f3f',foreground:'#dcdccc',cursor:'#f0dfaf',cursorAccent:'#3f3f3f',selectionBackground:'#5f5f5f',black:'#3f3f3f',red:'#cc9393',green:'#7f9f7f',yellow:'#f0dfaf',blue:'#8cd0d3',magenta:'#dc8cc3',cyan:'#93e0e3',white:'#dcdccc',brightBlack:'#7f7f7f',brightRed:'#dca3a3',brightGreen:'#9fc59f',brightYellow:'#f8f1c7',brightBlue:'#94bff3',brightMagenta:'#ec93d3',brightCyan:'#93e0e3',brightWhite:'#ffffff'},linkHandler:{activate:activateLink}});
@@ -492,11 +509,12 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
     document.getElementById('terminal').addEventListener('pointerdown',()=>terminal.focus());
     const checkAuth=async()=>{try{const result=await fetch('/_auth/status',{cache:'no-store'}).then(response=>response.json());currentAccount=result.authenticated?result.handle:undefined;return Boolean(currentAccount)}catch{return false}};
     const linkSsh=async()=>{if(!sshCode)return;autherror.textContent='';const response=await fetch('/_auth/ssh/link',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:sshCode})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not link SSH key');history.replaceState({},'',location.pathname);pairtitle.textContent='SSH key linked';pairdescription.textContent='This terminal is now signed in as @'+result.handle+'.';linkactions.hidden=true;setTimeout(()=>location.reload(),700)};
+    const redeemInvite=async()=>{if(!inviteToken)return false;autherror.textContent='';const response=await fetch('/_auth/invite/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:inviteToken})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not accept invite');location.href='/room/'+encodeURIComponent(result.roomName);return true};
     document.querySelectorAll('[data-provider]').forEach(button=>button.addEventListener('click',()=>{const returnTo=location.pathname+(sshCode?'?ssh='+encodeURIComponent(sshCode):'');const bootstrap=accountCode?'&account='+encodeURIComponent(accountCode):'';location.href='/_auth/'+button.dataset.provider+'/start?return='+encodeURIComponent(returnTo)+bootstrap}));
-    accountform.addEventListener('submit',async event=>{event.preventDefault();autherror.textContent='';const button=accountform.querySelector('button');if(!button)return;button.disabled=true;try{const response=await fetch('/_auth/development',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({handle:document.getElementById('handle').value})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not create account');currentAccount=result.handle;if(sshCode)await linkSsh();else location.reload()}catch(error){autherror.textContent=error.message}finally{button.disabled=false}});
+    accountform.addEventListener('submit',async event=>{event.preventDefault();autherror.textContent='';const button=accountform.querySelector('button');if(!button)return;button.disabled=true;try{const response=await fetch('/_auth/development',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({handle:document.getElementById('handle').value})});const result=await response.json();if(!response.ok)throw new Error(result.error||'could not create account');currentAccount=result.handle;if(sshCode)await linkSsh();else if(inviteToken)await redeemInvite();else location.reload()}catch(error){autherror.textContent=error.message}finally{button.disabled=false}});
     document.getElementById('linkkey').addEventListener('click',async()=>{try{await linkSsh()}catch(error){autherror.textContent=error.message}});
     document.getElementById('closepair').addEventListener('click',()=>{pairing.hidden=true});
-    checkAuth().then(authenticated=>{if(accountCode)showSignIn();else if(sshCode){if(authenticated)showSshLink();else showSignIn()}else if((location.search.includes('signin=1')||initialAuthError)&&!authenticated)showSignIn();if(initialAuthError)autherror.textContent=initialAuthError});
+    checkAuth().then(async authenticated=>{if(accountCode)showSignIn();else if(sshCode){if(authenticated)showSshLink();else showSignIn()}else if(inviteToken){if(authenticated){try{await redeemInvite()}catch(error){showSignIn();autherror.textContent=error.message}}else showSignIn()}else if((location.search.includes('signin=1')||initialAuthError)&&!authenticated)showSignIn();if(initialAuthError)autherror.textContent=initialAuthError});
     connect();
   </script>
 </body>

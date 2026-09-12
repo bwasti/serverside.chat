@@ -8,7 +8,7 @@ Site roles and room roles are independent:
 
 - A site `admin` may view and moderate every room, and may create, rename, or delete rooms globally. The configured bootstrap owner receives this role.
 - A site `member` may create, rename, and delete rooms they own.
-- Every authenticated account receives one owned starter room named from its handle. Room names are globally unique URL slugs using 1–32 lowercase letters, numbers, and dashes.
+- Every authenticated account can create rooms explicitly from the room bar; signing in does not create one automatically. Room names are globally unique URL slugs using 1–32 lowercase letters, numbers, and dashes.
 - `lobby` is a public, host-managed system room. It is the default landing room, every authenticated account receives contributor membership, and it does not consume an ownership slot. It cannot be renamed, deleted, or reconfigured through room commands.
 - A `free` account may own at most five rooms. The data model reserves a 25-room `pro` allowance, but no upgrade or billing path is enabled. Site admins retain a hard 100-room ceiling.
 
@@ -18,7 +18,7 @@ Room deletion requires typing the current room's exact name. Pressing Delete on 
 
 The server verifies every SSH public-key signature. A known fingerprint resolves to its account; an unknown verified key receives a stable anonymous principal for that key. The anonymous TUI renders a short-lived, clickable HTTPS link containing a random hashed-at-rest key-link token. The user signs into their canonical account in the browser and explicitly attaches that verified key. The live SSH session notices the completed link and adopts the account without reconnecting. Any number of keys can be attached to one account, and a key already owned by another account cannot be reassigned through this flow.
 
-An admin creates an invite with `/invite admin|contributor|viewer`. The token is random, stored only as a hash, expires after 24 hours, and is single-use. `ssh -t -p 2222 serverside.chat invite '<token>'` carries the intended membership through the browser account/key-link flow, consumes it for the canonical account, and switches the live TUI into the invited room. An invite never creates an account from an SSH key. Existing accounts gain membership without changing identity, and redemption never downgrades a stronger role.
+An admin creates a contributor invite with `/invite`; `/invite admin` and `/invite viewer` select another role. The command returns a complete `https://serverside.chat/invite/<token>` URL. Opening it signs an anonymous visitor in when necessary, redeems the invitation into their canonical account, and enters the room. The token is random, stored only as a hash, expires after 24 hours, and is single-use. The lower-level `ssh -t -p 2222 serverside.chat invite '<token>'` flow remains available for terminal enrollment. An invite never creates an account from an SSH key. Existing accounts gain membership without changing identity, and redemption never downgrades a stronger role.
 
 ## Browser and OAuth credentials
 

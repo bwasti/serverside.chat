@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { AccountStore } from "../src/auth";
 import { RoomDirectory } from "../src/room-directory";
 
-test("accounts receive a persistent starter room that owners can rename, archive, and restore", () => {
+test("accounts can create a persistent room that owners can rename, archive, and restore", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
@@ -14,7 +14,7 @@ test("accounts receive a persistent starter room that owners can rename, archive
   const collaborator = accounts.createDevelopmentAccount("charlie").principal;
   const directory = new RoomDirectory(accounts, data, "https://example.test");
 
-  const starter = directory.ensureStarterRoom(member)!;
+  const starter = directory.createRoom(member, "bob");
   expect(starter.name).toBe("bob");
   expect(starter.pageUrl).toBe("https://example.test/bob");
   expect(accounts.roleFor(member, "bob")).toBe("owner");
@@ -47,7 +47,7 @@ test("accounts receive a persistent starter room that owners can rename, archive
   accounts.close();
 });
 
-test("account preparation keeps the personal room but makes lobby usable", () => {
+test("account preparation grants lobby access without creating a room", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-directory-lobby-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
@@ -55,10 +55,10 @@ test("account preparation keeps the personal room but makes lobby usable", () =>
   accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
   const directory = new RoomDirectory(accounts, data, "https://example.test");
 
-  expect(directory.prepareAccount(member)?.name).toBe("bob");
+  expect(directory.prepareAccount(member)).toBeUndefined();
   expect(accounts.roleFor(member, "lobby")).toBe("contributor");
-  expect(accounts.ownedRoomNames(member)).toEqual(["bob"]);
-  expect(directory.rooms.map((room) => room.name).slice(0, 2)).toEqual(["lobby", "bob"]);
+  expect(accounts.ownedRoomNames(member)).toEqual([]);
+  expect(directory.rooms.map((room) => room.name)).toEqual(["lobby"]);
   accounts.close();
 });
 

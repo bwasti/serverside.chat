@@ -182,20 +182,40 @@ test("slash commands prefix-match and render above the composer", () => {
   expect(slashCommandMatches("/mount revoke")).toEqual([]);
   const tui = open();
   tui.stream.emit("data", Buffer.from("/"));
-  expect(tui.stream.writes.at(-1)).toContain("/invite <role>");
+  expect(tui.stream.writes.at(-1)).toContain("/invite [role]");
   expect(tui.stream.writes.at(-1)).toContain("/mount [revoke]");
   tui.stream.emit("data", Buffer.from("mo"));
   expect(tui.stream.writes.at(-1)).toContain("/mount [revoke]");
-  expect(tui.stream.writes.at(-1)).not.toContain("/invite <role>");
+  expect(tui.stream.writes.at(-1)).not.toContain("/invite [role]");
   tui.stream.end();
 });
 
 test("command palette arrows cycle and Enter expands commands with arguments", () => {
   const tui = open();
-  tui.stream.emit("data", Buffer.from("/\x1b[B\r"));
-  expect(tui.state().input).toBe("/invite ");
-  expect(tui.state().cursorOffset).toBe(8);
+  tui.stream.emit("data", Buffer.from("/\r"));
+  expect(tui.state().input).toBe("/agent ");
+  expect(tui.state().cursorOffset).toBe(7);
   tui.stream.end();
+});
+
+test("invite defaults to a complete contributor share URL", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-invite-url-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", owner, { visibility: "private", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  const stream = new FakeStream();
+  new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("/invite\r"));
+  const frame = stream.writes.at(-1)!;
+  const match = frame.match(/https:\/\/serverside\.chat\/invite\/([a-zA-Z0-9_-]{24})/);
+  expect(match).toBeTruthy();
+  expect(frame).toContain(`\x1b]8;;${match![0]}\x1b\\${match![0]}\x1b]8;;\x1b\\`);
+  const guest = accounts.createDevelopmentAccount("bob").principal;
+  expect(accounts.redeemInvite(guest, match![1]!)).toMatchObject({ roomName: "mine", role: "contributor" });
+  stream.end();
+  accounts.close();
 });
 
 test("typing presence renders for other room members", () => {
@@ -348,7 +368,7 @@ test("lobby replaces the developer dashboard with a padded quick-start", () => {
   expect(visibleMain(lines[5]!)).toBe("TAB           open the room bar");
   expect(visibleMain(lines[6]!)).toBe("/mount        instructions to mount the room's filesystem");
   expect(visibleMain(lines[7]!)).toBe("/shell        show the SSH command for the room shell");
-  expect(visibleMain(lines[8]!)).toBe("/invite       create a one-use room invite");
+  expect(visibleMain(lines[8]!)).toBe("/invite       create a contributor invite link");
   expect(visibleMain(lines[9]!)).toBe("/edit         open a room file in the terminal editor");
   expect(visibleMain(lines[10]!)).toBe("/permissions  view or change the room's access rules");
   expect(visibleMain(lines[11]!)).toBe("/             see all commands");

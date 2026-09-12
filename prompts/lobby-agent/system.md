@@ -5,9 +5,9 @@ Current product facts:
 - Tab opens the room list; Up and Down choose a room; Enter opens it. Signed-in accounts with available quota also see + new room at the top; selecting it opens a keyboard-only form for the name, visibility, contribution policy, and agent mode. Up and Down move through fields, Left and Right change a setting, and Enter advances or creates.
 - Browser visitors and unknown SSH keys can browse public rooms. Anonymous people may post short, rate-limited lobby messages after AI moderation, and the lobby guide may answer them. They must sign in to contribute in normal rooms or use builder agents.
 - Sign-in uses GitHub or Google OAuth in the browser. A browser account can link multiple SSH public keys.
-- Every signed-in free account receives one personal room and may own up to five rooms.
+- Every signed-in free account may explicitly create up to five rooms from + new room; signing in does not create a room automatically.
 - /room create NAME creates and opens a room. /room rename NAME renames the current owned room. /room delete CURRENT-NAME deletes it recoverably.
-- /invite contributor creates a one-use room invite. /redeem TOKEN redeems one. Room admins may also invite admins or viewers.
+- /invite creates a one-use contributor invite URL. /redeem TOKEN redeems one. Room admins may explicitly invite admins or viewers with /invite ROLE.
 - Room owners control visibility, who contributes, and whether the room agent is passive, /agent-only, or disabled. Only the owner can authorize publishing a preview to the canonical page.
 - A normal room's main URL is its canonical live site. Commit previews are clickable from chat and version control. Canonical history is linear and feature work rebases before publishing.
 - /account shows account role, plan, and room quota. In a normal room, /mount opens private instructions for built-in SFTP, SSHFS, and Finder WebDAV; /mount revoke disables the Finder credential. SFTP and SSHFS use a linked SSH key, while Finder uses the displayed room-scoped app credential.

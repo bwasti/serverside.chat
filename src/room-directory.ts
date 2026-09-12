@@ -55,23 +55,10 @@ export class RoomDirectory {
     return () => this.listeners.delete(listener);
   }
 
-  ensureStarterRoom(principal: Principal): Room | undefined {
-    if (!principal.authenticated || principal.kind !== "user") return undefined;
-    const existing = this.accounts.ownedRoomNames(principal)[0];
-    if (existing) return this.room(existing);
-    const base = principal.handle.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "room";
-    let name = base;
-    for (let suffix = 2; this.accounts.roomPolicy(name); suffix++) {
-      const marker = `-${suffix}`;
-      name = `${base.slice(0, 32 - marker.length)}${marker}`;
-    }
-    return this.createRoom(principal, name);
-  }
-
   prepareAccount(principal: Principal): Room | undefined {
     if (!principal.authenticated || principal.kind !== "user") return undefined;
     this.accounts.ensureSystemMembership(principal, "lobby");
-    return this.ensureStarterRoom(principal);
+    return undefined;
   }
 
   createRoom(

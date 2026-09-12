@@ -13,6 +13,9 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).not.toContain('id="signin"');
   expect(page).toContain("fetch('/_auth/development',{method:'POST'");
   expect(page).toContain("fetch('/_auth/ssh/link',{method:'POST'");
+  expect(page).toContain("fetch('/_auth/invite/redeem',{method:'POST'");
+  expect(page).toContain("new RegExp('^/invite/([a-zA-Z0-9_-]{20,64})/?$')");
+  expect(page).toContain("location.href='/room/'+encodeURIComponent(result.roomName)");
   expect(page).toContain("linkHandler:{activate:activateLink}");
   expect(page).toContain("registerOscHandler(777");
   expect(page).toContain("background:'#3f3f3f'");
@@ -22,6 +25,9 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(page).not.toContain("location.pathname.match(/^/room/");
   expect(page).toContain('data-provider="google"');
   expect(page).toContain('data-provider="github"');
+  const inlineScript = page.match(/<script>\s*([\s\S]*?)<\/script>/)?.[1];
+  expect(inlineScript).toBeTruthy();
+  expect(() => new Function(inlineScript!)).not.toThrow();
   expect(browserTuiHtml([], false)).not.toContain('id="devwarning"');
   expect(await Bun.file("node_modules/@xterm/xterm/lib/xterm.js").exists()).toBe(true);
   expect(await Bun.file("node_modules/@xterm/xterm/lib/xterm.js.map").exists()).toBe(true);

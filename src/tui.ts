@@ -49,7 +49,7 @@ export interface SlashCommand {
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/agent", usage: "/agent <request>", description: "ask the room agent", requiresArgument: true },
-  { name: "/invite", usage: "/invite <role>", description: "create a one-use room invite", requiresArgument: true },
+  { name: "/invite", usage: "/invite [role]", description: "create a contributor invite link", requiresArgument: false },
   { name: "/mount", usage: "/mount [revoke]", description: "mount or revoke room files", requiresArgument: false },
   { name: "/shell", usage: "/shell", description: "show SSH access for the room shell", requiresArgument: false },
   { name: "/edit", usage: "/edit <path>", description: "edit a room file", requiresArgument: true },
@@ -915,10 +915,12 @@ export class TuiSession {
         return true;
       }
       if (command === "/invite") {
-        const role = field as Exclude<RoomRole, "owner">;
-        if (role !== "admin" && role !== "contributor" && role !== "viewer") throw new Error("usage: /invite admin|contributor|viewer");
+        if (value || extra.length) throw new Error("usage: /invite [admin|contributor|viewer]");
+        const role = (field ?? "contributor") as Exclude<RoomRole, "owner">;
+        if (role !== "admin" && role !== "contributor" && role !== "viewer") throw new Error("usage: /invite [admin|contributor|viewer]");
         const token = this.room.createInvite(this.principal, role);
-        this.localNotice = `invite ${token} · ${role} · expires in 24h`;
+        const origin = this.directory?.controlOrigin ?? new URL(this.room.pageUrl).origin;
+        this.localNotice = `${origin}/invite/${encodeURIComponent(token)}`;
         return true;
       }
       if (!field) {
@@ -1522,7 +1524,9 @@ export class TuiSession {
     const typing = bottomStatus
       ? (() => {
           const padded = pad(bottomStatus, mainWidth);
-          const rendered = !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, `${ESC}3m${MUTED}`) : padded;
+          const rendered = this.localNotice && /^https?:\/\//.test(this.localNotice)
+            ? linkText(padded, this.localNotice, this.localNotice, CYAN, `${ESC}3m${MUTED}`)
+            : !this.principal.authenticated && this.signInUrl ? linkText(padded, "sign in", this.signInUrl, CYAN, `${ESC}3m${MUTED}`) : padded;
           const columnRow = topRows.length + 1 + visible.length;
           return [`${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${CHAT}${ESC}3m${MUTED}${rendered}${ESC}23m${RESET}${this.hudRow(columnRow, hudWidth)}`];
         })()
@@ -1600,7 +1604,7 @@ export class TuiSession {
         instruction("TAB", "open the room bar"),
         instruction("/mount", "instructions to mount the room's filesystem"),
         instruction("/shell", "show the SSH command for the room shell"),
-        instruction("/invite", "create a one-use room invite"),
+        instruction("/invite", "create a contributor invite link"),
         instruction("/edit", "open a room file in the terminal editor"),
         instruction("/permissions", "view or change the room's access rules"),
         instruction("/", "see all commands"),

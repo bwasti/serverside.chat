@@ -63,7 +63,7 @@ Commands inside the room:
 - `/room delete <current-name>` archives the current room after its full exact name is supplied (owner or site admin)
 - `/room archives` lists restorable archives; `/room restore <name>` restores the latest archive with that name
 - `/agent <request>` explicitly invokes the agent when room policy permits it
-- `/invite admin|contributor|viewer` creates a one-use 24-hour invite (admin only)
+- `/invite` creates a one-use 24-hour contributor link (admin only); `/invite admin` and `/invite viewer` override its role
 - `/redeem <invite>` grants an invitation to the signed-in canonical account
 - `/permissions` shows the current room policy
 - `/permissions visibility public|private`
@@ -76,7 +76,7 @@ Configuration is via `HOST` (default `0.0.0.0`), `PORT` (default `2222`), `DATA_
 
 The SSH server binds to `HOST` so it is reachable on the local network; set `HOST=127.0.0.1` to restrict it to this machine. The HTTP service binds to `WEB_HOST` (default `HOST`) and `WEB_PORT` (default `3000`). The droplet deployment binds that application HTTP port to loopback and publishes it through Caddy with automatic HTTPS and WebSocket proxying. On wide terminals, the right HUD displays the version graph and a live service-log tail; host-owned health, usage, limits, and agent activity remain in the persistent top status area. Room code cannot disable this telemetry. Adaptive per-address or per-account limits cover HTTP, WebSockets, TUI input and submissions, SSH setup, capability-shell commands, SFTP operations, and agent requests; see [`docs/rate-limits.md`](docs/rate-limits.md). Account recovery and broader user-facing credential management are not complete.
 
-Every authenticated account gets an owned starter room and contributor access to the host-managed lobby. The lobby is quota-free and cannot be renamed, deleted, or reconfigured by users. Free accounts may own five normal rooms. The schema reserves a `pro` plan with a larger room allowance for later product work, but no billing or upgrade path is enabled. The configured bootstrap owner is the initial site admin and may manage up to 100 rooms; all room creation is bounded.
+Every authenticated account gets contributor access to the host-managed lobby and can explicitly create rooms from `+ new room`; signing in never creates one automatically. The lobby is quota-free and cannot be renamed, deleted, or reconfigured by users. Free accounts may own five normal rooms. The schema reserves a `pro` plan with a larger room allowance for later product work, but no billing or upgrade path is enabled. The configured bootstrap owner is the initial site admin and may manage up to 100 rooms; all room creation is bounded.
 
 Fresh installations seed one public development room, `hello-world`, with member contributions and a passive agent. The host-managed `lobby` remains separate.
 
