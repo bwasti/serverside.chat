@@ -176,6 +176,26 @@ test("empty-composer arrows select messages for replies and confirmed admin dele
   accounts.close();
 });
 
+test("Escape returns message navigation to the composer, then opens and closes the room drawer", () => {
+  const room = new Room("mine");
+  room.chat("alice", "message to navigate");
+  const tui = open(room);
+  const state = tui.session as unknown as { selectedMessageId?: number; sidebarFocused: boolean };
+
+  tui.stream.emit("data", Buffer.from("\x1b[A"));
+  expect(state.selectedMessageId).toBe(room.messages.at(-1)!.id);
+  tui.stream.emit("data", Buffer.from("\x1b"));
+  expect(state.selectedMessageId).toBeUndefined();
+  expect(state.sidebarFocused).toBe(false);
+  expect(tui.stream.writes.at(-1)).toContain("\x1b[?25h");
+
+  tui.stream.emit("data", Buffer.from("\x1b"));
+  expect(state.sidebarFocused).toBe(true);
+  tui.stream.emit("data", Buffer.from("\x1b"));
+  expect(state.sidebarFocused).toBe(false);
+  tui.stream.end();
+});
+
 test("owner and agent names use distinct Zenburn blue and purple accents", () => {
   const room = new Room("mine", 250, "https://example.test/mine", "alice");
   room.messages.push(
@@ -377,6 +397,26 @@ test("Enter selects the highlighted room and returns focus to chat", () => {
 
   stream.emit("data", Buffer.from("selected\r"));
   expect(general.messages.at(-1)).toMatchObject({ author: "alice", text: "selected" });
+  stream.end();
+});
+
+test("expanded room drawer overlays a stable chat width and shows room occupancy", () => {
+  const mine = new Room("mine");
+  const general = new Room("general");
+  general.join("bob");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, [mine, general], "alice");
+  session.resize(100, 20);
+  const state = session as unknown as { sidebarFocused: boolean; sidebarWidth: number; mainWidth(): number; render(): void };
+  const closedWidth = state.mainWidth();
+
+  state.sidebarFocused = true;
+  state.sidebarWidth = 28;
+  state.render();
+  expect(state.mainWidth()).toBe(closedWidth);
+  expect(stream.writes.at(-1)).toContain("1 · public");
+  expect(stream.writes.at(-1)).toContain("\x1b[1;1H");
+  expect(stream.writes.at(-1)!.split("\r\n")).toHaveLength(20);
   stream.end();
 });
 

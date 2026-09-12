@@ -216,7 +216,7 @@ export class TuiSession {
     // Walk escape and text tokens in order so pasted text and navigation can share a packet.
     let dirty = false;
     let inputChanged = false;
-    const tokens = data.toString("utf8").match(/\x1b(?:\[[0-?]*[ -/]*[@-~]|O[HF]|[^\x1b])|[^\x1b]+/gs) ?? [];
+    const tokens = data.toString("utf8").match(/\x1b(?:\[[0-?]*[ -/]*[@-~]|O[HF]|[^\x1b])?|[^\x1b]+/gs) ?? [];
     for (const token of tokens) {
       if (token.startsWith("\x1b")) {
         const result = this.handleEscape(token);
@@ -348,6 +348,21 @@ export class TuiSession {
   }
 
   private handleEscape(sequence: string): { dirty: boolean; inputChanged: boolean } {
+    if (sequence === "\x1b") {
+      if (this.selectedMessageId !== undefined || this.replyToMessageId !== undefined) {
+        this.selectedMessageId = undefined;
+        this.replyToMessageId = undefined;
+        this.scrollOffset = 0;
+        this.localNotice = "";
+        return { dirty: true, inputChanged: false };
+      }
+      this.sidebarFocused = !this.sidebarFocused;
+      this.createRoomFocused = false;
+      this.accountFocused = false;
+      this.room.setTyping(this.username, false);
+      this.animateSidebar();
+      return { dirty: true, inputChanged: false };
+    }
     const mouse = sequence.match(/^\x1b\[<(\d+);\d+;\d+[Mm]$/);
     if (mouse) {
       const button = Number(mouse[1]);
@@ -680,9 +695,8 @@ export class TuiSession {
   }
 
   private mainWidth(): number {
-    const sidebarWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.currentHudWidth();
-    return this.width - sidebarWidth - hudWidth;
+    return this.width - 3 - hudWidth;
   }
 
   private commandMatches(): readonly SlashCommand[] {
@@ -1403,7 +1417,8 @@ export class TuiSession {
       this.replyToMessageId = undefined;
       this.localNotice = "the message being replied to was deleted";
     }
-    const sidebarWidth = Math.round(this.sidebarWidth);
+    const sidebarWidth = 3;
+    const drawerWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.currentHudWidth();
     const mainWidth = this.mainWidth();
     const topStatus = this.topStatusRows(mainWidth, this.height);
@@ -1516,9 +1531,7 @@ export class TuiSession {
     const linkedTitle = pageRef && plainTitle.includes(pageRef)
       ? linkText(plainTitle, pageRef, headerPageUrl, CYAN, HEADER)
       : plainTitle;
-    const sidebarHeader = sidebarWidth <= 3
-      ? `${SIDEBAR_MUTED}${pad(" › ", sidebarWidth)}${RESET}`
-      : `${SIDEBAR}${pad(truncate("  serverside.chat", sidebarWidth), sidebarWidth)}${RESET}`;
+    const sidebarHeader = this.sidebarHeader(sidebarWidth);
     const paneTone = this.sidebarFocused ? DIM : "";
     const hudHeader = hudWidth ? this.dimInactiveHud(`${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}`) : "";
     const header = `${sidebarHeader}${paneTone}${HEADER}${centerAnsi(linkedTitle, titleWidth)}${status}${RESET}${hudHeader}`;
@@ -1571,13 +1584,7 @@ export class TuiSession {
       }
       return `${sidebarComposer}${paneTone}${COMPOSER}${renderedInput}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
-    const sidebarFooter = createRoomScreen
-      ? `${SIDEBAR}${pad(sidebarWidth <= 3 ? " + " : "  setup", sidebarWidth)}${RESET}`
-      : deleteRoomScreen
-        ? `${SIDEBAR}${pad(sidebarWidth <= 3 ? " ! " : "  archive", sidebarWidth)}${RESET}`
-      : sidebarWidth <= 3
-        ? `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" @ ", sidebarWidth)}${RESET}`
-        : `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(truncate(`  @${this.username}`, sidebarWidth), sidebarWidth)}${RESET}`;
+    const sidebarFooter = this.sidebarFooter(sidebarWidth, createRoomScreen, deleteRoomScreen);
     const composerFooterRow = composerSpacerRow + 1 + inputRows.length;
     const composerFooter = `${sidebarFooter}${paneTone}${COMPOSER}${" ".repeat(mainWidth)}${RESET}${this.hudRow(composerFooterRow, hudWidth)}`;
     const composerCursorColumn = sidebarWidth + Math.min(mainWidth, inputLayout.cursorColumn + 1);
@@ -1585,13 +1592,24 @@ export class TuiSession {
     const formNamePrefix = "  › " + pad("Name", 16) + " ";
     const formCursorColumn = sidebarWidth + visibleLength(formNamePrefix) + terminalWidth(Array.from(this.input).slice(0, this.cursorOffset).join("")) + 1;
     const formCursorRow = topRows.length + 3;
-    const screen = [header, ...statusHeaders, statusSpacer, ...body, ...typing, ...commandMenu, composerSpacer, ...composer, composerFooter].join("\r\n");
+    const screenRows = [header, ...statusHeaders, statusSpacer, ...body, ...typing, ...commandMenu, composerSpacer, ...composer, composerFooter];
+    const screen = screenRows.join("\r\n");
+    const drawerOverlay = drawerWidth > sidebarWidth
+      ? screenRows.map((_, index) => {
+          const row = index === 0
+            ? this.sidebarHeader(drawerWidth)
+            : index === screenRows.length - 1
+              ? this.sidebarFooter(drawerWidth, createRoomScreen, deleteRoomScreen)
+              : this.sidebarRow(index - 1, drawerWidth);
+          return `${ESC}${index + 1};1H${row}`;
+        }).join("")
+      : "";
     const cursor = this.sidebarFocused || !writable || (createRoomScreen && (!this.creatingRoom || this.createRoomField !== 0))
       ? `${ESC}?25l`
       : createRoomScreen
         ? `${ESC}${formCursorRow};${Math.min(this.width, formCursorColumn)}H${ESC}?25h`
         : `${ESC}${composerCursorRow};${composerCursorColumn}H${ESC}?25h`;
-    const frame = `${screen}${cursor}`;
+    const frame = `${screen}${drawerOverlay}${cursor}`;
     if (frame === this.lastFrame) return;
     this.lastFrame = frame;
     this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
@@ -1694,9 +1712,27 @@ export class TuiSession {
     const roomIndex = index - 1 - (hasCreate ? 1 : 0);
     if (roomIndex < this.rooms.length) {
       const style = !this.onCreateRoomScreen() && !this.accountFocused && roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
-      return `${style}${pad(truncate(`  # ${this.rooms[roomIndex]!.name}`, width), width)}${RESET}`;
+      const room = this.rooms[roomIndex]!;
+      const detail = width >= 18 ? `${room.members.size} · ${room.policy.visibility}  ` : "";
+      const labelWidth = Math.max(0, width - terminalWidth(detail));
+      const label = pad(truncate(`  # ${room.name}`, labelWidth), labelWidth);
+      return `${style}${label}${detail ? `${MUTED}${detail}${style}` : ""}${RESET}`;
     }
     return `${SIDEBAR}${" ".repeat(width)}${RESET}`;
+  }
+
+  private sidebarHeader(width: number): string {
+    return width <= 3
+      ? `${SIDEBAR_MUTED}${pad(" › ", width)}${RESET}`
+      : `${SIDEBAR}${pad(truncate("  serverside.chat", width), width)}${RESET}`;
+  }
+
+  private sidebarFooter(width: number, createRoomScreen: boolean, deleteRoomScreen: boolean): string {
+    if (createRoomScreen) return `${SIDEBAR}${pad(width <= 3 ? " + " : "  setup", width)}${RESET}`;
+    if (deleteRoomScreen) return `${SIDEBAR}${pad(width <= 3 ? " ! " : "  archive", width)}${RESET}`;
+    return width <= 3
+      ? `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" @ ", width)}${RESET}`
+      : `${this.accountFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(truncate(`  @${this.username}`, width), width)}${RESET}`;
   }
 
   private formatMessage(message: Message, width: number, showAuthor: boolean, section: 0 | 1): string[] {
@@ -2002,7 +2038,7 @@ export class TuiSession {
   }
 
   private expandedSidebarWidth(): number {
-    return Math.min(20, Math.max(16, Math.floor(this.width * 0.22)));
+    return Math.min(34, Math.max(24, Math.floor(this.width * 0.28)));
   }
 
   private animateSidebar(): void {
