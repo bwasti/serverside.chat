@@ -49,7 +49,7 @@ Paths are always relative to an opaque room root. Traversal, absolute paths, sym
 
 `await env.assets.fetch(request)` reads a file from the same immutable deployment. `/` maps to `index.html`. Paths remain repository-relative and inherit the repository's traversal, symlink, file-size, and commit-selection protections.
 
-Missing files, directories, invalid deployment paths, and protected paths such as `.git` return a plain `404 Not found` response; they do not throw into the worker or become platform 500s. The host records 4xx traffic in the live request log but only 5xx responses increment the SITE error counter.
+Missing files, directories, invalid deployment paths, and protected paths such as `.git` return a plain `404 Not found` response; they do not throw into the worker or become platform 500s. The host records 4xx traffic in the live request log but only 5xx responses increment the health-row error counter.
 
 ## `env.log`
 

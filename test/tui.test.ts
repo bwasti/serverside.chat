@@ -104,11 +104,24 @@ test("main chat canvas uses the same darkest Zenburn background as version contr
   tui.session.resize(120, 24);
   const frame = tui.stream.writes.at(-1)!;
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;102m  VERSION CONTROL");
-  expect(frame).toContain("\x1b[48;5;239m\x1b[38;5;116m  # mine");
+  expect(frame).toContain("# mine  public");
   expect(frame).toContain("\x1b]8;;http://localhost:3000/mine\x1b\\localhost:3000/mine\x1b]8;;\x1b\\");
-  expect(frame).toContain("\x1b[48;5;237m\x1b[38;5;188m  SITE");
+  expect(frame).not.toContain("SITE");
+  expect(frame).not.toContain("AGENT");
+  expect(frame).toContain("DB ");
+  expect(frame).toContain("CONN ");
+  expect(frame).toContain("FILES ");
+  expect(frame).toContain("BYTES/H ");
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;188m");
   expect(frame).toContain("dark canvas");
+  const strip = (line: string) => line.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  const mainWidth = 120 - 3 - Math.min(50, Math.max(36, Math.floor(120 * 0.32)));
+  for (const line of frame.split("\r\n").slice(0, 2)) {
+    const main = strip(line).slice(3, 3 + mainWidth);
+    const left = main.length - main.trimStart().length;
+    const right = main.length - main.trimEnd().length;
+    expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+  }
   tui.stream.end();
 });
 
@@ -265,16 +278,17 @@ test("typing presence renders for other room members", () => {
   bob.stream.end();
 });
 
-test("chat reserves a distinct status row and shows live agent thinking", () => {
+test("chat reserves a distinct status row for concise passive and active agent state", () => {
   const room = new Room("mine");
   room.chat("alice", "latest message");
+  room.setAgentResponder(async () => "[silent]");
   const tui = open(room);
   tui.session.resize(80, 12);
   let frame = tui.stream.writes.at(-1)!;
   let lines = frame.split("\r\n");
   const visible = (line: string) => line.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   const messageRow = lines.findIndex((line) => visible(line).includes("latest message"));
-  const readyRow = lines.findIndex((line) => visible(line).includes("· ready"));
+  const readyRow = lines.findIndex((line) => visible(line).includes("agent listening passively"));
   const composerRow = lines.findIndex((line) => visible(line).includes("type / to see commands"));
   expect(messageRow).toBeGreaterThan(-1);
   expect(readyRow).toBe(messageRow + 1);
@@ -285,7 +299,8 @@ test("chat reserves a distinct status row and shows live agent thinking", () => 
   room.agentState.detail = "reading the room";
   tui.session.resize(80, 12);
   frame = tui.stream.writes.at(-1)!;
-  expect(frame).toContain("agent thinking · reading the room");
+  expect(frame).toContain("agent thinking");
+  expect(frame).not.toContain("reading the room");
   expect(frame).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] agent thinking/);
   tui.stream.end();
 });
@@ -392,9 +407,15 @@ test("wide version control HUD reserves its lower third for live service logs", 
   const frame = tui.stream.writes.at(-1)!;
   expect(frame).toContain("VERSION CONTROL");
   expect(frame).toContain("abcdef0");
+  expect(frame).toContain("DB ");
+  expect(frame).toContain("CONN ");
+  expect(frame).toContain("FILES ");
+  expect(frame).toContain("BYTES/H ");
   expect(frame).toContain("LIVE LOGS");
   expect(frame).toContain("guest rendered 你好, 世界");
   expect(frame.indexOf("LIVE LOGS")).toBeGreaterThan(frame.indexOf("abcdef0"));
+  expect(frame.indexOf("DB ")).toBeGreaterThan(frame.indexOf("abcdef0"));
+  expect(frame.indexOf("DB ")).toBeLessThan(frame.indexOf("LIVE LOGS"));
   tui.stream.end();
 });
 

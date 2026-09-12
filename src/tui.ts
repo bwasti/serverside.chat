@@ -1490,17 +1490,17 @@ export class TuiSession {
     const status = createRoomScreen ? "setup  " : deleteRoomScreen ? "confirm  " : this.scrollOffset ? `↑${this.scrollOffset}  ` : "";
     const titleWidth = Math.max(1, mainWidth - terminalWidth(status));
     const baseTitle = createRoomScreen
-      ? "  + new room"
+      ? "+ new room"
       : deleteRoomScreen
-        ? `  delete # ${this.deletingRoomName}`
-      : `  # ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
+        ? `delete # ${this.deletingRoomName}`
+      : `# ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
     let headerPageUrl = !roomManagementScreen ? this.room.pageUrl : "";
     if (headerPageUrl && this.room.name === "lobby") {
       try { headerPageUrl = new URL(headerPageUrl).origin; } catch { /* keep the room URL */ }
     }
     const pageRef = headerPageUrl ? compactUrl(headerPageUrl) : "";
     const titleCandidates = pageRef
-      ? [`${baseTitle}   ↗ ${pageRef}`, `  # ${this.room.name}   ↗ ${pageRef}`, `  ↗ ${pageRef}`]
+      ? [`${baseTitle}   ↗ ${pageRef}`, `# ${this.room.name}   ↗ ${pageRef}`, `↗ ${pageRef}`]
       : [baseTitle];
     const plainTitle = titleCandidates.find((candidate) => terminalWidth(candidate) <= titleWidth)
       ?? truncate(titleCandidates.at(-1)!, titleWidth);
@@ -1512,7 +1512,7 @@ export class TuiSession {
       : `${SIDEBAR}${pad(truncate("  serverside.chat", sidebarWidth), sidebarWidth)}${RESET}`;
     const paneTone = this.sidebarFocused ? DIM : "";
     const hudHeader = hudWidth ? this.dimInactiveHud(`${HUD_MUTED}${pad("  VERSION CONTROL", hudWidth)}${RESET}`) : "";
-    const header = `${sidebarHeader}${paneTone}${HEADER}${padAnsi(linkedTitle, titleWidth)}${status}${RESET}${hudHeader}`;
+    const header = `${sidebarHeader}${paneTone}${HEADER}${centerAnsi(linkedTitle, titleWidth)}${status}${RESET}${hudHeader}`;
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const statusSpacerRow = topRows.length;
     const statusSpacer = `${this.sidebarRow(statusSpacerRow, sidebarWidth)}${paneTone}${CHAT}${" ".repeat(mainWidth)}${RESET}${this.hudRow(statusSpacerRow, hudWidth)}`;
@@ -1615,28 +1615,14 @@ export class TuiSession {
         help,
       ];
     }
-    const active = this.agentIsActive();
-    const spinner = active ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
     const sitePulse = Date.now() - this.room.lastRequestAt < 1_200 ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
     const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
     const healthTone = this.room.serviceErrors ? RED : GREEN;
-    const agentDisabled = this.room.policy.agentMode === "disabled";
-    const agentTone = agentDisabled ? MUTED : this.room.agentState.status === "error" ? RED : active ? MAGENTA : MUTED;
-    const site = `  SITE   ${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}   conn ${this.room.connectionCount}/${ROOM_LIMITS.connections}   req ${this.room.serviceRequests}   err ${this.room.serviceErrors}   ${averageLatency.toFixed(1)}ms`;
-    const agentMode = this.room.policy.agentMode === "passive" ? "passive" : this.room.policy.agentMode === "explicit" ? "/agent only" : "room policy";
-    const agent = `  AGENT  ${agentTone}${agentDisabled ? "·" : spinner}${STATUS} ${agentDisabled ? "disabled" : this.room.agentState.status}   ${agentDisabled ? agentMode : `${this.room.agentState.detail} · ${agentMode}`}`;
-    const identity = [site, agent];
-    const metrics = [
-      usageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatBytes),
-      usageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatBytes),
-      usageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String),
-      usageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatBytes),
-    ];
-    if (height < 15) return [site, agent, `  ${metrics.map((metric) => metric.compact).join("  ")}`];
-    const metricRows = width >= 50
-      ? [`  ${metrics[0]!.full}  ${metrics[1]!.full}`, `  ${metrics[2]!.full}  ${metrics[3]!.full}`]
-      : metrics.map((metric) => `  ${metric.full}`);
-    return [...identity, ...metricRows];
+    const full = `${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}   req ${this.room.serviceRequests}   err ${this.room.serviceErrors}   ${averageLatency.toFixed(1)}ms`;
+    const medium = `${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}   err ${this.room.serviceErrors}`;
+    const compact = `${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}`;
+    const site = [full, medium, compact].find((candidate) => visibleLength(candidate) <= width) ?? compact;
+    return [centerAnsi(site, width)];
   }
 
   private hudRow(index: number, width: number): string {
@@ -1657,9 +1643,23 @@ export class TuiSession {
       rendered = `${HUD}${padAnsi(log ? renderServiceLog(log) : "", width)}${RESET}`;
       return this.dimInactiveHud(rendered);
     }
-    const row = this.room.versionGraph[index];
+    const resources = this.resourceHudRows();
+    const resourceStart = Math.min(this.room.versionGraph.length, Math.max(0, logStart - resources.length));
+    if (index >= resourceStart && index < resourceStart + resources.length) {
+      rendered = `${HUD}${padAnsi(resources[index - resourceStart]!, width)}${RESET}`;
+      return this.dimInactiveHud(rendered);
+    }
+    const row = index < resourceStart ? this.room.versionGraph[index] : undefined;
     rendered = row ? `${HUD}${renderVersionRow(row.text, row.url, width)}${RESET}` : `${HUD}${" ".repeat(width)}${RESET}`;
     return this.dimInactiveHud(rendered);
+  }
+
+  private resourceHudRows(): string[] {
+    const db = denseUsageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatCompactBytes);
+    const connections = denseUsageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String);
+    const files = denseUsageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatCompactBytes);
+    const bytes = denseUsageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatCompactBytes);
+    return [` ${db} ${connections}`, ` ${files} ${bytes}`];
   }
 
   private dimInactiveHud(value: string): string {
@@ -1728,11 +1728,17 @@ export class TuiSession {
 
   private ambientStatus(width: number): string {
     const typing = this.typingStatus(width).trim();
-    const agent = this.agentIsActive()
-      ? `${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]} agent ${this.room.agentState.status}${this.room.agentState.detail ? ` · ${this.room.agentState.detail}` : ""}`
-      : "";
-    if (typing || agent) return truncate(`  ${[typing, agent].filter(Boolean).join(" · ")}`, width);
-    return this.anonymousLobbyStatus(width) || truncate("  · ready", width);
+    const agent = this.conciseAgentStatus();
+    if (typing || this.agentIsActive()) return truncate(`  ${[typing, agent].filter(Boolean).join(" · ")}`, width);
+    return this.anonymousLobbyStatus(width) || truncate(`  ${agent}`, width);
+  }
+
+  private conciseAgentStatus(): string {
+    const status = this.room.agentState.status;
+    if (this.room.policy.agentMode === "disabled" || status === "disabled") return "agent disabled";
+    if (status === "queued" || status === "thinking" || status === "working") return `${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]} agent ${status}`;
+    if (status === "error") return "agent error";
+    return this.room.policy.agentMode === "passive" ? "agent listening passively" : "agent waits for /agent";
   }
 
   private anonymousLobbyStatus(width: number): string {
@@ -2010,22 +2016,19 @@ function formatDuration(totalSeconds: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-function formatBytes(bytes: number): string {
+function formatCompactBytes(bytes: number): string {
   if (bytes < 1_024) return `${bytes}B`;
-  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(1)}KiB`;
-  return `${(bytes / 1_048_576).toFixed(1)}MiB`;
+  if (bytes < 1_048_576) return `${Math.round(bytes / 1_024)}K`;
+  const mib = bytes / 1_048_576;
+  return `${Number.isInteger(mib) ? mib : mib.toFixed(1)}M`;
 }
 
-function usageBar(label: string, used: number, limit: number, format: (value: number) => string): { full: string; compact: string } {
+function denseUsageBar(label: string, used: number, limit: number, format: (value: number) => string): string {
   const ratio = Math.max(0, Math.min(1, used / limit));
-  const filled = Math.round(ratio * 6);
+  const filled = Math.round(ratio * 4);
   const tone = ratio >= 0.9 ? RED : ratio >= 0.7 ? YELLOW : GREEN;
-  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(6 - filled)}${STATUS}`;
-  const percent = `${Math.round(ratio * 100)}%`;
-  return {
-    full: `${label} ${bar} ${format(used)}/${format(limit)}`,
-    compact: `${label} ${bar} ${percent}`,
-  };
+  const bar = `${tone}${"█".repeat(filled)}${MUTED}${"░".repeat(4 - filled)}${HUD}`;
+  return `${label} ${bar} ${format(used)}/${format(limit)}`;
 }
 
 function compactUrl(value: string): string {
@@ -2151,6 +2154,13 @@ function linkText(value: string, label: string, url: string, tone: string, resto
 function padAnsi(value: string, width: number): string {
   const clipped = clipAnsi(value, width);
   return clipped + " ".repeat(Math.max(0, width - visibleLength(clipped)));
+}
+
+function centerAnsi(value: string, width: number): string {
+  const clipped = clipAnsi(value, width);
+  const remaining = Math.max(0, width - visibleLength(clipped));
+  const left = Math.floor(remaining / 2);
+  return `${" ".repeat(left)}${clipped}${" ".repeat(remaining - left)}`;
 }
 
 function visibleLength(value: string): number {
