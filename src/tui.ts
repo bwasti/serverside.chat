@@ -32,7 +32,7 @@ const CHAT = `${ESC}48;5;235m${ESC}38;5;188m`;
 const CHAT_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
 const CHAT_SELECTED = `${ESC}48;5;59m${ESC}38;5;188m`;
 const CHAT_STATUS = `${ESC}48;5;236m${ESC}38;5;102m`;
-const CHAT_SECTION_A = `${ESC}48;5;236m`;
+const CHAT_SECTION_A = `${ESC}48;5;235m`;
 const CHAT_SECTION_B = `${ESC}48;5;237m`;
 const TEXT = `${ESC}38;5;188m`;
 const OWNER = `${ESC}38;5;110m`;
@@ -1434,20 +1434,21 @@ export class TuiSession {
           : deleteRoomScreen
             ? truncate(`  type ${this.deletingRoomName} exactly · TAB cancels`, mainWidth)
             : createRoomScreen ? "" : ambientStatus;
+    const showBottomStatus = !createRoomScreen || Boolean(bottomStatus);
     const inputLayout = layoutComposer(composerValue, !createRoomScreen && writable ? this.cursorOffset : 0, mainWidth);
-    const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - (bottomStatus ? 1 : 0) - 5));
+    const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - (showBottomStatus ? 1 : 0) - 5));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
     if (inputLayout.cursorRow < firstInputRow) firstInputRow = inputLayout.cursorRow;
     if (inputLayout.cursorRow >= firstInputRow + maximumComposerRows) firstInputRow = inputLayout.cursorRow - maximumComposerRows + 1;
     const inputRows = inputLayout.rows.slice(firstInputRow, firstInputRow + maximumComposerRows).map((row) => row.text);
     const commandMatches = writable && !roomManagementScreen ? this.commandMatches() : [];
-    const commandCapacity = Math.max(0, Math.min(8, this.height - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - 5));
+    const commandCapacity = Math.max(0, Math.min(8, this.height - topRows.length - inputRows.length - (showBottomStatus ? 1 : 0) - 5));
     const maximumCommandStart = Math.max(0, commandMatches.length - commandCapacity);
     const commandStart = Math.min(maximumCommandStart, Math.max(0, this.commandSelection - Math.floor(commandCapacity / 2)));
     const commandChoices = commandCapacity
       ? commandMatches.slice(commandStart, commandStart + commandCapacity).map((command, offset) => ({ command, index: commandStart + offset }))
       : [];
-    const messageRows = Math.max(1, this.height - topRows.length - inputRows.length - (bottomStatus ? 1 : 0) - commandChoices.length - 4);
+    const messageRows = Math.max(1, this.height - topRows.length - inputRows.length - (showBottomStatus ? 1 : 0) - commandChoices.length - 4);
     const messageCacheRoom = createRoomScreen ? "__new-room__" : deleteRoomScreen ? "__delete-room__" : this.room.name;
     if (this.messageCacheRoom !== messageCacheRoom || this.messageCacheWidth !== mainWidth) {
       this.messageCacheRoom = messageCacheRoom;
@@ -1461,9 +1462,11 @@ export class TuiSession {
       : deleteRoomScreen
         ? this.deleteRoomFormRows().map((text) => ({ text, kind: "form" }))
         : roomMessages.flatMap((message, index) => {
-          const showAuthor = index === 0 || roomMessages[index - 1]!.author !== message.author;
+          const isTrunkUpdate = message.kind === "system" && message.author === "trunk";
+          const previous = roomMessages[index - 1];
+          const showAuthor = !isTrunkUpdate && (!previous || previous.author !== message.author || previous.author === "trunk");
           if (showAuthor) sectionIndex++;
-          const section = (sectionIndex % 2) as 0 | 1;
+          const section = (Math.max(0, sectionIndex) % 2) as 0 | 1;
           let cached = this.messageCache.get(message.id);
           if (!cached || cached.showAuthor !== showAuthor || cached.section !== section) {
             cached = { showAuthor, section, rows: this.formatMessage(message, mainWidth, showAuthor, section) };
@@ -1532,7 +1535,7 @@ export class TuiSession {
       const renderedText = this.sidebarFocused ? rendered.replaceAll(`${ESC}22m`, `${ESC}22m${DIM}`) : rendered;
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
-    const typing = bottomStatus
+    const typing = showBottomStatus
       ? (() => {
           const padded = pad(bottomStatus, mainWidth);
           const rendered = this.localNotice && /^https?:\/\//.test(this.localNotice)
@@ -1702,28 +1705,31 @@ export class TuiSession {
     const contentWidth = Math.max(1, width - gutter);
     const continuation = " ".repeat(gutter);
     const sectionTone = section === 0 ? CHAT_SECTION_A : CHAT_SECTION_B;
-    const baseTone = message.kind === "system" ? CHAT_MUTED : CHAT;
     const contentTone = message.kind === "system" ? MUTED : TEXT;
     const timestamp = `  ${MUTED}${time}${contentTone}  `;
     const nameTone = message.author === "room-agent" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : TEXT;
     const displayAuthor = truncate(message.author, contentWidth);
     const styledName = `${ESC}1m${nameTone}${displayAuthor}${ESC}22m${contentTone}`;
-    const authorRows = showAuthor ? [`${continuation}${sectionTone}${styledName}${baseTone}`] : [];
+    if (message.kind === "system" && message.author === "trunk") {
+      return wrap(message.text.replace(/\s+/g, " "), contentWidth)
+        .map((line, index) => `${CHAT}${index === 0 ? timestamp : continuation}${ESC}3m${MUTED}${line}${ESC}23m${CHAT_MUTED}`);
+    }
+    const authorRows = showAuthor ? [`${sectionTone}${continuation}${styledName}`] : [];
     const replyRows = message.replyTo
-      ? wrap(`↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, contentWidth).map((line) => `${sectionTone}${continuation}${MUTED}${line}${baseTone}`)
+      ? wrap(`↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, contentWidth).map((line) => `${sectionTone}${continuation}${MUTED}${line}${contentTone}`)
       : [];
     if (message.kind === "commit" && message.url) {
       const [hash, ...title] = message.text.split(" ");
       const suffix = `${title.join(" ")}${message.detail ? ` — ${message.detail}` : ""}`;
       const contentRows = wrap(`${hash} ${suffix}`, contentWidth).map((line, index) => {
         const prefix = index === 0 ? timestamp : continuation;
-        if (index !== 0 || !line.startsWith(hash)) return `${sectionTone}${prefix}${ESC}3m${line}${ESC}23m${baseTone}`;
-        return `${sectionTone}${prefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${line.slice(hash.length)}${ESC}23m${baseTone}`;
+        if (index !== 0 || !line.startsWith(hash)) return `${sectionTone}${prefix}${ESC}3m${line}${ESC}23m${contentTone}`;
+        return `${sectionTone}${prefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${line.slice(hash.length)}${ESC}23m${contentTone}`;
       });
       return [...authorRows, ...replyRows, ...contentRows];
     }
     const contentRows = wrap(message.text.replace(/\s+/g, " "), contentWidth)
-      .map((line, index) => `${sectionTone}${index === 0 ? timestamp : continuation}${line}${baseTone}`);
+      .map((line, index) => `${sectionTone}${index === 0 ? timestamp : continuation}${line}`);
     return [...authorRows, ...replyRows, ...contentRows];
   }
 
@@ -1750,7 +1756,7 @@ export class TuiSession {
     if (this.room.policy.agentMode === "disabled" || status === "disabled") return "agent disabled";
     if (status === "queued" || status === "thinking" || status === "working") return `${SPINNER[Math.floor(Date.now() / 100) % SPINNER.length]} agent ${status}`;
     if (status === "error") return "agent error";
-    return this.room.policy.agentMode === "passive" ? "agent listening passively" : "agent waits for /agent";
+    return this.room.policy.agentMode === "passive" ? "" : "agent waits for /agent";
   }
 
   private anonymousLobbyStatus(width: number): string {

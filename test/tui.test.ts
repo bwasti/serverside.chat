@@ -220,11 +220,30 @@ test("consecutive messages share an author header and align under a fixed time g
   expect(secondMessage).toBeGreaterThan(firstMessage);
   expect(bobHeader).toBe(secondMessage + 1);
   expect(thirdMessage).toBe(bobHeader + 1);
-  expect(frame).toContain("\x1b[48;5;236m\x1b[1m\x1b[38;5;110malice\x1b[22m\x1b[38;5;188m\x1b[48;5;235m");
-  expect(frame).toContain(`\x1b[48;5;236m  \x1b[38;5;102m${time(firstAt)}\x1b[38;5;188m  first message`);
-  expect(frame).toContain(`\x1b[48;5;236m  \x1b[38;5;102m${time(secondAt)}\x1b[38;5;188m  second message\x1b[48;5;235m`);
-  expect(frame).toContain("\x1b[48;5;237m\x1b[1m\x1b[38;5;188mbob\x1b[22m\x1b[38;5;188m\x1b[48;5;235m");
-  expect(frame).toContain(`\x1b[48;5;237m  \x1b[38;5;102m${time(thirdAt)}\x1b[38;5;188m  third message\x1b[48;5;235m`);
+  expect(frame).toContain("\x1b[48;5;235m         \x1b[1m\x1b[38;5;110malice\x1b[22m\x1b[38;5;188m");
+  expect(frame).toContain(`\x1b[48;5;235m  \x1b[38;5;102m${time(firstAt)}\x1b[38;5;188m  first message`);
+  expect(frame).toContain(`\x1b[48;5;235m  \x1b[38;5;102m${time(secondAt)}\x1b[38;5;188m  second message`);
+  expect(frame).toContain("\x1b[48;5;237m         \x1b[1m\x1b[38;5;188mbob\x1b[22m\x1b[38;5;188m");
+  expect(frame).toContain(`\x1b[48;5;237m  \x1b[38;5;102m${time(thirdAt)}\x1b[38;5;188m  third message`);
+  const bobMessageRow = frame.split("\r\n").find((line) => line.includes("third message"))!;
+  expect(bobMessageRow.slice(bobMessageRow.indexOf("third message"))).not.toContain("\x1b[48;5;235m");
+  tui.stream.end();
+});
+
+test("trunk updates render as quiet status rows without an author heading", () => {
+  const room = new Room("mine", 250, "https://example.test/mine", "alice");
+  room.messages.push(
+    { id: 1, kind: "chat", author: "alice", text: "ship it", at: new Date(2026, 0, 2, 9, 5), agentVisible: true },
+    { id: 2, kind: "system", author: "trunk", text: "updated to abc1234 by @alice", at: new Date(2026, 0, 2, 9, 6), agentVisible: true },
+    { id: 3, kind: "chat", author: "bob", text: "looks good", at: new Date(2026, 0, 2, 9, 7), agentVisible: true },
+  );
+  const tui = open(room);
+  tui.session.resize(60, 20);
+  const frame = tui.stream.writes.at(-1)!;
+  expect(frame).not.toContain("trunk");
+  expect(frame).toContain("updated to abc1234 by @alice");
+  expect(frame).toContain("\x1b[3m\x1b[38;5;102mupdated to abc1234 by @alice\x1b[23m");
+  expect(frame).toContain("\x1b[48;5;237m         \x1b[1m\x1b[38;5;188mbob");
   tui.stream.end();
 });
 
@@ -294,10 +313,11 @@ test("chat reserves a distinct status row for concise passive and active agent s
   let lines = frame.split("\r\n");
   const visible = (line: string) => line.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   const messageRow = lines.findIndex((line) => visible(line).includes("latest message"));
-  const readyRow = lines.findIndex((line) => visible(line).includes("agent listening passively"));
+  const readyRow = messageRow + 1;
   const composerRow = lines.findIndex((line) => visible(line).includes("type / to see commands"));
   expect(messageRow).toBeGreaterThan(-1);
-  expect(readyRow).toBe(messageRow + 1);
+  expect(frame).not.toContain("agent listening passively");
+  expect(visible(lines[readyRow]!)).not.toContain("agent");
   expect(composerRow).toBeGreaterThan(readyRow);
   expect(lines[readyRow]).toContain("\x1b[48;5;236m");
 
