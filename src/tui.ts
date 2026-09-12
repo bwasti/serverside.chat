@@ -2044,12 +2044,12 @@ export class TuiSession {
     this.sidebarAnimationTimer = setInterval(() => {
       const target = this.sidebarFocused ? this.expandedSidebarWidth() : 3;
       const delta = target - this.sidebarWidth;
-      if (Math.abs(delta) <= 2) {
+      if (Math.abs(delta) <= 6) {
         this.sidebarWidth = target;
         clearInterval(this.sidebarAnimationTimer);
         this.sidebarAnimationTimer = undefined;
       } else {
-        this.sidebarWidth += Math.sign(delta) * 2;
+        this.sidebarWidth += Math.sign(delta) * 6;
       }
       this.render();
     }, 30);
