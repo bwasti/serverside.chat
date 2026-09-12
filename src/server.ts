@@ -13,6 +13,7 @@ import { RoomDirectory } from "./room-directory";
 import { AnonymousLobbyGate, FireworksLobbyModerator } from "./lobby-moderation";
 import { RoomCapabilitySession, RoomShellSession } from "./room-shell";
 import { attachRoomSftp } from "./room-sftp";
+import { AdaptiveRateLimiter, RATE_LIMITS } from "./rate-limit";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -58,6 +59,7 @@ if (fireworksKey) {
   anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()));
 }
 const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: string) => anonymousLobbyGate.review(principal, text) : undefined;
+const rateLimiter = new AdaptiveRateLimiter();
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
   if (room.name === "lobby" && guideAgent) {
     room.setAgentResponder((history, activity) => guideAgent.respond(history, activity));
@@ -69,10 +71,13 @@ const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, worksp
   });
 }, roomSiteDomain);
 const rooms = directory.rooms;
-const webServer = startWebServer(directory, webHost, webPort, dataDir, accounts, oauth, developmentAuth, reviewAnonymousLobby);
-const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection) => {
+const webServer = startWebServer(directory, webHost, webPort, dataDir, accounts, oauth, developmentAuth, reviewAnonymousLobby, rateLimiter);
+const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connection, info) => {
+  const connectionLimit = rateLimiter.consume(`ssh:connection:${info.ip}`, RATE_LIMITS.sshConnection);
+  if (!connectionLimit.allowed) { client.end(); return; }
   let principal: Principal | undefined;
   client.on("authentication", (context) => {
+    if (!rateLimiter.consume(`ssh:authentication:${info.ip}`, RATE_LIMITS.sshConnection).allowed) return context.reject(["publickey"]);
     if (context.method !== "publickey") return context.reject(["publickey"]);
     if (!context.key?.algo || !context.key.data) return context.reject(["publickey"]);
     const parsed = utils.parseKey(`${context.key.algo} ${context.key.data.toString("base64")}`);
@@ -87,7 +92,8 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
   client.on("ready", () => {
     if (!principal) return client.end();
     accounts.audit(principal, undefined, "ssh.login", principal.keyFingerprint ?? "");
-    client.on("session", (accept) => {
+    client.on("session", (accept, reject) => {
+      if (!rateLimiter.consume(`ssh:session:${principal!.id}`, RATE_LIMITS.sshConnection).allowed) { reject(); return; }
       const session: Session = accept();
       let cols = 80;
       let rows = 24;
@@ -109,7 +115,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         if (!principal!.authenticated || principal!.kind !== "user") { rejectSftp(); return; }
         directory.prepareAccount(principal!);
         accounts.audit(principal!, undefined, "sftp.open");
-        attachRoomSftp(acceptSftp(), principal!, accounts, directory);
+        attachRoomSftp(acceptSftp(), principal!, accounts, directory, () => rateLimiter.consume(`sftp:${principal!.id}`, RATE_LIMITS.sshOperation));
       });
       const launch = (stream: ServerChannel, selectedRoom?: string, requirePty = false, inviteToken?: string) => {
         if (requirePty && !hasPty) {
@@ -139,7 +145,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
           const requestedHandle = principal!.requestedHandle;
           refreshPrincipal = () => accounts.principalForKey(algorithm, keyBlob, requestedHandle);
         }
-        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom, signInUrl, refreshPrincipal, authenticatedRoom, directory, reviewAnonymousLobby);
+        tui = new TuiSession(stream, rooms, principal!, accounts, selectedRoom, signInUrl, refreshPrincipal, authenticatedRoom, directory, reviewAnonymousLobby, rateLimiter);
         tui.resize(cols, rows);
       };
       session.on("shell", (acceptShell) => launch(acceptShell()));
@@ -164,7 +170,7 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
             stream.on("close", leave);
             stream.on("end", leave);
             accounts.audit(principal!, command.roomName, "shell.open");
-            roomShell = new RoomShellSession(stream, new RoomCapabilitySession(principal!, room, workspace, accounts));
+            roomShell = new RoomShellSession(stream, new RoomCapabilitySession(principal!, room, workspace, accounts), () => rateLimiter.consume(`room-shell:${principal!.id}`, RATE_LIMITS.sshOperation));
             roomShell.resize(cols, rows);
           }
           else if (!principal!.authenticated) launch(stream, undefined, true, command.token);

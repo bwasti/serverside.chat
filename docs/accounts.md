@@ -6,7 +6,7 @@ Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript c
 
 Site roles and room roles are independent:
 
-- A site `admin` may create rooms and rename or delete any room. The configured bootstrap owner receives this role.
+- A site `admin` may view and moderate every room, and may create, rename, or delete rooms globally. The configured bootstrap owner receives this role.
 - A site `member` may create, rename, and delete rooms they own.
 - Every authenticated account receives one owned starter room named from its handle. Room names are globally unique URL slugs using 1–32 lowercase letters, numbers, and dashes.
 - `lobby` is a public, host-managed system room. It is the default landing room, every authenticated account receives contributor membership, and it does not consume an ownership slot. It cannot be renamed, deleted, or reconfigured through room commands.
@@ -48,12 +48,15 @@ Finder sends the credential through HTTP Basic authentication only over the exis
 
 Room `owner` and room `admin` can inspect or change these controls with `/permissions`. Only a room owner or site admin can rename or delete a room. Disabling contributions does not lock administrators out of the host policy commands.
 
+Room owners, room admins, and site admins can moderate persisted chat messages. With an empty composer, Up selects a message; Enter creates a durable reply reference, and Delete opens a keyboard confirmation before removal. The deletion is saved immediately and written to the host audit log. Reply references retain a bounded author/excerpt snapshot so a discussion remains intelligible if its target is later removed.
+
 ## Enforcement boundaries
 
 - Room visibility is checked before an SSH room is listed and before HTTP execution or WebSocket upgrade.
 - Chat authorization is checked before persistence, broadcast, typing presence, or model routing.
 - The model receives only messages the host marked agent-visible at insertion time.
 - Agent invocation requires both contribution authority and a non-disabled agent policy.
+- Message deletion requires room-admin authority (which includes the room owner and a site admin) and is audited.
 - Canonical promotion requires the owner identity and an explicit `/agent` run; prompt text cannot grant it.
 - Policy changes, logins, invitation creation and redemption, mount credential lifecycle, and remote filesystem mutations are written to `audit_events`.
 

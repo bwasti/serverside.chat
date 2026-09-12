@@ -8,6 +8,7 @@ import { AccountStore, anonymousPrincipal } from "../src/auth";
 import { Room } from "../src/room";
 import { RoomDirectory } from "../src/room-directory";
 import { layoutComposer, renderServiceLog, slashCommandMatches, TuiSession } from "../src/tui";
+import { AdaptiveRateLimiter } from "../src/rate-limit";
 
 class FakeStream extends EventEmitter {
   destroyed = false;
@@ -40,6 +41,25 @@ test("composer editing preserves key order and supports shell shortcuts", () => 
   expect(tui.state().input).toBe(">ab<");
   expect(tui.state().cursorOffset).toBe(3);
   tui.stream.end();
+});
+
+test("authenticated chat spam backs off across TUI reconnects without losing the draft", () => {
+  const room = new Room("mine");
+  const limiter = new AdaptiveRateLimiter(() => 1_000);
+  const first = new FakeStream();
+  new TuiSession(first as unknown as ServerChannel, [room], "alice", undefined, undefined, undefined, undefined, undefined, undefined, undefined, limiter);
+  for (let index = 0; index < 9; index += 1) first.emit("data", Buffer.from(`message ${index}\r`));
+  expect(room.messages).toHaveLength(8);
+  expect(first.writes.at(-1)).toContain("slow down · retry in 3s");
+
+  const second = new FakeStream();
+  const session = new TuiSession(second as unknown as ServerChannel, [room], "alice", undefined, undefined, undefined, undefined, undefined, undefined, undefined, limiter);
+  second.emit("data", Buffer.from("reconnected spam\r"));
+  expect(room.messages).toHaveLength(8);
+  expect((session as unknown as { input: string }).input).toBe("reconnected spam");
+  expect(second.writes.at(-1)).toContain("slow down · retry in 3s");
+  first.end();
+  second.end();
 });
 
 test("composer layout word-wraps and tracks the editing cursor", () => {
@@ -108,6 +128,39 @@ test("mouse wheel scrolls through chat history and restores the live edge", () =
   expect(tui.stream.writes.at(-1)).toContain("message 19");
   tui.stream.end();
   expect(tui.stream.writes.at(-1)).toContain("\x1b[?1006l\x1b[?1000l");
+});
+
+test("empty-composer arrows select messages for replies and confirmed admin deletion", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-message-actions-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  const room = directory.room("mine")!;
+  room.chat(owner, "message to reply to");
+  const targetId = room.messages.at(-1)!.id;
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("\x1b[A"));
+  expect((session as unknown as { selectedMessageId?: number }).selectedMessageId).toBe(targetId);
+  expect(stream.writes.at(-1)).toContain("selected @alice · ENTER reply · DELETE remove");
+  expect(stream.writes.at(-1)).toContain("\x1b[48;5;59m");
+  stream.emit("data", Buffer.from("\r"));
+  expect(stream.writes.at(-1)).toContain("replying to @alice  message to reply to");
+  stream.emit("data", Buffer.from("reply body\r"));
+  expect(room.messages.at(-1)).toMatchObject({ text: "reply body", replyTo: { id: targetId, author: "alice", excerpt: "message to reply to" } });
+
+  const replyId = room.messages.at(-1)!.id;
+  stream.emit("data", Buffer.from("\x1b[A\x7f"));
+  expect((session as unknown as { deleteConfirmationId?: number }).deleteConfirmationId).toBe(replyId);
+  expect(stream.writes.at(-1)).toContain("Y confirm · N cancel");
+  stream.emit("data", Buffer.from("y"));
+  expect(room.messages.some((message) => message.id === replyId)).toBe(false);
+  expect(stream.writes.at(-1)).toContain("message deleted");
+
+  stream.end();
+  accounts.close();
 });
 
 test("owner and agent names use distinct Zenburn blue and purple accents", () => {

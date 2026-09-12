@@ -1,8 +1,9 @@
 import type { AccountStore, AgentMode, ContributionPolicy, MountCredential, Principal, RoomRole, RoomVisibility } from "./auth";
-import { ROOM_LIMITS, type Message, type Room } from "./room";
+import { ROOM_LIMITS, type Message, type MessageKind, type Room } from "./room";
 import type { RoomDirectory, RoomDirectoryEvent } from "./room-directory";
 import { parseArguments, RoomCapabilitySession } from "./room-shell";
 import type { RoomEditor } from "./editor";
+import { AdaptiveRateLimiter, RATE_LIMITS, retrySeconds } from "./rate-limit";
 
 export interface TuiStream {
   readonly destroyed: boolean;
@@ -29,6 +30,7 @@ const HUD_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
 const MUTED = `${ESC}38;5;102m`;
 const CHAT = `${ESC}48;5;235m${ESC}38;5;188m`;
 const CHAT_MUTED = `${ESC}48;5;235m${ESC}38;5;102m`;
+const CHAT_SELECTED = `${ESC}48;5;59m${ESC}38;5;188m`;
 const OWNER = `${ESC}38;5;110m`;
 const DIM = `${ESC}2m`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -108,6 +110,9 @@ export class TuiSession {
   private editor?: RoomEditor;
   private mountPanel?: { credential: MountCredential; scroll: number };
   private shellPanel = false;
+  private selectedMessageId?: number;
+  private replyToMessageId?: number;
+  private deleteConfirmationId?: number;
 
   constructor(
     private readonly stream: TuiStream,
@@ -120,6 +125,7 @@ export class TuiSession {
     authenticatedRoom?: string,
     private readonly directory?: RoomDirectory,
     private readonly reviewAnonymousLobby?: AnonymousLobbyReview,
+    private readonly rateLimiter?: AdaptiveRateLimiter,
   ) {
     this.principal = typeof principal === "string" ? { id: `local:${principal}`, kind: "user", handle: principal, displayName: principal, authenticated: true } : principal;
     this.allRooms = rooms;
@@ -158,6 +164,19 @@ export class TuiSession {
   }
 
   private onData(data: Buffer): void {
+    if (this.rateLimiter) {
+      const policy = this.principal.authenticated ? RATE_LIMITS.authenticatedSocket : RATE_LIMITS.anonymousSocket;
+      const decision = this.rateLimiter.consume(
+        `tui-input:${this.principal.id}`,
+        policy,
+        Math.max(1, Math.ceil(data.byteLength / 1_024)),
+      );
+      if (!decision.allowed) {
+        this.localNotice = `input rate limited · retry in ${retrySeconds(decision)}s`;
+        this.render();
+        return;
+      }
+    }
     if (this.accountPanel) {
       this.handleAccountPanelData(data);
       return;
@@ -177,6 +196,10 @@ export class TuiSession {
         this.localNotice = action.notice ?? "closed editor";
       }
       this.render();
+      return;
+    }
+    if (this.deleteConfirmationId !== undefined) {
+      this.handleDeleteConfirmationData(data);
       return;
     }
     // SSH is a byte stream: a packet may contain one key, many keys, or pasted lines.
@@ -227,6 +250,25 @@ export class TuiSession {
           continue;
         }
         if (this.sidebarFocused) continue;
+        if (this.selectedMessageId !== undefined && (char === "\r" || char === "\n")) {
+          if (char === "\n" && this.lastWasCarriageReturn) {
+            this.lastWasCarriageReturn = false;
+            continue;
+          }
+          this.lastWasCarriageReturn = char === "\r";
+          if (this.canUseComposer()) {
+            this.replyToMessageId = this.selectedMessageId;
+            this.selectedMessageId = undefined;
+            this.localNotice = "";
+          } else this.localNotice = "room policy does not allow replies";
+          dirty = true;
+          continue;
+        }
+        if (this.selectedMessageId !== undefined && (char === "\x7f" || char === "\b")) {
+          this.beginMessageDeletion();
+          dirty = true;
+          continue;
+        }
         if (this.anonymousSubmissionPending) continue;
         if (!this.canUseComposer()) continue;
         if (this.creatingRoom && this.createRoomField !== 0) {
@@ -267,7 +309,10 @@ export class TuiSession {
         else if (char === "\x17") changed = this.deleteWordBack();
         else if (char === "\x15") changed = this.deleteBeforeCursor();
         else if (char === "\x0b") changed = this.deleteAfterCursor();
-        else if (!/[\x00-\x1f\x7f]/.test(char)) changed = this.insertAtCursor(char);
+        else if (!/[\x00-\x1f\x7f]/.test(char)) {
+          this.selectedMessageId = undefined;
+          changed = this.insertAtCursor(char);
+        }
         if (changed) this.localNotice = "";
         inputChanged = changed || inputChanged;
         dirty = changed || dirty;
@@ -297,6 +342,10 @@ export class TuiSession {
     }
     const page = sequence.match(/^\x1b\[([56])~$/);
     if (page && !this.sidebarFocused) { this.scrollChat(page[1] === "5" ? 8 : -8); return { dirty: true, inputChanged: false }; }
+    if (sequence === "\x1b[3~" && this.selectedMessageId !== undefined) {
+      this.beginMessageDeletion();
+      return { dirty: true, inputChanged: false };
+    }
     if (/^\x1b(?:\[(?:H|1~|7~)|OH)$/.test(sequence) && !this.sidebarFocused) return { dirty: this.moveCursorTo(0), inputChanged: false };
     if (/^\x1b(?:\[(?:F|4~|8~)|OF)$/.test(sequence) && !this.sidebarFocused) return { dirty: this.moveCursorTo(Array.from(this.input).length), inputChanged: false };
     if (sequence === "\x1bb" && !this.sidebarFocused) return { dirty: this.moveWord(-1), inputChanged: false };
@@ -350,6 +399,9 @@ export class TuiSession {
     this.room = this.rooms[nextRoom]!;
     this.write(`\x1b]777;room:${encodeURIComponent(this.room.name)}\x07`);
     this.scrollOffset = 0;
+    this.selectedMessageId = undefined;
+    this.replyToMessageId = undefined;
+    this.deleteConfirmationId = undefined;
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
     this.unsubscribeService = this.room.subscribeService(() => this.scheduleRender());
     this.messageCache.clear();
@@ -384,11 +436,63 @@ export class TuiSession {
       this.commandSelection = (this.commandSelection + (direction === "A" ? -1 : 1) + matches.length) % matches.length;
       return true;
     }
+    if (!this.input && !this.creatingRoom && (direction === "A" || direction === "B") && (this.selectedMessageId !== undefined || direction === "A")) {
+      return this.moveMessageSelection(direction === "A" ? -1 : 1);
+    }
     if (direction === "C") return this.moveCursor(1);
     if (direction === "D") return this.moveCursor(-1);
     const moved = this.moveCursorVertical(direction === "A" ? -1 : 1);
     if (!moved) this.scrollChat(direction === "A" ? 1 : -1);
     return true;
+  }
+
+  private moveMessageSelection(offset: -1 | 1): boolean {
+    if (!this.room.messages.length) return false;
+    if (this.selectedMessageId === undefined) {
+      if (offset > 0) return false;
+      this.selectedMessageId = this.room.messages.at(-1)!.id;
+    } else {
+      const current = this.room.messages.findIndex((message) => message.id === this.selectedMessageId);
+      const next = current + offset;
+      if (current < 0 || next >= this.room.messages.length) {
+        this.selectedMessageId = undefined;
+        this.scrollOffset = 0;
+      } else this.selectedMessageId = this.room.messages[Math.max(0, next)]!.id;
+    }
+    this.localNotice = "";
+    return true;
+  }
+
+  private beginMessageDeletion(): void {
+    if (this.selectedMessageId === undefined) return;
+    if (!this.room.canDeleteMessage(this.principal)) {
+      this.localNotice = "deleting messages requires a room admin";
+      return;
+    }
+    this.deleteConfirmationId = this.selectedMessageId;
+    this.localNotice = "";
+  }
+
+  private handleDeleteConfirmationData(data: Buffer): void {
+    const value = data.toString("utf8");
+    if (value.includes("\x03") || value.includes("\x04")) {
+      this.stream.end();
+      return;
+    }
+    const id = this.deleteConfirmationId;
+    if (id === undefined) return;
+    if (value === "y" || value === "Y") {
+      try {
+        this.localNotice = this.room.deleteMessage(this.principal, id) ? "message deleted" : "message no longer exists";
+        this.messageCache.delete(id);
+        if (this.replyToMessageId === id) this.replyToMessageId = undefined;
+        this.selectedMessageId = undefined;
+      } catch (error) {
+        this.localNotice = error instanceof Error ? error.message : "message could not be deleted";
+      }
+    }
+    this.deleteConfirmationId = undefined;
+    this.render();
   }
 
   private moveCursor(offset: number): boolean {
@@ -530,6 +634,8 @@ export class TuiSession {
 
   private submit(): boolean {
     const line = this.input;
+    const replyToId = this.replyToMessageId;
+    if (line && line !== "/quit" && !this.allowSubmission(line)) return false;
     this.input = "";
     this.cursorOffset = 0;
     this.preferredCursorColumn = undefined;
@@ -537,6 +643,8 @@ export class TuiSession {
     this.commandSelection = 0;
     this.room.setTyping(this.username, false);
     this.scrollOffset = 0;
+    this.selectedMessageId = undefined;
+    this.replyToMessageId = undefined;
     if (line === "/quit") {
       this.stream.end();
       return true;
@@ -575,19 +683,33 @@ export class TuiSession {
     }
     if (this.handleHostCommand(line)) return false;
     if (this.canSubmitAnonymousLobby()) {
-      if (line) void this.submitAnonymousLobby(line === "/help" ? "help" : line);
+      if (line) void this.submitAnonymousLobby(line === "/help" ? "help" : line, replyToId);
       return false;
     }
     const accepted = line === "/help"
       ? this.room.agent(this.principal, "")
       : line.startsWith("/agent")
         ? this.room.agent(this.principal, line.slice(6))
-        : this.room.chat(this.principal, line);
+        : this.room.chat(this.principal, line, replyToId);
     if (!accepted && line) this.localNotice = "room policy does not allow that action";
     return false;
   }
 
-  private async submitAnonymousLobby(text: string): Promise<void> {
+  private allowSubmission(line: string): boolean {
+    if (!this.rateLimiter) return true;
+    const explicitAgent = line === "/help" || line.startsWith("/agent");
+    const command = line.startsWith("/") && !explicitAgent;
+    const policy = explicitAgent
+      ? RATE_LIMITS.agentRequest
+      : command ? RATE_LIMITS.authenticatedCommand : this.principal.authenticated ? RATE_LIMITS.authenticatedChat : RATE_LIMITS.anonymousChat;
+    const scope = explicitAgent ? "agent" : command ? "command" : "chat";
+    const decision = this.rateLimiter.consume(`tui:${scope}:${this.principal.id}`, policy);
+    if (decision.allowed) return true;
+    this.localNotice = `slow down · retry in ${retrySeconds(decision)}s`;
+    return false;
+  }
+
+  private async submitAnonymousLobby(text: string, replyToId?: number): Promise<void> {
     if (!this.reviewAnonymousLobby || this.anonymousSubmissionPending) return;
     const lobby = this.room;
     this.anonymousSubmissionPending = true;
@@ -596,7 +718,7 @@ export class TuiSession {
     try {
       const decision = await this.reviewAnonymousLobby(this.principal, text);
       if (this.closed) return;
-      if (decision.allowed && lobby.acceptModeratedAnonymousChat(this.principal, text)) this.localNotice = "";
+      if (decision.allowed && lobby.acceptModeratedAnonymousChat(this.principal, text, replyToId)) this.localNotice = "";
       else this.localNotice = decision.reason ?? "message was not posted";
     } catch {
       if (!this.closed) this.localNotice = "lobby moderation is unavailable · try again later";
@@ -1033,6 +1155,11 @@ export class TuiSession {
       this.creatingRoom = false;
     }
     const createRoomScreen = this.onCreateRoomScreen();
+    if (this.selectedMessageId !== undefined && !this.room.messages.some((message) => message.id === this.selectedMessageId)) this.selectedMessageId = undefined;
+    if (this.replyToMessageId !== undefined && !this.room.messages.some((message) => message.id === this.replyToMessageId)) {
+      this.replyToMessageId = undefined;
+      this.localNotice = "the message being replied to was deleted";
+    }
     const sidebarWidth = Math.round(this.sidebarWidth);
     const hudWidth = this.currentHudWidth();
     const mainWidth = this.mainWidth();
@@ -1052,9 +1179,15 @@ export class TuiSession {
     const composerValue = createRoomScreen
       ? createRoomFooter
       : writable ? this.input : readOnlyText;
-    const bottomStatus = this.localNotice
-      ? truncate(`  ${this.localNotice}`, mainWidth)
-      : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
+    const selectedMessage = this.selectedMessageId === undefined ? undefined : this.room.messages.find((message) => message.id === this.selectedMessageId);
+    const deletingMessage = this.deleteConfirmationId === undefined ? undefined : this.room.messages.find((message) => message.id === this.deleteConfirmationId);
+    const bottomStatus = deletingMessage
+      ? truncate(`  delete @${deletingMessage.author}'s message?  Y confirm · N cancel`, mainWidth)
+      : this.localNotice
+        ? truncate(`  ${this.localNotice}`, mainWidth)
+        : selectedMessage
+          ? truncate(`  selected @${selectedMessage.author} · ENTER reply${this.room.canDeleteMessage(this.principal) ? " · DELETE remove" : ""} · ↓ cancel`, mainWidth)
+          : createRoomScreen ? "" : this.anonymousLobbyStatus(mainWidth) || this.typingStatus(mainWidth);
     const inputLayout = layoutComposer(composerValue, !createRoomScreen && writable ? this.cursorOffset : 0, mainWidth);
     const maximumComposerRows = Math.max(1, Math.min(5, this.height - topRows.length - (bottomStatus ? 1 : 0) - 5));
     let firstInputRow = Math.max(0, inputLayout.rows.length - maximumComposerRows);
@@ -1076,7 +1209,7 @@ export class TuiSession {
       this.messageCache.clear();
     }
     const roomMessages = createRoomScreen ? [] : this.room.messages;
-    const messages = createRoomScreen
+    const messages: Array<{ text: string; kind: MessageKind | "form"; id?: number }> = createRoomScreen
       ? this.createRoomFormRows().map((text) => ({ text, kind: "form" }))
       : roomMessages.flatMap((message) => {
           let rows = this.messageCache.get(message.id);
@@ -1084,7 +1217,7 @@ export class TuiSession {
             rows = this.formatMessage(message, mainWidth);
             this.messageCache.set(message.id, rows);
           }
-          return rows.map((text) => ({ text, kind: message.kind }));
+          return rows.map((text) => ({ text, kind: message.kind, id: message.id }));
         });
     if (this.messageCache.size > roomMessages.length) {
       const retained = new Set(roomMessages.map((message) => message.id));
@@ -1092,10 +1225,18 @@ export class TuiSession {
     }
     const maximumOffset = Math.max(0, messages.length - messageRows);
     this.scrollOffset = Math.min(this.scrollOffset, maximumOffset);
+    if (this.selectedMessageId !== undefined) {
+      const firstSelected = messages.findIndex((message) => message.id === this.selectedMessageId);
+      const lastSelected = messages.map((message) => message.id).lastIndexOf(this.selectedMessageId);
+      const viewportEnd = messages.length - this.scrollOffset;
+      const viewportStart = Math.max(0, viewportEnd - messageRows);
+      if (firstSelected >= 0 && firstSelected < viewportStart) this.scrollOffset = messages.length - Math.min(messages.length, firstSelected + messageRows);
+      else if (lastSelected >= viewportEnd) this.scrollOffset = Math.max(0, messages.length - lastSelected - 1);
+    }
     const end = messages.length - this.scrollOffset;
     const visible = messages.slice(Math.max(0, end - messageRows), end);
     while (visible.length < messageRows) {
-      const blank = { text: "", kind: "chat" };
+      const blank: { text: string; kind: MessageKind | "form"; id?: number } = { text: "", kind: "chat" };
       if (createRoomScreen) visible.push(blank);
       else visible.unshift(blank);
     }
@@ -1127,10 +1268,11 @@ export class TuiSession {
     const statusHeaders = topRows.map((line, index) => `${this.sidebarRow(index, sidebarWidth)}${paneTone}${STATUS}${padAnsi(line, mainWidth)}${RESET}${this.hudRow(index, hudWidth)}`);
     const statusSpacerRow = topRows.length;
     const statusSpacer = `${this.sidebarRow(statusSpacerRow, sidebarWidth)}${paneTone}${CHAT}${" ".repeat(mainWidth)}${RESET}${this.hudRow(statusSpacerRow, hudWidth)}`;
-    const body = visible.map(({ text, kind }, index) => {
-      const color = kind === "system" ? CHAT_MUTED : CHAT;
+    const body = visible.map(({ text, kind, id }, index) => {
+      const selected = id !== undefined && id === this.selectedMessageId;
+      const color = selected ? CHAT_SELECTED : kind === "system" ? CHAT_MUTED : CHAT;
       const columnRow = index + topRows.length + 1;
-      const rendered = padAnsi(text, mainWidth);
+      const rendered = padAnsi(selected ? text.replaceAll(`${ESC}48;5;235m`, `${ESC}48;5;59m`) : text, mainWidth);
       const renderedText = this.sidebarFocused ? rendered.replaceAll(`${ESC}22m`, `${ESC}22m${DIM}`) : rendered;
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${color}${renderedText}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
@@ -1149,7 +1291,9 @@ export class TuiSession {
       return `${this.sidebarRow(columnRow, sidebarWidth)}${paneTone}${style}${renderSlashCommand(command, selected, mainWidth)}${RESET}${this.hudRow(columnRow, hudWidth)}`;
     });
     const composerSpacerRow = topRows.length + 1 + visible.length + typing.length + commandMenu.length;
-    const composerSpacer = `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}${paneTone}${COMPOSER}${" ".repeat(mainWidth)}${RESET}${this.hudRow(composerSpacerRow, hudWidth)}`;
+    const replyTarget = this.replyToMessageId === undefined ? undefined : this.room.messages.find((message) => message.id === this.replyToMessageId);
+    const replyLabel = replyTarget ? truncate(`  ↳ replying to @${replyTarget.author}  ${replyTarget.text.replace(/\s+/g, " ")}`, mainWidth) : "";
+    const composerSpacer = `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}${paneTone}${COMPOSER}${MUTED}${pad(replyLabel, mainWidth)}${RESET}${this.hudRow(composerSpacerRow, hudWidth)}`;
     const composer = inputRows.map((inputText, index) => {
       const sidebarComposer = `${SIDEBAR}${" ".repeat(sidebarWidth)}${RESET}`;
       const columnRow = composerSpacerRow + 1 + index;
@@ -1299,16 +1443,19 @@ export class TuiSession {
     const nameTone = message.author === "room-agent" ? MAGENTA : message.author === this.room.owner ? OWNER : message.kind === "system" ? MUTED : CHAT;
     const styledName = `${ESC}1m${nameTone}${message.author}${ESC}22m${message.kind === "system" ? MUTED : CHAT}`;
     const styledPrefix = ` ${time} ${marker} ${styledName}  `;
+    const replyRows = message.replyTo
+      ? wrap(`      ↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, width).map((line) => `${MUTED}${line}${CHAT}`)
+      : [];
     if (message.kind === "commit" && message.url) {
       const [hash, ...title] = message.text.split(" ");
       const suffix = `${title.join(" ")}${message.detail ? ` — ${message.detail}` : ""}`;
       const content = truncate(`${hash} ${suffix}`, Math.max(0, width - plainPrefix.length));
       const after = content.slice(hash.length);
-      return [`${styledPrefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${after}${ESC}23m`];
+      return [...replyRows, `${styledPrefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${after}${ESC}23m`];
     }
     const lines = wrap(plainPrefix + message.text.replace(/\s+/g, " "), width);
     if (lines[0]) lines[0] = lines[0].replace(message.author, styledName);
-    return lines;
+    return [...replyRows, ...lines];
   }
 
   private typingStatus(width: number): string {
@@ -1452,6 +1599,9 @@ export class TuiSession {
     this.roomIndex = Math.max(0, this.rooms.findIndex((room) => room.name === preferredRoom));
     this.room = this.rooms[this.roomIndex]!;
     this.scrollOffset = 0;
+    this.selectedMessageId = undefined;
+    this.replyToMessageId = undefined;
+    this.deleteConfirmationId = undefined;
     this.messageCacheRoom = "";
     this.messageCache.clear();
     this.unsubscribe = this.room.subscribe(() => this.scheduleRender());
@@ -1497,6 +1647,9 @@ export class TuiSession {
     this.write(`\x1b]777;room:${encodeURIComponent(room.name)}\x07`);
     this.roomIndex = Math.max(0, this.rooms.findIndex((candidate) => candidate === room));
     this.scrollOffset = 0;
+    this.selectedMessageId = undefined;
+    this.replyToMessageId = undefined;
+    this.deleteConfirmationId = undefined;
     this.messageCacheRoom = "";
     this.messageCache.clear();
     this.unsubscribe = room.subscribe(() => this.scheduleRender());

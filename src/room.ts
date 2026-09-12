@@ -13,6 +13,7 @@ export interface Message {
   authorId?: string;
   authorRole?: RoomRole;
   agentVisible?: boolean;
+  replyTo?: { id: number; author: string; excerpt: string };
 }
 
 export interface AgentSnapshot {
@@ -229,23 +230,44 @@ export class Room {
     for (const listener of this.serviceListeners) listener();
   }
 
-  chat(actor: Principal | string, text: string): boolean {
+  chat(actor: Principal | string, text: string, replyToId?: number): boolean {
     const principal = this.resolvePrincipal(actor);
     if (!this.canContribute(principal)) return false;
+    const replyTo = replyToId === undefined ? undefined : this.replyReference(replyToId);
+    if (replyToId !== undefined && !replyTo) return false;
     const clean = text.trim().slice(0, 2_000);
     if (clean) {
-      this.post("chat", principal.handle, clean, undefined, undefined, principal);
+      this.post("chat", principal.handle, clean, undefined, undefined, principal, undefined, replyTo);
       if (this.policy.agentMode === "passive" && this.canInvokeAgent(principal)) this.scheduleAgent(principal);
     }
     return true;
   }
 
-  acceptModeratedAnonymousChat(principal: Principal, text: string): boolean {
+  acceptModeratedAnonymousChat(principal: Principal, text: string, replyToId?: number): boolean {
     if (this.name !== "lobby" || !this.policy.system || principal.authenticated || principal.kind !== "anonymous") return false;
+    const replyTo = replyToId === undefined ? undefined : this.replyReference(replyToId);
+    if (replyToId !== undefined && !replyTo) return false;
     const clean = text.trim().slice(0, 600);
     if (!clean) return false;
-    this.post("chat", principal.handle, clean, undefined, undefined, principal, true);
+    this.post("chat", principal.handle, clean, undefined, undefined, principal, true, replyTo);
     if (this.policy.agentMode === "passive" && this.agentResponder) this.scheduleAgent(principal);
+    return true;
+  }
+
+  canDeleteMessage(actor: Principal | string): boolean {
+    const principal = this.resolvePrincipal(actor);
+    return this.accounts?.isAdmin(principal, this.name) ?? (principal.authenticated && principal.handle === this.owner);
+  }
+
+  deleteMessage(actor: Principal | string, messageId: number): boolean {
+    const principal = this.resolvePrincipal(actor);
+    if (!this.canDeleteMessage(principal)) throw new Error("deleting messages requires a room admin");
+    const index = this.messages.findIndex((message) => message.id === messageId);
+    if (index < 0) return false;
+    const [deleted] = this.messages.splice(index, 1);
+    this.accounts?.audit(principal, this.name, "chat.message.delete", `${messageId} @${deleted!.author}`);
+    this.saveState();
+    for (const listener of this.serviceListeners) listener();
     return true;
   }
 
@@ -333,8 +355,8 @@ export class Room {
     for (const listener of this.serviceListeners) listener();
   }
 
-  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal, agentVisible?: boolean): void {
-    const message: Message = { id: this.nextId++, kind, author: stripTerminalControls(author), text: stripTerminalControls(text), at: new Date(), url, detail: detail ? stripTerminalControls(detail) : undefined, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: agentVisible ?? (principal ? this.canInvokeAgent(principal) : kind !== "chat") };
+  private post(kind: MessageKind, author: string, text: string, url?: string, detail?: string, principal?: Principal, agentVisible?: boolean, replyTo?: Message["replyTo"]): void {
+    const message: Message = { id: this.nextId++, kind, author: stripTerminalControls(author), text: stripTerminalControls(text), at: new Date(), url, detail: detail ? stripTerminalControls(detail) : undefined, authorId: principal?.id, authorRole: principal ? this.roleFor(principal) : undefined, agentVisible: agentVisible ?? (principal ? this.canInvokeAgent(principal) : kind !== "chat"), replyTo };
     this.messages.push(message);
     if (this.messages.length > this.historyLimit) this.messages.shift();
     this.saveState();
@@ -353,7 +375,11 @@ export class Room {
         const at = new Date(String(item.at));
         if (Number.isNaN(at.getTime())) continue;
         const oldRoomUrl = `http://localhost:3000/${encodeURIComponent(this.name)}`;
-        this.messages.push({ id: item.id, kind: item.kind as MessageKind, author: item.author, text: item.text.replaceAll(oldRoomUrl, this.pageUrl), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? item.detail : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, agentVisible: typeof item.agentVisible === "boolean" ? item.agentVisible : item.kind !== "chat" });
+        const rawReply = item.replyTo as Record<string, unknown> | undefined;
+        const replyTo = rawReply && typeof rawReply.id === "number" && typeof rawReply.author === "string" && typeof rawReply.excerpt === "string"
+          ? { id: rawReply.id, author: stripTerminalControls(rawReply.author).slice(0, 80), excerpt: stripTerminalControls(rawReply.excerpt).slice(0, 120) }
+          : undefined;
+        this.messages.push({ id: item.id, kind: item.kind as MessageKind, author: item.author, text: item.text.replaceAll(oldRoomUrl, this.pageUrl), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? item.detail : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, agentVisible: typeof item.agentVisible === "boolean" ? item.agentVisible : item.kind !== "chat", replyTo });
         this.nextId = Math.max(this.nextId, item.id + 1);
       }
       this.serviceRequests = finiteNumber(state.serviceRequests);
@@ -397,6 +423,16 @@ export class Room {
   private pruneEgress(): void {
     const cutoff = Date.now() - 60 * 60 * 1_000;
     while (this.egressSamples[0] && this.egressSamples[0].at < cutoff) this.egressSamples.shift();
+  }
+
+  private replyReference(messageId: number): Message["replyTo"] | undefined {
+    const message = this.messages.find((candidate) => candidate.id === messageId);
+    if (!message) return undefined;
+    return {
+      id: message.id,
+      author: stripTerminalControls(message.author).slice(0, 80),
+      excerpt: stripTerminalControls(message.text).replace(/\s+/g, " ").slice(0, 120),
+    };
   }
 
   private resolvePrincipal(actor: Principal | string): Principal {

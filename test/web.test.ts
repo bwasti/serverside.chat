@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { browserTuiHtml, guestRequestHeaders, secureGuestResponseHeaders } from "../src/web";
+import { browserTuiHtml, guestRequestHeaders, secureGuestResponseHeaders, trustedClientAddress } from "../src/web";
 
 test("browser terminal is self-hosted and connects to the constrained TUI socket", async () => {
   const page = browserTuiHtml(["google", "github"]);
@@ -48,4 +48,10 @@ test("untrusted services receive only origin-appropriate credentials", () => {
   const parentDomain = { "set-cookie": "room=bad; Domain=serverside.chat" };
   secureGuestResponseHeaders(parentDomain, true);
   expect(parentDomain["set-cookie"]).toBeUndefined();
+});
+
+test("forwarded client identity is trusted only from the local proxy", () => {
+  const request = new Request("https://serverside.chat", { headers: { "x-forwarded-for": "203.0.113.8, 127.0.0.1" } });
+  expect(trustedClientAddress(request, "127.0.0.1")).toBe("203.0.113.8");
+  expect(trustedClientAddress(request, "198.51.100.4")).toBe("198.51.100.4");
 });

@@ -82,7 +82,7 @@ export class FireworksAgent {
     const intent: RoomIntent = looksLikeTechnicalQuestion(latest.text) && !isConcreteWorkRequest(latest.text) ? "TECHNICAL" : "WORK";
     const messages: ChatMessage[] = [
       { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nAuthenticated user who triggered this run: ${requester}\nCanonical promotion capability for this run: ${canPromote ? "granted" : "not granted"}.` },
-      ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "agent" ? "assistant" : "user", content: message.kind === "agent" ? message.text : `${message.author}: ${message.text}` })),
+      ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "agent" ? "assistant" : "user", content: message.kind === "agent" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}` })),
     ];
     const deadline = Date.now() + this.runTimeoutMs;
     const finalizationAt = deadline - this.finalizationWindowMs;
@@ -206,7 +206,7 @@ export class FireworksGuideAgent {
       { role: "system", content: this.systemPrompt },
       ...history.filter((message) => message.kind === "chat" || message.kind === "agent").slice(-24).map((message) => ({
         role: message.kind === "agent" ? "assistant" : "user",
-        content: message.kind === "agent" ? message.text : `${message.author}: ${message.text}`,
+        content: message.kind === "agent" ? message.text : `${message.author}${message.replyTo ? ` (replying to ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}`,
       })),
     ];
     const response = await fetch(`${this.baseUrl}/chat/completions`, {

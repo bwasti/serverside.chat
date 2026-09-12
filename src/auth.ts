@@ -597,7 +597,7 @@ export class AccountStore {
 
   canView(principal: Principal, roomName: string): boolean {
     const policy = this.roomPolicy(roomName);
-    return Boolean(policy && (policy.visibility === "public" || this.roleFor(principal, roomName)));
+    return Boolean(policy && (policy.visibility === "public" || this.isSiteAdmin(principal) || this.roleFor(principal, roomName)));
   }
 
   canContribute(principal: Principal, roomName: string): boolean {

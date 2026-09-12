@@ -4,6 +4,7 @@ import type { Attributes, FileEntry, SFTPWrapper } from "ssh2";
 import type { AccountStore, Principal } from "./auth";
 import type { RoomDirectory } from "./room-directory";
 import { MAX_WORKSPACE_FILE_BYTES, type RoomWorkspace } from "./workspace";
+import { retrySeconds, type RateLimitDecision } from "./rate-limit";
 
 type FileHandle = {
   kind: "file";
@@ -29,7 +30,7 @@ const DIRECTORY_MODE = fsConstants.S_IFDIR | 0o755;
 const FILE_MODE = fsConstants.S_IFREG | 0o644;
 
 /** Attach a room-scoped virtual filesystem. Host paths and .git are never returned to the client. */
-export function attachRoomSftp(sftp: SFTPWrapper, principal: Principal, accounts: AccountStore, directory: RoomDirectory): void {
+export function attachRoomSftp(sftp: SFTPWrapper, principal: Principal, accounts: AccountStore, directory: RoomDirectory, rateLimit?: () => RateLimitDecision): void {
   const handles = new Map<number, OpenHandle>();
   let nextHandle = 1;
 
@@ -74,7 +75,11 @@ export function attachRoomSftp(sftp: SFTPWrapper, principal: Principal, accounts
     sftp.status(requestId, code, message.slice(0, 160));
   };
   const guard = (requestId: number, operation: () => void): void => {
-    try { operation(); } catch (error) { replyError(requestId, error); }
+    try {
+      const decision = rateLimit?.();
+      if (decision && !decision.allowed) throw new Error(`rate limited · retry in ${retrySeconds(decision)}s`);
+      operation();
+    } catch (error) { replyError(requestId, error); }
   };
 
   const attrsFor = (kind: "file" | "directory", size: number, modifiedAt = Date.now()): Attributes => ({

@@ -3,6 +3,7 @@ import { posix } from "node:path";
 import type { AccountStore, Principal } from "./auth";
 import type { RoomDirectory } from "./room-directory";
 import { MAX_WORKSPACE_FILE_BYTES, type RoomWorkspace } from "./workspace";
+import { AdaptiveRateLimiter, RATE_LIMITS, retrySeconds } from "./rate-limit";
 
 const DAV_PREFIX = "/_dav/";
 const DAV_METHODS = "OPTIONS, PROPFIND, GET, HEAD, PUT, DELETE, MKCOL, MOVE, COPY, LOCK, UNLOCK";
@@ -14,14 +15,20 @@ class DavError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
-export async function handleWebDavRequest(request: Request, accounts: AccountStore, directory: RoomDirectory): Promise<Response> {
+export async function handleWebDavRequest(request: Request, accounts: AccountStore, directory: RoomDirectory, rateLimiter?: AdaptiveRateLimiter, clientAddress = "direct"): Promise<Response> {
   let target: DavTarget;
   try { target = parseTarget(new URL(request.url), directory); }
   catch (error) { return davError(error); }
 
   const credentials = basicCredentials(request.headers.get("authorization"));
   const principal = credentials ? accounts.principalForMountCredential(credentials.username, credentials.password, target.roomName) : undefined;
-  if (!principal) return unauthorized(target.roomName);
+  if (!principal) {
+    const denied = rateLimiter?.consume(`webdav-unauthenticated:${clientAddress}`, RATE_LIMITS.anonymousHttp);
+    if (denied && !denied.allowed) return davRateLimited(denied);
+    return unauthorized(target.roomName);
+  }
+  const limited = rateLimiter?.consume(`webdav:${principal.id}`, RATE_LIMITS.authenticatedHttp);
+  if (limited && !limited.allowed) return davRateLimited(limited);
   if (!accounts.canView(principal, target.roomName)) return davResponse("room not found\n", 404);
 
   const method = request.method.toUpperCase();
@@ -338,6 +345,10 @@ function davError(error: unknown): Response {
 
 function unauthorized(roomName: string): Response {
   return davResponse("mount credentials required\n", 401, { "www-authenticate": `Basic realm="serverside.chat ${roomName}", charset="UTF-8"` });
+}
+
+function davRateLimited(decision: { retryAfterMs: number }): Response {
+  return davResponse("slow down\n", 429, { "retry-after": String(retrySeconds({ allowed: false, remaining: 0, ...decision })) });
 }
 
 function davResponse(body: BodyInit | null, status: number, extra: Record<string, string> = {}): Response {

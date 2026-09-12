@@ -8,6 +8,7 @@ import { TuiSession, type AnonymousLobbyReview, type TuiStream } from "./tui";
 import type { OAuthProvider, OAuthService } from "./oauth";
 import type { RoomDirectory } from "./room-directory";
 import { handleWebDavRequest } from "./webdav";
+import { AdaptiveRateLimiter, RATE_LIMITS, retrySeconds } from "./rate-limit";
 
 interface ServiceSocketData { kind: "service"; room: string; principal: Principal; windowStarted: number; messages: number }
 interface TuiSocketData { kind: "tui"; principal: Principal; initialRoom?: string; cols: number; rows: number; windowStarted: number; messages: number }
@@ -25,7 +26,7 @@ const terminalAssets = new Map([
   ["/_terminal/addon-fit.js.map", { file: Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js.map"), type: "application/json; charset=utf-8" }],
 ]);
 
-export function startWebServer(directory: RoomDirectory, host: string, port: number, dataDir = ".data", accounts?: AccountStore, oauth?: OAuthService, developmentAuth = true, reviewAnonymousLobby?: AnonymousLobbyReview) {
+export function startWebServer(directory: RoomDirectory, host: string, port: number, dataDir = ".data", accounts?: AccountStore, oauth?: OAuthService, developmentAuth = true, reviewAnonymousLobby?: AnonymousLobbyReview, rateLimiter = new AdaptiveRateLimiter()) {
   const rooms = directory.rooms;
   const workspaces = directory.workspaces;
   const runtimes = new Map<string, { room: Room; runtime: ServiceRuntime }>();
@@ -48,15 +49,21 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       const siteRoomName = directory.roomNameForSiteHostname(url.hostname);
       const controlRequest = directory.isControlHostname(url.hostname) || !directory.roomSiteDomain;
       if (!controlRequest && !siteRoomName) return new Response("site not found\n", { status: 404 });
+      const clientAddress = trustedClientAddress(request, server.requestIP(request)?.address);
       const sessionToken = controlRequest ? readSessionCookie(request) : undefined;
-      const requestPrincipal = accounts?.principalForWebSession(sessionToken ?? "") ?? anonymousWebPrincipal(request);
+      const requestPrincipal = accounts?.principalForWebSession(sessionToken ?? "") ?? anonymousWebPrincipal(clientAddress);
+      const httpPolicy = url.pathname.startsWith("/_dav/")
+        ? RATE_LIMITS.authenticatedHttp
+        : requestPrincipal.authenticated ? RATE_LIMITS.authenticatedHttp : RATE_LIMITS.anonymousHttp;
+      const httpLimit = rateLimiter.consume(`http:${requestPrincipal.authenticated ? requestPrincipal.id : clientAddress}`, httpPolicy);
+      if (!httpLimit.allowed) return rateLimitedResponse(httpLimit.retryAfterMs);
       if (controlRequest) {
       const oauthRoute = url.pathname.match(/^\/_auth\/(google|github)\/(start|callback)$/);
       if (oauthRoute && oauth) {
         const provider = oauthRoute[1] as OAuthProvider;
         const action = oauthRoute[2]!;
         if (action === "start" && request.method === "GET") {
-          if (!allowAttempt(authAttempts, `oauth:${webAddress(request)}`, 60 * 60 * 1_000, 30)) return new Response("too many sign-in attempts\n", { status: 429 });
+          if (!allowAttempt(authAttempts, `oauth:${clientAddress}`, 60 * 60 * 1_000, 30)) return new Response("too many sign-in attempts\n", { status: 429 });
           try {
             const accountLink = url.searchParams.get("account");
             const linkPrincipal = accountLink && accounts ? accounts.consumeAccountLink(accountLink) : requestPrincipal;
@@ -89,7 +96,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         if (!accounts) return Response.json({ error: "account storage is unavailable" }, { status: 503 });
         if (requestPrincipal.authenticated) return Response.json({ authenticated: true, handle: requestPrincipal.handle });
         if (!sameOriginRequest(request)) return Response.json({ error: "cross-origin sign-in rejected" }, { status: 403 });
-        if (!allowAttempt(authAttempts, `development:${webAddress(request)}`, 60 * 60 * 1_000, 5)) return Response.json({ error: "too many temporary accounts from this address" }, { status: 429 });
+        if (!allowAttempt(authAttempts, `development:${clientAddress}`, 60 * 60 * 1_000, 5)) return Response.json({ error: "too many temporary accounts from this address" }, { status: 429 });
         try {
           const body = await boundedJson(request);
           const handle = typeof body.handle === "string" ? body.handle : "";
@@ -123,7 +130,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       }
       if (url.pathname.startsWith("/_dav/")) {
         if (!accounts) return new Response("account storage is unavailable\n", { status: 503 });
-        return handleWebDavRequest(request, accounts, directory);
+        return handleWebDavRequest(request, accounts, directory, rateLimiter, clientAddress);
       }
       const roomRoute = url.pathname.match(/^\/room\/([a-z0-9][a-z0-9-]{0,31})\/?$/);
       if (request.method === "GET" && (url.pathname === "/" || roomRoute)) {
@@ -196,7 +203,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       open(ws) {
         if (ws.data.kind === "tui") {
           const stream = new BrowserTuiStream(ws);
-          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, ws.data.initialRoom, signInUrl, undefined, undefined, directory, reviewAnonymousLobby);
+          const session = new TuiSession(stream, rooms, ws.data.principal, accounts, ws.data.initialRoom, signInUrl, undefined, undefined, directory, reviewAnonymousLobby, rateLimiter);
           session.resize(ws.data.cols, ws.data.rows);
           browserTuis.set(ws, { stream, session });
           return;
@@ -215,6 +222,12 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         const rateLimit = ws.data.kind === "tui" ? 100 : 20;
         if (++ws.data.messages > rateLimit) { ws.close(1013, "rate limit"); return; }
         const text = typeof raw === "string" ? raw : Buffer.from(raw).toString("utf8");
+        const adaptive = rateLimiter.consume(
+          `ws:${ws.data.kind}:${ws.data.principal.id}`,
+          ws.data.principal.authenticated ? RATE_LIMITS.authenticatedSocket : RATE_LIMITS.anonymousSocket,
+          Math.max(1, Math.ceil(Buffer.byteLength(text) / 4_096)),
+        );
+        if (!adaptive.allowed) { ws.close(1013, `slow down · retry in ${retrySeconds(adaptive)}s`); return; }
         if (ws.data.kind === "tui") {
           const tui = browserTuis.get(ws);
           if (!tui) return;
@@ -267,14 +280,15 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
   return webServer;
 }
 
-function anonymousWebPrincipal(request: Request): Principal {
-  const address = webAddress(request);
+function anonymousWebPrincipal(address: string): Principal {
   const suffix = createHash("sha256").update(address).digest("hex").slice(0, 6);
   return { id: `anonymous:web:${address}`, kind: "anonymous", handle: `web-${suffix}`, displayName: "Anonymous", authenticated: false };
 }
 
-function webAddress(request: Request): string {
-  return request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() || "direct";
+export function trustedClientAddress(request: Request, peerAddress?: string): string {
+  const peer = peerAddress || "direct";
+  const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+  return loopback ? request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() || peer : peer;
 }
 
 function sameOriginRequest(request: Request): boolean {
@@ -294,6 +308,17 @@ function allowAttempt(entries: Map<string, { windowStarted: number; count: numbe
   }
   current.count++;
   return current.count <= limit;
+}
+
+function rateLimitedResponse(retryAfterMs: number): Response {
+  return new Response("slow down\n", {
+    status: 429,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "retry-after": String(Math.max(1, Math.ceil(retryAfterMs / 1_000))),
+      "cache-control": "no-store",
+    },
+  });
 }
 
 async function boundedJson(request: Request): Promise<Record<string, unknown>> {

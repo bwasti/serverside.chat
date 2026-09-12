@@ -191,6 +191,38 @@ test("room transcript and HUD state survive process recreation", () => {
   expect(restored.serviceStartedAt.getTime()).toBe(first.serviceStartedAt.getTime());
 });
 
+test("replies persist while room and site admins can moderate messages", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-message-moderation-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  const contributor = accounts.createDevelopmentAccount("bob").principal;
+  const roomAdmin = accounts.createDevelopmentAccount("charlie").principal;
+  const siteAdmin = accounts.createDevelopmentAccount("dana").principal;
+  accounts.ensureRoom("mine", owner, { visibility: "public", contributions: "members", agentMode: "passive" });
+  accounts.redeemInvite(contributor, accounts.createInvite(owner, "mine", "contributor"));
+  accounts.redeemInvite(roomAdmin, accounts.createInvite(owner, "mine", "admin"));
+  accounts.ensureSiteAdmin(siteAdmin);
+  expect(accounts.canView(siteAdmin, "mine")).toBe(true);
+  const statePath = join(data, "room-state.json");
+  const room = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath, accounts);
+
+  room.chat(owner, "the original message");
+  const original = room.messages.at(-1)!;
+  expect(room.chat(contributor, "a focused reply", original.id)).toBe(true);
+  const reply = room.messages.at(-1)!;
+  expect(reply.replyTo).toEqual({ id: original.id, author: "alice", excerpt: "the original message" });
+  expect(() => room.deleteMessage(contributor, original.id)).toThrow("requires a room admin");
+  room.chat(owner, "temporary moderator target");
+  expect(room.deleteMessage(roomAdmin, room.messages.at(-1)!.id)).toBe(true);
+  expect(room.deleteMessage(siteAdmin, original.id)).toBe(true);
+  expect(room.messages).toEqual([reply]);
+
+  const restored = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath, accounts);
+  expect(restored.messages).toHaveLength(1);
+  expect(restored.messages[0]).toMatchObject({ text: "a focused reply", replyTo: { id: original.id, author: "alice", excerpt: "the original message" } });
+  accounts.close();
+});
+
 test("agent-facing service logs are bounded and ordered", () => {
   const room = new Room("mine");
   for (let index = 0; index < 60; index++) room.recordServiceLog(`${index} ${"x".repeat(700)}`);

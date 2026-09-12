@@ -3,6 +3,7 @@ import { posix } from "node:path";
 import type { Room } from "./room";
 import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_BYTES, type RoomWorkspace } from "./workspace";
 import { RoomEditor, type EditorSaveResult } from "./editor";
+import { retrySeconds, type RateLimitDecision } from "./rate-limit";
 
 export interface RoomShellStream {
   readonly destroyed: boolean;
@@ -355,7 +356,7 @@ export class RoomShellSession {
   private height = 24;
   private writeMode?: { path: string; expectedRevision: string | null; lines: string[]; bytes: number };
 
-  constructor(private readonly stream: RoomShellStream, private readonly capabilities: RoomCapabilitySession) {
+  constructor(private readonly stream: RoomShellStream, private readonly capabilities: RoomCapabilitySession, private readonly rateLimit?: () => RateLimitDecision) {
     stream.on("data", (data: Buffer) => this.onData(data));
     stream.on("close", () => { this.closed = true; });
     stream.on("end", () => { this.closed = true; });
@@ -443,6 +444,8 @@ export class RoomShellSession {
       this.historyIndex = this.history.length;
     }
     try {
+      const decision = line.trim() && line.trim() !== "exit" && line.trim() !== "quit" ? this.rateLimit?.() : undefined;
+      if (decision && !decision.allowed) throw new Error(`rate limited · retry in ${retrySeconds(decision)}s`);
       const result = this.capabilities.execute(line);
       if (result.close) { this.close(); return; }
       if (result.clear) this.write("\x1b[2J\x1b[H");

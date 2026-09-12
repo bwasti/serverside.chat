@@ -10,7 +10,7 @@ The room identity selects the SQLite database, scratch filesystem, realtime topi
 
 ## Implemented site and room roles
 
-Site roles govern lifecycle authority: `admin` can create and manage rooms globally, while `member` can create and manage only rooms it owns. Plans govern owned-room ceilings independently: `free` is capped at five; `pro` is reserved for later and has no user-facing upgrade path. The bootstrap owner is promoted to site admin by server configuration, not by a browser-supplied handle.
+Site roles govern lifecycle and moderation authority: `admin` can view, moderate, create, and manage rooms globally, while `member` can create and manage only rooms it owns. Plans govern owned-room ceilings independently: `free` is capped at five; `pro` is reserved for later and has no user-facing upgrade path. The bootstrap owner is promoted to site admin by server configuration, not by a browser-supplied handle.
 
 Room roles govern participation:
 
@@ -20,7 +20,7 @@ Room roles govern participation:
 - `viewer`: read a visible room; no chat or agent authority.
 - `anonymous`: browse public rooms and pages; no normal-room chat, typing presence, or builder-agent visibility. The host-managed lobby alone accepts bounded, rate-limited messages after a separate AI moderation decision.
 
-Room creation, rename, and deletion are host operations. Names are validated before database or filesystem access. Rename carries the database authority records and room-owned storage together. Delete removes live routing and authority records but moves storage to a server-owned trash directory so an operator can recover it. Active agent work blocks rename and delete.
+Room creation, rename, and deletion are host operations. Names are validated before database or filesystem access. Rename carries the database authority records and room-owned storage together. Delete removes live routing and authority records but moves storage to a server-owned trash directory so an operator can recover it. Active agent work blocks rename and delete. Persisted-message deletion is a separate audited operation available to the room owner, room admins, and site admins; the client cannot grant itself that authority.
 
 Canonical promotion is owner-only and is granted to the agent only during an explicit owner `/agent` invocation. Passive transcript text never supplies promotion authority. A stronger future approval should be signed, expiring, and bound to the exact room and candidate commit.
 
@@ -52,4 +52,4 @@ The host remains the version authority. Clients invoke bounded operations such a
 
 QuickJS Wasm isolation, room SQLite, room scratch storage, bounded structured logs, immutable assets, host-owned realtime sockets, canonical accounts, Google/GitHub OAuth flows, browser sessions, browser-authorized multi-key SSH linking, durable room memberships, hashed invitations, host-enforced chat/agent policies, a constrained room shell, virtual SFTP source access, and scoped WebDAV mounts are implemented. Real OAuth buttons appear when provider credentials are configured. Per-user source overlays, agent credential issuance, outbound fetch, account recovery, and broader user-facing credential/membership management are not yet wired.
 
-The prototype currently enforces 128 aggregate live SSH/browser connections, 100 WebSockets, 32 concurrent HTTP executions, and 64 MiB of response egress per rolling hour per room. These room-wide limits will become outer ceilings once authenticated per-principal sub-budgets are implemented.
+The prototype enforces 128 aggregate live SSH/browser connections, 100 WebSockets, 32 concurrent HTTP executions, and 64 MiB of response egress per rolling hour per room. Adaptive per-principal or per-address token buckets additionally cover every public protocol and costly chat action; repeated violations receive exponentially longer cooldowns. These buckets are shared across reconnects within one server process and remain bounded in memory. The exact policies and the horizontal-scaling boundary are documented in [`rate-limits.md`](rate-limits.md).
