@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { estimateProviderTokens, providerTokenUsage, TokenBudget } from "../src/token-budget";
+import { Database } from "bun:sqlite";
+import { providerOutputTokenUsage, TokenBudget } from "../src/token-budget";
 
 function budget(roomLimit = 100, globalLimit = 180, clock = { now: 1_000 }): TokenBudget {
   const root = mkdtempSync(join(tmpdir(), "serverside-chat-tokens-"));
@@ -41,9 +42,20 @@ test("usage persists, follows room renames, and expires on a rolling hour", () =
   expect(restarted.snapshot("new-name")).toMatchObject({ roomUsed: 0, globalUsed: 0 });
 });
 
-test("provider accounting prefers reported usage and estimates conservatively", () => {
-  const payload = JSON.stringify({ messages: [{ role: "user", content: "hello" }] });
-  expect(estimateProviderTokens(payload, 500)).toBe(Buffer.byteLength(payload) + 500);
-  expect(providerTokenUsage({ usage: { total_tokens: 42 } })).toBe(42);
-  expect(providerTokenUsage({ usage: { total_tokens: -1 } })).toBeUndefined();
+test("provider accounting uses output tokens and never total input-plus-output usage", () => {
+  expect(providerOutputTokenUsage({ usage: { completion_tokens: 42, total_tokens: 900 } })).toBe(42);
+  expect(providerOutputTokenUsage({ usage: { output_tokens: 17 } })).toBe(17);
+  expect(providerOutputTokenUsage({ usage: { total_tokens: 900 } })).toBeUndefined();
+});
+
+test("legacy total-token ledger rows do not count toward output budgets", () => {
+  const root = mkdtempSync(join(tmpdir(), "serverside-chat-token-migration-"));
+  const path = join(root, "usage.sqlite");
+  const legacy = new Database(path, { create: true });
+  legacy.exec("CREATE TABLE clanker_token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL, tokens INTEGER NOT NULL, recorded_at INTEGER NOT NULL); CREATE TABLE clanker_token_reservations (id TEXT PRIMARY KEY, room TEXT NOT NULL, tokens INTEGER NOT NULL, expires_at INTEGER NOT NULL);");
+  legacy.query("INSERT INTO clanker_token_usage (room, tokens, recorded_at) VALUES ('mine', 999, ?)").run(Date.now());
+  legacy.close();
+
+  const migrated = new TokenBudget(path, 1_000, 2_000);
+  expect(migrated.snapshot("mine")).toMatchObject({ roomUsed: 0, globalUsed: 0 });
 });

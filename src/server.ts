@@ -69,7 +69,7 @@ const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: s
 const rateLimiter = new AdaptiveRateLimiter();
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
   const tokenUsage = tokenBudget.snapshot(room.name);
-  room.recordClankerTokenUsage(tokenUsage.roomUsed, tokenUsage.roomLimit);
+  room.recordClankerOutputTokenUsage(tokenUsage.roomUsed, tokenUsage.roomLimit);
   if (room.name === "lobby" && guideClanker) {
     room.setClankerResponder((history, activity, request) => guideClanker.respond(history, activity, (messageId, pinned) => room.setMessagePinned(request.principal, messageId, pinned)));
     return;
@@ -79,17 +79,17 @@ const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, worksp
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }, roomSiteDomain);
-tokenBudget.subscribe((roomName, usage) => directory.room(roomName)?.recordClankerTokenUsage(usage.roomUsed, usage.roomLimit));
+tokenBudget.subscribe((roomName, usage) => directory.room(roomName)?.recordClankerOutputTokenUsage(usage.roomUsed, usage.roomLimit));
 directory.subscribe((event) => {
   if (event.kind === "rename" && event.previousName) tokenBudget.renameRoom(event.previousName, event.name);
   const usage = tokenBudget.snapshot(event.name);
-  directory.room(event.name)?.recordClankerTokenUsage(usage.roomUsed, usage.roomLimit);
+  directory.room(event.name)?.recordClankerOutputTokenUsage(usage.roomUsed, usage.roomLimit);
 });
 const tokenTelemetryRefresh = setInterval(() => {
   for (const room of directory.rooms) {
-    if (!room.clankerTokensLastHour) continue;
+    if (!room.clankerOutputTokensLastHour) continue;
     const usage = tokenBudget.snapshot(room.name);
-    room.recordClankerTokenUsage(usage.roomUsed, usage.roomLimit);
+    room.recordClankerOutputTokenUsage(usage.roomUsed, usage.roomLimit);
   }
 }, 60_000);
 tokenTelemetryRefresh.unref();

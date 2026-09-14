@@ -1,5 +1,5 @@
 import type { Principal } from "./auth";
-import { estimateProviderTokens, providerTokenUsage, type TokenBudget } from "./token-budget";
+import { providerOutputTokenUsage, type TokenBudget } from "./token-budget";
 
 export interface LobbyModerationDecision {
   allowed: boolean;
@@ -68,7 +68,7 @@ export class AnonymousLobbyGate {
   }
 }
 
-interface ModerationResponse { choices?: Array<{ message?: { content?: string | null } }>; error?: { message?: string }; usage?: { total_tokens?: number } }
+interface ModerationResponse { choices?: Array<{ message?: { content?: string | null } }>; error?: { message?: string }; usage?: { completion_tokens?: number; output_tokens?: number } }
 
 export class FireworksLobbyModerator implements LobbyContentModerator {
   constructor(
@@ -99,7 +99,7 @@ export class FireworksLobbyModerator implements LobbyContentModerator {
         },
       },
     });
-    const reservation = this.tokenBudget?.reserve("lobby", estimateProviderTokens(serializedRequest, 128));
+    const reservation = this.tokenBudget?.reserve("lobby", 128);
     let body: ModerationResponse | undefined;
     let response: Response;
     try {
@@ -111,7 +111,7 @@ export class FireworksLobbyModerator implements LobbyContentModerator {
       });
       body = (await response.json()) as ModerationResponse;
     } finally {
-      reservation?.commit(providerTokenUsage(body));
+      reservation?.commit(providerOutputTokenUsage(body));
     }
     if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
     const content = body.choices?.[0]?.message?.content?.trim();

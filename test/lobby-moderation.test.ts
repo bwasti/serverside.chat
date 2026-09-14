@@ -50,7 +50,7 @@ test("Fireworks moderation requests a schema-constrained verdict", async () => {
 test("anonymous moderation is included in the lobby token budget", async () => {
   const root = mkdtempSync(join(tmpdir(), "serverside-chat-moderation-budget-"));
   const tokenBudget = new TokenBudget(join(root, "usage.sqlite"), 10_000, 20_000);
-  const fetcher = (async (_input: string | URL | Request, _init?: RequestInit) => Response.json({ choices: [{ message: { content: '{"decision":"ALLOW"}' } }], usage: { total_tokens: 77 } })) as typeof fetch;
+  const fetcher = (async (_input: string | URL | Request, _init?: RequestInit) => Response.json({ choices: [{ message: { content: '{"decision":"ALLOW"}' } }], usage: { completion_tokens: 77, total_tokens: 700 } })) as typeof fetch;
   const moderator = new FireworksLobbyModerator("test-key", "test-model", "classify", "https://example.test/v1", fetcher, tokenBudget);
   expect(await moderator.allows("hello")).toBe(true);
   expect(tokenBudget.snapshot("lobby")).toMatchObject({ roomUsed: 77, globalUsed: 77 });

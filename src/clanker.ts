@@ -1,11 +1,11 @@
 import type { Message } from "./room";
 import type { RoomWorkspace } from "./workspace";
-import { estimateProviderTokens, providerTokenUsage, type TokenBudget } from "./token-budget";
+import { providerOutputTokenUsage, type TokenBudget } from "./token-budget";
 
 type ChatMessage = Record<string, unknown>;
 interface ToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 interface ApiMessage { role: string; content?: string | null; tool_calls?: ToolCall[]; [key: string]: unknown }
-interface ApiResponse { choices?: Array<{ message?: ApiMessage }>; error?: { message?: string }; usage?: { total_tokens?: number } }
+interface ApiResponse { choices?: Array<{ message?: ApiMessage }>; error?: { message?: string }; usage?: { completion_tokens?: number; output_tokens?: number } }
 type RoomIntent = "IGNORE" | "WORK" | "TECHNICAL";
 export type ClankerActivity = (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void;
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -15,6 +15,7 @@ export const ROOM_CLANKER_PROVIDER_TIMEOUT_MS = 5 * 60_000;
 export const ROOM_CLANKER_FINALIZATION_WINDOW_MS = 2 * 60_000;
 export const ROOM_CLANKER_MAX_TURNS = 64;
 const ROOM_CLANKER_PROVIDER_ATTEMPTS = 2;
+const MAX_PROVIDER_REQUEST_BYTES = 512 * 1024;
 
 export interface FireworksClankerOptions {
   baseUrl?: string;
@@ -156,13 +157,14 @@ export class FireworksClanker {
       const requestBudget = Math.min(remaining, this.providerTimeoutMs);
       const boundedByCompletionDeadline = remaining <= this.providerTimeoutMs;
       const serializedRequest = JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 });
-      const reservation = this.tokenBudget?.reserve(roomName, estimateProviderTokens(serializedRequest, 5000));
+      assertProviderRequestSize(serializedRequest);
+      const reservation = this.tokenBudget?.reserve(roomName, 5000);
       let actualUsage: number | undefined;
       activity("thinking", attempt === 1 ? `waiting for provider · ${formatDuration(Math.max(1, runDeadline - Date.now()))} run left` : `retrying provider · ${attempt}/${this.attempts}`);
       try {
         const response = await this.fetcher(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" }, body: serializedRequest, signal: AbortSignal.timeout(Math.max(1, requestBudget)) });
         const body = (await response.json()) as ApiResponse;
-        actualUsage = providerTokenUsage(body);
+        actualUsage = providerOutputTokenUsage(body);
         if (response.ok) {
           const message = body.choices?.[0]?.message;
           if (!message) throw new Error("provider returned no message");
@@ -226,7 +228,8 @@ export class FireworksGuideClanker {
     let reply = "";
     for (let turn = 0; turn < 3; turn++) {
       const serializedRequest = JSON.stringify({ model: this.model, messages, tools: [tools[0]!], tool_choice: "auto", parallel_tool_calls: false, max_tokens: 240, temperature: 0.1 });
-      const reservation = this.tokenBudget?.reserve("lobby", estimateProviderTokens(serializedRequest, 240));
+      assertProviderRequestSize(serializedRequest);
+      const reservation = this.tokenBudget?.reserve("lobby", 240);
       let actualUsage: number | undefined;
       let message: ApiMessage | undefined;
       try {
@@ -237,7 +240,7 @@ export class FireworksGuideClanker {
           signal: AbortSignal.timeout(30_000),
         });
         const body = (await response.json()) as ApiResponse;
-        actualUsage = providerTokenUsage(body);
+        actualUsage = providerOutputTokenUsage(body);
         if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
         message = body.choices?.[0]?.message;
         if (!message) throw new Error("Fireworks returned no message");
@@ -287,6 +290,10 @@ function filterReply(intent: RoomIntent, content?: string | null): string {
   if (!reply || reply === "[silent]") return "[silent]";
   if (intent === "TECHNICAL") return reply.slice(0, 320);
   return reply.slice(0, 300);
+}
+
+function assertProviderRequestSize(serializedRequest: string): void {
+  if (Buffer.byteLength(serializedRequest, "utf8") > MAX_PROVIDER_REQUEST_BYTES) throw new Error("clanker context is too large · start a fresh request after current work is committed");
 }
 
 function execute(workspace: RoomWorkspace, pageUrl: string, call: ToolCall, canPromote: boolean, serviceLogs: (limit?: number) => string[], setMessagePin: (messageId: number, pinned: boolean) => boolean): Record<string, unknown> {

@@ -112,7 +112,7 @@ test("main chat stays darkest while the version HUD matches the status backgroun
   expect(frame).toContain("CONN ");
   expect(frame).toContain("FILES ");
   expect(frame).toContain("BYTES/H ");
-  expect(frame).toContain("TOKENS/H ");
+  expect(frame).toContain("OUT/H ");
   expect(frame).toContain("\x1b[48;5;237m\x1b[38;5;188m");
   expect(frame).toContain("\x1b[48;5;235m\x1b[38;5;188m");
   expect(frame).toContain("dark canvas");
@@ -534,7 +534,7 @@ test("wide version control HUD reserves its lower third for live service logs", 
   expect(frame.indexOf("DB ")).toBeGreaterThan(frame.indexOf("abcdef0"));
   expect(frame.indexOf("DB ")).toBeLessThan(frame.indexOf("LIVE LOGS"));
   const rows = frame.split("\r\n");
-  const resourceRows = ["DB", "FILES", "CONN", "BYTES/H", "TOKENS/H"].map((label) => rows.findIndex((row) => row.includes(label)));
+  const resourceRows = ["DB", "FILES", "CONN", "BYTES/H", "OUT/H"].map((label) => rows.findIndex((row) => row.includes(label)));
   expect(new Set(resourceRows).size).toBe(5);
   for (const index of resourceRows) {
     expect(index).toBeGreaterThan(-1);

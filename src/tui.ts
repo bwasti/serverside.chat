@@ -1722,7 +1722,7 @@ export class TuiSession {
       denseUsageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String, width),
       denseUsageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatCompactBytes, width),
       denseUsageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatCompactBytes, width),
-      denseUsageBar("TOKENS/H", this.room.clankerTokensLastHour, this.room.clankerTokenLimit, formatCompactCount, width),
+      denseUsageBar("OUT/H", this.room.clankerOutputTokensLastHour, this.room.clankerOutputTokenLimit, formatCompactCount, width),
     ];
   }
 

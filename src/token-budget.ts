@@ -16,8 +16,8 @@ export interface TokenBudgetSnapshot {
 }
 
 export interface TokenReservation {
-  readonly estimatedTokens: number;
-  commit(actualTokens?: number): void;
+  readonly reservedOutputTokens: number;
+  commit(actualOutputTokens?: number): void;
 }
 
 export class TokenBudgetExceededError extends Error {}
@@ -47,7 +47,8 @@ export class TokenBudget {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room TEXT NOT NULL,
         tokens INTEGER NOT NULL CHECK(tokens > 0),
-        recorded_at INTEGER NOT NULL
+        recorded_at INTEGER NOT NULL,
+        metric TEXT NOT NULL DEFAULT 'output'
       );
       CREATE INDEX IF NOT EXISTS clanker_token_usage_room_time ON clanker_token_usage(room, recorded_at);
       CREATE INDEX IF NOT EXISTS clanker_token_usage_time ON clanker_token_usage(recorded_at);
@@ -55,11 +56,15 @@ export class TokenBudget {
         id TEXT PRIMARY KEY,
         room TEXT NOT NULL,
         tokens INTEGER NOT NULL CHECK(tokens > 0),
-        expires_at INTEGER NOT NULL
+        expires_at INTEGER NOT NULL,
+        metric TEXT NOT NULL DEFAULT 'output'
       );
       CREATE INDEX IF NOT EXISTS clanker_token_reservations_room_expiry ON clanker_token_reservations(room, expires_at);
       CREATE INDEX IF NOT EXISTS clanker_token_reservations_expiry ON clanker_token_reservations(expires_at);
     `);
+    this.ensureMetricColumn("clanker_token_usage");
+    this.ensureMetricColumn("clanker_token_reservations");
+    this.db.exec("CREATE INDEX IF NOT EXISTS clanker_token_usage_metric_room_time ON clanker_token_usage(metric, room, recorded_at); CREATE INDEX IF NOT EXISTS clanker_token_reservations_metric_room_expiry ON clanker_token_reservations(metric, room, expires_at);");
   }
 
   subscribe(listener: (room: string, snapshot: TokenBudgetSnapshot) => void): () => void {
@@ -80,20 +85,20 @@ export class TokenBudget {
       if (tokens > this.roomLimit) throw new TokenBudgetExceededError("clanker request exceeds the room token limit");
       if (roomUsed + tokens > this.roomLimit) throw this.limitError("room", safeRoom, tokens, now);
       if (globalUsed + tokens > this.globalLimit) throw this.limitError("global", safeRoom, tokens, now);
-      this.db.query("INSERT INTO clanker_token_reservations (id, room, tokens, expires_at) VALUES (?, ?, ?, ?)").run(id, safeRoom, tokens, now + WINDOW_MS);
+      this.db.query("INSERT INTO clanker_token_reservations (id, room, tokens, expires_at, metric) VALUES (?, ?, ?, ?, 'output')").run(id, safeRoom, tokens, now + WINDOW_MS);
     }).immediate();
     this.emit(safeRoom);
     let settled = false;
     return {
-      estimatedTokens: tokens,
-      commit: (actualTokens?: number) => {
+      reservedOutputTokens: tokens,
+      commit: (actualOutputTokens?: number) => {
         if (settled) return;
         settled = true;
-        const charged = validUsage(actualTokens) ?? tokens;
+        const charged = validUsage(actualOutputTokens) ?? tokens;
         const recordedAt = this.now();
         this.db.transaction(() => {
           this.db.query("DELETE FROM clanker_token_reservations WHERE id = ?").run(id);
-          this.db.query("INSERT INTO clanker_token_usage (room, tokens, recorded_at) VALUES (?, ?, ?)").run(safeRoom, charged, recordedAt);
+          this.db.query("INSERT INTO clanker_token_usage (room, tokens, recorded_at, metric) VALUES (?, ?, ?, 'output')").run(safeRoom, charged, recordedAt);
           this.prune(recordedAt);
         }).immediate();
         this.emit(safeRoom);
@@ -119,11 +124,11 @@ export class TokenBudget {
   private total(now: number, room?: string): number {
     const cutoff = now - WINDOW_MS;
     const usage = room
-      ? this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_usage WHERE room = ? AND recorded_at >= ?").get(room, cutoff) as TotalRow
-      : this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_usage WHERE recorded_at >= ?").get(cutoff) as TotalRow;
+      ? this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_usage WHERE metric = 'output' AND room = ? AND recorded_at >= ?").get(room, cutoff) as TotalRow
+      : this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_usage WHERE metric = 'output' AND recorded_at >= ?").get(cutoff) as TotalRow;
     const reserved = room
-      ? this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_reservations WHERE room = ? AND expires_at > ?").get(room, now) as TotalRow
-      : this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_reservations WHERE expires_at > ?").get(now) as TotalRow;
+      ? this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_reservations WHERE metric = 'output' AND room = ? AND expires_at > ?").get(room, now) as TotalRow
+      : this.db.query("SELECT COALESCE(SUM(tokens), 0) AS total FROM clanker_token_reservations WHERE metric = 'output' AND expires_at > ?").get(now) as TotalRow;
     return Number(usage.total) + Number(reserved.total);
   }
 
@@ -135,8 +140,8 @@ export class TokenBudget {
   private limitError(scope: "room" | "global", room: string, requested: number, now: number): TokenBudgetExceededError {
     const roomFilter = scope === "room" ? "room = ? AND " : "";
     const params = scope === "room" ? [room, now - WINDOW_MS, room, now] : [now - WINDOW_MS, now];
-    const usageTimes = this.db.query(`SELECT tokens, recorded_at + ${WINDOW_MS} AS available_at FROM clanker_token_usage WHERE ${roomFilter}recorded_at >= ? ORDER BY recorded_at`).all(...(scope === "room" ? params.slice(0, 2) : params.slice(0, 1))) as Array<{ tokens: number; available_at: number }>;
-    const reservationTimes = this.db.query(`SELECT tokens, expires_at AS available_at FROM clanker_token_reservations WHERE ${roomFilter}expires_at > ? ORDER BY expires_at`).all(...(scope === "room" ? params.slice(2) : params.slice(1))) as Array<{ tokens: number; available_at: number }>;
+    const usageTimes = this.db.query(`SELECT tokens, recorded_at + ${WINDOW_MS} AS available_at FROM clanker_token_usage WHERE metric = 'output' AND ${roomFilter}recorded_at >= ? ORDER BY recorded_at`).all(...(scope === "room" ? params.slice(0, 2) : params.slice(0, 1))) as Array<{ tokens: number; available_at: number }>;
+    const reservationTimes = this.db.query(`SELECT tokens, expires_at AS available_at FROM clanker_token_reservations WHERE metric = 'output' AND ${roomFilter}expires_at > ? ORDER BY expires_at`).all(...(scope === "room" ? params.slice(2) : params.slice(1))) as Array<{ tokens: number; available_at: number }>;
     const entries = usageTimes.concat(reservationTimes).sort((left, right) => left.available_at - right.available_at);
     const limit = scope === "room" ? this.roomLimit : this.globalLimit;
     let used = this.total(now, scope === "room" ? room : undefined);
@@ -156,16 +161,17 @@ export class TokenBudget {
     const snapshot = this.snapshot(room);
     for (const listener of this.listeners) listener(room, snapshot);
   }
+
+  private ensureMetricColumn(table: "clanker_token_usage" | "clanker_token_reservations"): void {
+    const columns = this.db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "metric")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN metric TEXT NOT NULL DEFAULT 'legacy-total'`);
+  }
 }
 
-export function estimateProviderTokens(serializedRequest: string, maxOutputTokens: number): number {
-  // UTF-8 bytes are a deliberately conservative upper bound for current BPE tokenizers.
-  return Buffer.byteLength(serializedRequest, "utf8") + Math.max(0, Math.ceil(maxOutputTokens));
-}
-
-export function providerTokenUsage(value: unknown): number | undefined {
+export function providerOutputTokenUsage(value: unknown): number | undefined {
   if (!value || typeof value !== "object") return undefined;
-  return validUsage((value as { usage?: { total_tokens?: unknown } }).usage?.total_tokens);
+  const usage = (value as { usage?: { completion_tokens?: unknown; output_tokens?: unknown } }).usage;
+  return validUsage(usage?.completion_tokens) ?? validUsage(usage?.output_tokens);
 }
 
 function validUsage(value: unknown): number | undefined {

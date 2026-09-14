@@ -64,8 +64,8 @@ export class Room {
   filesystemBytes = 0;
   sourceBytes = 0;
   scratchFilesystemBytes = 0;
-  clankerTokensLastHour = 0;
-  clankerTokenLimit = 1;
+  clankerOutputTokensLastHour = 0;
+  clankerOutputTokenLimit = 1;
   lastRequestAt = 0;
   private readonly egressSamples: Array<{ at: number; bytes: number }> = [];
   private clankerResponder?: (history: Message[], activity: (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void, request: ClankerRequest) => Promise<string>;
@@ -216,12 +216,12 @@ export class Room {
     for (const listener of this.serviceListeners) listener();
   }
 
-  recordClankerTokenUsage(tokens: number, limit: number): void {
+  recordClankerOutputTokenUsage(tokens: number, limit: number): void {
     const nextTokens = Math.max(0, Math.floor(tokens));
     const nextLimit = Math.max(1, Math.floor(limit));
-    if (nextTokens === this.clankerTokensLastHour && nextLimit === this.clankerTokenLimit) return;
-    this.clankerTokensLastHour = nextTokens;
-    this.clankerTokenLimit = nextLimit;
+    if (nextTokens === this.clankerOutputTokensLastHour && nextLimit === this.clankerOutputTokenLimit) return;
+    this.clankerOutputTokensLastHour = nextTokens;
+    this.clankerOutputTokenLimit = nextLimit;
     for (const listener of this.serviceListeners) listener();
   }
 

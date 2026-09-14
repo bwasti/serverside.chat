@@ -164,7 +164,7 @@ test("every clanker provider turn is charged to its room token budget", async ()
   const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     attempts: 1,
     tokenBudget,
-    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: "worker.js serves the room." } }], usage: { total_tokens: 321 } }),
+    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: "worker.js serves the room." } }], usage: { completion_tokens: 321, total_tokens: 12_000 } }),
   });
   await clanker.respond("metered", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => []);
   expect(tokenBudget.snapshot("metered")).toMatchObject({ roomUsed: 321, globalUsed: 321 });
