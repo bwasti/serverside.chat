@@ -1544,10 +1544,7 @@ export class TuiSession {
       : deleteRoomScreen
         ? `delete # ${this.deletingRoomName}`
       : `# ${this.room.name}  ${this.room.policy.visibility === "private" ? "private" : "public"}`;
-    let headerPageUrl = !roomManagementScreen ? this.room.pageUrl : "";
-    if (headerPageUrl && this.room.name === "lobby") {
-      try { headerPageUrl = new URL(headerPageUrl).origin; } catch { /* keep the room URL */ }
-    }
+    const headerPageUrl = !roomManagementScreen && this.room.name !== "lobby" ? this.room.pageUrl : "";
     const pageRef = headerPageUrl ? compactUrl(headerPageUrl) : "";
     const titleCandidates = pageRef
       ? [`${baseTitle}   ↗ ${pageRef}`, `# ${this.room.name}   ↗ ${pageRef}`, `↗ ${pageRef}`]

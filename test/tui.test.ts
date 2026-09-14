@@ -564,7 +564,7 @@ test("lobby has a centered padded banner and leaves detailed guidance to pins", 
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .slice(3)
     .trim();
-  expect(frame).toContain("\x1b]8;;http://localhost:3000\x1b\\localhost:3000\x1b]8;;\x1b\\");
+  expect(frame).not.toContain("\x1b]8;;http://localhost:3000");
   expect(visibleMain(lines[1]!)).toBe("");
   expect(frame).toContain("Every room gets a server and a clanker. Have fun!");
   const bannerLine = lines.find((line) => line.includes("Every room gets a server"))!;
