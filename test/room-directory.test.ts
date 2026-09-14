@@ -33,19 +33,19 @@ test("accounts can create a persistent room that owners can rename, archive, and
   expect(accounts.roleFor(member, "bob-site")).toBe("owner");
   expect(existsSync(join(data, "rooms", "bob-site", "repo", ".git"))).toBe(true);
   accounts.redeemInvite(collaborator, accounts.createInvite(member, "bob-site", "admin"));
-  renamed.updatePolicy(member, { visibility: "private", clankerMode: "explicit" });
+  renamed.updatePolicy(member, { visibility: "private", contributions: "authenticated", clankerMode: "explicit" });
 
   directory.deleteRoom(member, "bob-site");
   expect(directory.room("bob-site")).toBeUndefined();
   expect(accounts.roomPolicy("bob-site")).toBeUndefined();
   expect(existsSync(join(data, "rooms", "bob-site"))).toBe(false);
   expect(readdirSync(join(data, ".trash", "rooms")).some((name) => name.endsWith("-bob-site"))).toBe(true);
-  expect(accounts.archivedRooms(member)[0]).toMatchObject({ name: "bob-site", ownerId: member.id, visibility: "private", clankerMode: "explicit" });
+  expect(accounts.archivedRooms(member)[0]).toMatchObject({ name: "bob-site", ownerId: member.id, visibility: "private", contributions: "authenticated", clankerMode: "explicit" });
   expect(accounts.archivedRooms(collaborator)).toEqual([]);
 
   const restored = directory.restoreRoom(member, "bob-site");
   expect(restored.messages.at(-1)?.text).toBe("persistent before rename");
-  expect(restored.policy).toMatchObject({ visibility: "private", clankerMode: "explicit" });
+  expect(restored.policy).toMatchObject({ visibility: "private", contributions: "authenticated", clankerMode: "explicit" });
   expect(accounts.roleFor(member, "bob-site")).toBe("owner");
   expect(accounts.roleFor(collaborator, "bob-site")).toBe("admin");
   expect(accounts.archivedRooms(member)).toEqual([]);

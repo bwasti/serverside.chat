@@ -45,7 +45,7 @@ Finder sends the credential through HTTP Basic authentication only over the exis
 | Control | Values | Effect |
 | --- | --- | --- |
 | Visibility | `public`, `private` | Public rooms allow anonymous reading; private rooms require membership. |
-| Contributions | `members`, `admins`, `disabled` | Members means owner/admin/contributor; admins means owner/admin; disabled blocks normal chat for everyone. |
+| Contributions | `members`, `authenticated`, `admins`, `disabled` | Members means invited owner/admin/contributor. Authenticated allows any signed-in account that can view the room to chat, edit source, and invoke its configured clanker; the UI marks this as dangerous. Admins means owner/admin; disabled blocks normal chat for everyone. |
 | Clanker | `passive`, `explicit`, `disabled` | Passive reviews permitted chat; explicit runs only for `/clanker`; disabled rejects all clanker invocation. |
 
 Room `owner` and room `admin` can inspect or change these controls with `/permissions`. Only a room owner or site admin can rename or delete a room. Disabling contributions does not lock administrators out of the host policy commands.

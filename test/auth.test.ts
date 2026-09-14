@@ -194,6 +194,23 @@ test("public visibility is independent from contribution and clanker authority",
   accounts.close();
 });
 
+test("authenticated contribution rooms admit signed-in non-members but never anonymous users", () => {
+  const { accounts, owner, member } = setup();
+  const guest = anonymousPrincipal("SHA256:open-room-guest");
+  expect(accounts.roleFor(member, "public-room")).toBeUndefined();
+  accounts.updateRoomPolicy(owner, "public-room", { contributions: "authenticated" });
+  expect(accounts.roomPolicy("public-room")?.contributions).toBe("authenticated");
+  expect(accounts.canContribute(member, "public-room")).toBe(true);
+  expect(accounts.canEditSource(member, "public-room")).toBe(true);
+  expect(accounts.canInvokeClanker(member, "public-room")).toBe(true);
+  expect(accounts.canContribute(guest, "public-room")).toBe(false);
+
+  accounts.updateRoomPolicy(owner, "private-room", { contributions: "authenticated" });
+  expect(accounts.canView(member, "private-room")).toBe(false);
+  expect(accounts.canContribute(member, "private-room")).toBe(false);
+  accounts.close();
+});
+
 test("site admins and free account room limits are distinct from room roles", () => {
   const { accounts, owner, member } = setup();
   expect(accounts.accountProfile(owner)).toMatchObject({ siteRole: "member", plan: "free", ownedRooms: 2, roomLimit: 5 });

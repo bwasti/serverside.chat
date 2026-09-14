@@ -13,7 +13,7 @@ type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Re
 export const ROOM_CLANKER_RUN_TIMEOUT_MS = 15 * 60_000;
 export const ROOM_CLANKER_PROVIDER_TIMEOUT_MS = 5 * 60_000;
 export const ROOM_CLANKER_FINALIZATION_WINDOW_MS = 2 * 60_000;
-export const ROOM_CLANKER_MAX_TURNS = 64;
+export const ROOM_CLANKER_MAX_TURNS = 256;
 const ROOM_CLANKER_PROVIDER_ATTEMPTS = 2;
 const MAX_PROVIDER_REQUEST_BYTES = 512 * 1024;
 
@@ -72,7 +72,7 @@ export class FireworksClanker {
     this.providerTimeoutMs = Math.max(1, Math.floor(options.providerTimeoutMs ?? ROOM_CLANKER_PROVIDER_TIMEOUT_MS));
     this.finalizationWindowMs = Math.max(1, Math.min(Math.floor(this.runTimeoutMs / 3) || 1, Math.floor(options.finalizationWindowMs ?? ROOM_CLANKER_FINALIZATION_WINDOW_MS)));
     this.attempts = Math.max(1, Math.min(3, Math.floor(options.attempts ?? ROOM_CLANKER_PROVIDER_ATTEMPTS)));
-    this.maxTurns = Math.max(1, Math.min(128, Math.floor(options.maxTurns ?? ROOM_CLANKER_MAX_TURNS)));
+    this.maxTurns = Math.max(1, Math.min(256, Math.floor(options.maxTurns ?? ROOM_CLANKER_MAX_TURNS)));
     this.retryDelayMs = Math.max(0, Math.min(10_000, Math.floor(options.retryDelayMs ?? 1_000)));
     this.fetcher = options.fetcher ?? fetch;
     this.tokenBudget = options.tokenBudget;

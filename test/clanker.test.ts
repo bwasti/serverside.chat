@@ -38,7 +38,7 @@ test("room clanker runs reserve finalization time within bounded production budg
   expect(ROOM_CLANKER_RUN_TIMEOUT_MS).toBe(15 * 60_000);
   expect(ROOM_CLANKER_PROVIDER_TIMEOUT_MS).toBe(5 * 60_000);
   expect(ROOM_CLANKER_FINALIZATION_WINDOW_MS).toBe(2 * 60_000);
-  expect(ROOM_CLANKER_MAX_TURNS).toBe(64);
+  expect(ROOM_CLANKER_MAX_TURNS).toBe(256);
 });
 
 test("turn-limit failures are concise and confirm that work is preserved", async () => {

@@ -57,6 +57,7 @@ export class Room {
   serviceResponseBytes = 0;
   serviceTotalLatencyMs = 0;
   readonly serviceLogs: string[] = [];
+  readonly clankerErrorLogs: string[] = [];
   readonly versionGraph: Array<{ text: string; url?: string }> = [];
   webConnections = 0;
   activeRequests = 0;
@@ -396,8 +397,8 @@ export class Room {
     if (this.clankerState.events.length > 30) this.clankerState.events.shift();
     if (status === "error") {
       const log = `${time} CLANKER error ${this.clankerState.detail}`;
-      if (this.serviceLogs.at(-1) !== log) this.serviceLogs.push(log);
-      if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
+      if (this.clankerErrorLogs.at(-1) !== log) this.clankerErrorLogs.push(log);
+      if (this.clankerErrorLogs.length > 30) this.clankerErrorLogs.splice(0, this.clankerErrorLogs.length - 30);
     }
     if (detail === "preview archived" && link) {
       this.clankerState.links.splice(0, this.clankerState.links.length, ...this.clankerState.links.filter((existing) => existing.url !== link.url));
@@ -459,6 +460,7 @@ export class Room {
       if (Array.isArray(state.egressSamples)) for (const raw of state.egressSamples) { const sample = raw as Record<string, unknown>; if (typeof sample?.at === "number" && typeof sample.bytes === "number") this.egressSamples.push({ at: sample.at, bytes: sample.bytes }); }
       this.pruneEgress();
       if (Array.isArray(state.serviceLogs)) this.serviceLogs.push(...state.serviceLogs.filter((value): value is string => typeof value === "string").slice(-50).map(legacyClankerTelemetry));
+      if (Array.isArray(state.clankerErrorLogs)) this.clankerErrorLogs.push(...state.clankerErrorLogs.filter((value): value is string => typeof value === "string").slice(-30).map(legacyClankerTelemetry));
       const clanker = (state.clankerState ?? state.agentState) as Record<string, unknown> | undefined;
       if (clanker) {
         if (Array.isArray(clanker.events)) this.clankerState.events.push(...clanker.events.filter((value): value is string => typeof value === "string").slice(-30).map(legacyClankerTelemetry));
@@ -466,12 +468,15 @@ export class Room {
           const link = raw as Record<string, unknown>;
           if (typeof link?.label === "string" && typeof link.url === "string") this.clankerState.links.push({ label: link.label, url: rebaseRoomUrl(link.url, this.pageUrl) });
         }
-        const lastClankerError = this.clankerState.events.at(-1)?.match(/^(\d{2}:\d{2}:\d{2}) error · (.*)$/);
-        if (lastClankerError) {
-          const log = `${lastClankerError[1]} CLANKER error ${lastClankerError[2]}`;
-          if (!this.serviceLogs.includes(log)) this.serviceLogs.push(log);
-          if (this.serviceLogs.length > 50) this.serviceLogs.splice(0, this.serviceLogs.length - 50);
+        for (const clankerEvent of this.clankerState.events) {
+          const error = clankerEvent.match(/^(\d{2}:\d{2}:\d{2}) error · (.*)$/);
+          if (!error) continue;
+          const log = `${error[1]} CLANKER error ${error[2]}`;
+          if (!this.clankerErrorLogs.includes(log)) this.clankerErrorLogs.push(log);
         }
+        if (this.clankerErrorLogs.length > 30) this.clankerErrorLogs.splice(0, this.clankerErrorLogs.length - 30);
+        const migratedErrors = new Set(this.clankerErrorLogs);
+        this.serviceLogs.splice(0, this.serviceLogs.length, ...this.serviceLogs.filter((line) => !migratedErrors.has(line)));
       }
       const startedAt = new Date(String(state.serviceStartedAt));
       return Number.isNaN(startedAt.getTime()) ? fallback : startedAt;
@@ -484,7 +489,7 @@ export class Room {
     if (!this.statePath) return;
     mkdirSync(dirname(this.statePath), { recursive: true });
     const temporary = `${this.statePath}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ telemetryVersion: TELEMETRY_VERSION, messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, sourceBytes: this.sourceBytes, scratchFilesystemBytes: this.scratchFilesystemBytes, egressSamples: this.egressSamples, clankerState: { events: this.clankerState.events, links: this.clankerState.links } }, null, 2));
+    writeFileSync(temporary, JSON.stringify({ telemetryVersion: TELEMETRY_VERSION, messages: this.messages, serviceStartedAt: this.serviceStartedAt.toISOString(), serviceRequests: this.serviceRequests, serviceErrors: this.serviceErrors, serviceResponseBytes: this.serviceResponseBytes, serviceTotalLatencyMs: this.serviceTotalLatencyMs, serviceLogs: this.serviceLogs, clankerErrorLogs: this.clankerErrorLogs, databaseBytes: this.databaseBytes, filesystemBytes: this.filesystemBytes, sourceBytes: this.sourceBytes, scratchFilesystemBytes: this.scratchFilesystemBytes, egressSamples: this.egressSamples, clankerState: { events: this.clankerState.events, links: this.clankerState.links } }, null, 2));
     renameSync(temporary, this.statePath);
   }
 

@@ -107,7 +107,7 @@ test("main chat stays darkest while the version HUD matches the status backgroun
   expect(frame).toContain("# mine  public");
   expect(frame).toContain("\x1b]8;;http://localhost:3000/mine\x1b\\localhost:3000/mine\x1b]8;;\x1b\\");
   expect(frame).not.toContain("SITE");
-  expect(frame).not.toContain("CLANKER");
+  expect(frame).toContain("CLANKER ERRORS");
   expect(frame).toContain("DB ");
   expect(frame).toContain("CONN ");
   expect(frame).toContain("FILES ");
@@ -508,16 +508,17 @@ test("Shift-Enter opens keyboard-only room permission settings for admins", () =
   stream.emit("data", Buffer.from("\t\x1b[13;2u"));
   expect(stream.writes.at(-1)).toContain("ROOM SETTINGS  #mine");
   stream.emit("data", Buffer.from("\x1b[C\x1b[B\x1b[C\x1b[B\x1b[C\x1b[B\r"));
-  expect(directory.room("mine")!.policy).toMatchObject({ visibility: "private", contributions: "admins", clankerMode: "explicit" });
+  expect(directory.room("mine")!.policy).toMatchObject({ visibility: "private", contributions: "authenticated", clankerMode: "explicit" });
   expect(stream.writes.at(-1)).toContain("room settings saved");
   stream.end();
   accounts.close();
 });
 
-test("wide version control HUD reserves its lower third for live service logs", () => {
+test("wide HUD puts resource limits immediately above separate server and clanker logs", () => {
   const room = new Room("mine");
   room.versionGraph.push({ text: "* abcdef0  head", url: "https://example.test/mine?__ref=abcdef0" });
   room.recordServiceLog("guest rendered 你好, 世界");
+  room.clankerErrorLogs.push("12:34:56 CLANKER error 256-turn limit reached · work preserved");
   const tui = open(room);
   tui.session.resize(120, 24);
 
@@ -528,11 +529,14 @@ test("wide version control HUD reserves its lower third for live service logs", 
   expect(frame).toContain("CONN ");
   expect(frame).toContain("FILES ");
   expect(frame).toContain("BYTES/H ");
-  expect(frame).toContain("LIVE LOGS");
+  expect(frame).toContain("SERVER LOGS");
+  expect(frame).toContain("CLANKER ERRORS");
   expect(frame).toContain("guest rendered 你好, 世界");
-  expect(frame.indexOf("LIVE LOGS")).toBeGreaterThan(frame.indexOf("abcdef0"));
+  expect(frame).toContain("256-turn limit reached");
+  expect(frame.indexOf("SERVER LOGS")).toBeGreaterThan(frame.indexOf("abcdef0"));
   expect(frame.indexOf("DB ")).toBeGreaterThan(frame.indexOf("abcdef0"));
-  expect(frame.indexOf("DB ")).toBeLessThan(frame.indexOf("LIVE LOGS"));
+  expect(frame.indexOf("DB ")).toBeLessThan(frame.indexOf("SERVER LOGS"));
+  expect(frame.indexOf("CLANKER ERRORS")).toBeGreaterThan(frame.indexOf("SERVER LOGS"));
   const rows = frame.split("\r\n");
   const resourceRows = ["DB", "FILES", "CONN", "BYTES/H", "OUT/H"].map((label) => rows.findIndex((row) => row.includes(label)));
   expect(new Set(resourceRows).size).toBe(5);
@@ -541,6 +545,11 @@ test("wide version control HUD reserves its lower third for live service logs", 
     expect(rows[index]).toContain("\x1b[48;5;237m");
     expect(rows[index]!.match(/░/g)?.length).toBeGreaterThan(10);
   }
+  const outputIndex = rows.findIndex((row) => row.includes("OUT/H"));
+  const serverLogIndex = rows.findIndex((row) => row.includes("SERVER LOGS"));
+  const clankerLogIndex = rows.findIndex((row) => row.includes("CLANKER ERRORS"));
+  expect(outputIndex + 1).toBe(serverLogIndex);
+  expect(clankerLogIndex).toBeGreaterThan(serverLogIndex);
   tui.stream.end();
 });
 
@@ -862,7 +871,8 @@ test("room creation is a keyboard-only policy form", async () => {
   expect(stream.writes.at(-1)).toContain("[ Create room ]");
   stream.emit("data", Buffer.from("\r"));
   expect((session as unknown as { room: Room }).room.name).toBe("project");
-  expect(accounts.roomPolicy("project")).toMatchObject({ visibility: "private", contributions: "admins", clankerMode: "explicit" });
+  expect(accounts.roomPolicy("project")).toMatchObject({ visibility: "private", contributions: "authenticated", clankerMode: "explicit" });
+  expect(stream.writes.some((frame) => frame.includes("DANGEROUS · any signed-in account"))).toBe(true);
 
   stream.end();
   accounts.close();

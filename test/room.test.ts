@@ -105,12 +105,13 @@ test("legacy cumulative client-error totals do not poison the new server-error c
   expect(room.serviceErrors).toBe(0);
 });
 
-test("a latest persisted clanker failure migrates into live logs", () => {
+test("persisted clanker failures migrate into their dedicated error log", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-clanker-log-migration-"));
   const statePath = join(data, "room-state.json");
   writeFileSync(statePath, JSON.stringify({ serviceStartedAt: new Date().toISOString(), serviceLogs: [], clankerState: { events: ["12:34:56 error · clanker stopped without a commit or blocker"], links: [] } }));
   const room = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath);
-  expect(room.serviceLogs).toContain("12:34:56 CLANKER error clanker stopped without a commit or blocker");
+  expect(room.clankerErrorLogs).toContain("12:34:56 CLANKER error clanker stopped without a commit or blocker");
+  expect(room.serviceLogs).not.toContain("12:34:56 CLANKER error clanker stopped without a commit or blocker");
 });
 
 test("legacy agent transcript state migrates to clanker terminology", () => {
@@ -129,7 +130,8 @@ test("legacy agent transcript state migrates to clanker terminology", () => {
   const room = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath);
   expect(room.messages[0]).toMatchObject({ kind: "chat", author: "alice", text: "@clanker inspect user-agent handling", clankerVisible: true });
   expect(room.messages[1]).toMatchObject({ kind: "clanker", author: "clanker", text: "The user-agent header is preserved.", clankerVisible: true });
-  expect(room.serviceLogs).toContain("12:34:56 CLANKER error clanker stopped");
+  expect(room.clankerErrorLogs).toContain("12:34:56 CLANKER error clanker stopped");
+  expect(room.serviceLogs).not.toContain("12:34:56 CLANKER error clanker stopped");
   expect(room.clankerState.events).toContain("12:34:56 error · clanker stopped");
 });
 
@@ -162,7 +164,8 @@ test("clanker failures remain visible in the HUD status", async () => {
   room.clanker("alice", "build the page");
   await failed;
   expect(room.clankerState).toMatchObject({ status: "error", detail: "provider timed out after 5m" });
-  expect(room.serviceLogs.at(-1)).toContain("CLANKER error provider timed out after 5m");
+  expect(room.clankerErrorLogs.at(-1)).toContain("CLANKER error provider timed out after 5m");
+  expect(room.serviceLogs).toHaveLength(0);
 });
 
 test("canonical promotions are authoritatively logged in chat", async () => {

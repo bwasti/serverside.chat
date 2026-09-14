@@ -973,11 +973,13 @@ export class TuiSession {
       }
       if (!value) throw new Error("usage: /permissions visibility|contributions|clanker value");
       if (field === "visibility" && (value === "public" || value === "private")) this.room.updatePolicy(this.principal, { visibility: value as RoomVisibility });
-      else if (field === "contributions" && (value === "members" || value === "admins" || value === "disabled")) this.room.updatePolicy(this.principal, { contributions: value as ContributionPolicy });
+      else if (field === "contributions" && (value === "members" || value === "authenticated" || value === "admins" || value === "disabled")) this.room.updatePolicy(this.principal, { contributions: value as ContributionPolicy });
       else if (field === "clanker" && (value === "passive" || value === "explicit" || value === "disabled")) this.room.updatePolicy(this.principal, { clankerMode: value as ClankerMode });
       else throw new Error("invalid permission setting");
       const policy = this.room.policy;
-      this.localNotice = `${policy.visibility} · ${policy.contributions} contribute · ${policy.clankerMode} clanker`;
+      this.localNotice = field === "contributions" && policy.contributions === "authenticated"
+        ? "DANGEROUS · any signed-in account that can view this room may chat, edit, and invoke the clanker"
+        : `${policy.visibility} · ${policy.contributions} contribute · ${policy.clankerMode} clanker`;
     } catch (error) {
       this.localNotice = error instanceof Error ? error.message : "permission command failed";
     }
@@ -1067,7 +1069,7 @@ export class TuiSession {
   private cycleRoomSetting(direction: -1 | 1): void {
     if (!this.roomSettings) return;
     if (this.roomSettings.field === 0) this.roomSettings.visibility = cycle(["public", "private"] as const, this.roomSettings.visibility, direction);
-    else if (this.roomSettings.field === 1) this.roomSettings.contributions = cycle(["members", "admins", "disabled"] as const, this.roomSettings.contributions, direction);
+    else if (this.roomSettings.field === 1) this.roomSettings.contributions = cycle(["members", "authenticated", "admins", "disabled"] as const, this.roomSettings.contributions, direction);
     else if (this.roomSettings.field === 2) this.roomSettings.clankerMode = cycle(["passive", "explicit", "disabled"] as const, this.roomSettings.clankerMode, direction);
   }
 
@@ -1085,7 +1087,7 @@ export class TuiSession {
     const rows = [
       "",
       row(0, "Visibility", this.roomSettings.visibility, this.roomSettings.visibility === "public" ? "anyone can view" : "members only"),
-      row(1, "Contributions", this.roomSettings.contributions, this.roomSettings.contributions === "members" ? "contributors and admins" : this.roomSettings.contributions === "admins" ? "admins only" : "read only"),
+      row(1, "Contributions", this.roomSettings.contributions, this.roomSettings.contributions === "members" ? "invited contributors and admins" : this.roomSettings.contributions === "authenticated" ? `${RED}DANGEROUS · any signed-in account can edit and invoke the clanker${CHAT}` : this.roomSettings.contributions === "admins" ? "admins only" : "read only"),
       row(2, "Clanker", this.roomSettings.clankerMode, this.roomSettings.clankerMode === "passive" ? "listens when useful" : this.roomSettings.clankerMode === "explicit" ? "/clanker only" : "disabled"),
       "",
       row(3, "", "save", ""),
@@ -1689,24 +1691,15 @@ export class TuiSession {
 
   private hudRow(index: number, width: number): string {
     if (!width) return "";
-    const logStart = Math.max(2, Math.floor((this.height - 1) * 2 / 3));
+    const resources = this.resourceHudRows(width);
+    const logStart = Math.max(resources.length, Math.max(2, Math.floor((this.height - 1) * 2 / 3)));
+    const logging = this.loggingHudRows(width, Math.max(0, this.height - 1 - logStart));
     let rendered: string;
-    if (index >= logStart) {
-      if (index === logStart) {
-        const live = Date.now() - this.room.lastRequestAt < 1_200;
-        const pulse = live ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
-        rendered = `${HUD_MUTED}${padAnsi(`  LIVE LOGS  ${live ? GREEN : MUTED}${pulse}${HUD_MUTED}`, width)}${RESET}`;
-        return this.dimInactiveHud(rendered);
-      }
-      const capacity = Math.max(0, this.height - 1 - logStart - 1);
-      const logs = this.room.serviceLogs.slice(-capacity);
-      const slot = index - logStart - 1;
-      const log = logs[slot - (capacity - logs.length)];
-      rendered = `${HUD}${padAnsi(log ? renderServiceLog(log) : "", width)}${RESET}`;
+    if (index >= logStart && index < logStart + logging.length) {
+      rendered = `${HUD}${padAnsi(logging[index - logStart]!, width)}${RESET}`;
       return this.dimInactiveHud(rendered);
     }
-    const resources = this.resourceHudRows(width);
-    const resourceStart = Math.min(this.room.versionGraph.length, Math.max(0, logStart - resources.length));
+    const resourceStart = Math.max(0, logStart - resources.length);
     if (index >= resourceStart && index < resourceStart + resources.length) {
       rendered = `${HUD}${padAnsi(resources[index - resourceStart]!, width)}${RESET}`;
       return this.dimInactiveHud(rendered);
@@ -1714,6 +1707,25 @@ export class TuiSession {
     const row = index < resourceStart ? this.room.versionGraph[index] : undefined;
     rendered = row ? `${HUD}${renderVersionRow(row.text, row.url, width)}${RESET}` : `${HUD}${" ".repeat(width)}${RESET}`;
     return this.dimInactiveHud(rendered);
+  }
+
+  private loggingHudRows(_width: number, capacity: number): string[] {
+    if (capacity <= 0) return [];
+    const live = Date.now() - this.room.lastRequestAt < 1_200;
+    const pulse = live ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "·";
+    const serverHeader = `${HUD_MUTED}  SERVER LOGS  ${live ? GREEN : MUTED}${pulse}${HUD}`;
+    if (capacity === 1) return [serverHeader];
+    const clankerHeader = `${HUD_MUTED}  CLANKER ERRORS${HUD}`;
+    if (capacity === 2) return [serverHeader, clankerHeader];
+    const available = capacity - 2;
+    const clankerSlots = this.room.clankerErrorLogs.length ? Math.max(1, Math.min(2, Math.floor(available / 3))) : 0;
+    const serverSlots = available - clankerSlots;
+    return [
+      serverHeader,
+      ...rightAlignedLogSlots(this.room.serviceLogs, serverSlots),
+      clankerHeader,
+      ...rightAlignedLogSlots(this.room.clankerErrorLogs, clankerSlots, renderClankerErrorLog),
+    ];
   }
 
   private resourceHudRows(width: number): string[] {
@@ -1964,7 +1976,7 @@ export class TuiSession {
       const values: RoomVisibility[] = ["public", "private"];
       this.createRoomVisibility = cycle(values, this.createRoomVisibility, direction);
     } else if (this.createRoomField === 2) {
-      const values: ContributionPolicy[] = ["members", "admins", "disabled"];
+      const values: ContributionPolicy[] = ["members", "authenticated", "admins", "disabled"];
       this.createRoomContributions = cycle(values, this.createRoomContributions, direction);
     } else if (this.createRoomField === 3) {
       const values: ClankerMode[] = ["passive", "explicit", "disabled"];
@@ -1976,6 +1988,7 @@ export class TuiSession {
     const visibility = this.createRoomVisibility === "public" ? "anyone can view" : "invitation required to view";
     const contributions = this.createRoomContributions === "members"
       ? "owner and invited contributors"
+      : this.createRoomContributions === "authenticated" ? `${RED}DANGEROUS · any signed-in account can edit and invoke the clanker${CHAT}`
       : this.createRoomContributions === "admins" ? "owner and room admins only" : "read only";
     const clanker = this.createRoomClankerMode === "passive"
       ? "listens and acts when useful"
@@ -2201,6 +2214,16 @@ export function renderServiceLog(value: string): string {
   }
   const timestamp = safe.match(/^(\d{2}:\d{2}:\d{2}) (.*)$/);
   return timestamp ? `  ${MUTED}${timestamp[1]}${HUD} ${timestamp[2]}` : `  ${safe}`;
+}
+
+function renderClankerErrorLog(value: string): string {
+  return renderServiceLog(value.replace(/^(\d{2}:\d{2}:\d{2}) CLANKER error /, "$1 "));
+}
+
+function rightAlignedLogSlots(logs: string[], capacity: number, render = renderServiceLog): string[] {
+  if (capacity <= 0) return [];
+  const visible = logs.slice(-capacity).map(render);
+  return [...Array<string>(capacity - visible.length).fill(""), ...visible];
 }
 
 function renderSlashCommand(command: SlashCommand, selected: boolean, width: number): string {
