@@ -8,10 +8,10 @@ serverside.chat {
 	encode zstd gzip
 
 	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		Referrer-Policy same-origin
-		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		?X-Content-Type-Options nosniff
+		?X-Frame-Options DENY
+		?Referrer-Policy same-origin
+		?Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 	}
 
 	reverse_proxy 127.0.0.1:3000
@@ -26,10 +26,10 @@ https:// {
 
 	encode zstd gzip
 	header {
-		X-Content-Type-Options nosniff
-		X-Frame-Options DENY
-		Referrer-Policy same-origin
-		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		?X-Content-Type-Options nosniff
+		?X-Frame-Options DENY
+		?Referrer-Policy same-origin
+		?Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 	}
 	reverse_proxy 127.0.0.1:3000
 }
