@@ -552,7 +552,7 @@ test("clanker failures render as distinct live-log entries", () => {
   expect(rendered).toContain("provider returned no usable completion");
 });
 
-test("lobby leaves guidance to persistent pinned messages", () => {
+test("lobby has a centered padded banner and leaves detailed guidance to pins", () => {
   const lobby = new Room("lobby");
   const tui = open(lobby);
   tui.session.resize(120, 24);
@@ -566,6 +566,10 @@ test("lobby leaves guidance to persistent pinned messages", () => {
     .trim();
   expect(frame).toContain("\x1b]8;;http://localhost:3000\x1b\\localhost:3000\x1b]8;;\x1b\\");
   expect(visibleMain(lines[1]!)).toBe("");
+  expect(frame).toContain("Every room gets a server and a clanker. Have fun!");
+  const bannerLine = lines.find((line) => line.includes("Every room gets a server"))!;
+  const plainBanner = bannerLine.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").slice(3);
+  expect(plainBanner.indexOf("Every room")).toBeGreaterThan(20);
   expect(frame).not.toContain("ssh -p 2222 serverside.chat");
   expect(frame).not.toContain("Each chat room comes paired");
   expect(frame).not.toContain("live preview");

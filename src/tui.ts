@@ -1647,7 +1647,7 @@ export class TuiSession {
       const defaults = truncate("  Defaults are public · members contribute · passive clanker.", width);
       return height < 12 ? [title] : [title, defaults];
     }
-    if (this.room.name === "lobby") return this.pinnedStatusRows(width, height);
+    if (this.room.name === "lobby") return this.lobbyStatusRows(width, height);
     const sitePulse = Date.now() - this.room.lastRequestAt < 1_200 ? SPINNER[Math.floor(Date.now() / 100) % SPINNER.length] : "●";
     const averageLatency = this.room.serviceRequests ? this.room.serviceTotalLatencyMs / this.room.serviceRequests : 0;
     const healthTone = this.room.serviceErrors ? RED : GREEN;
@@ -1656,6 +1656,15 @@ export class TuiSession {
     const compact = `${healthTone}${sitePulse}${STATUS} ${this.room.serviceErrors ? "errors" : "healthy"}   people ${this.room.members.size}`;
     const site = [full, medium, compact].find((candidate) => visibleLength(candidate) <= width) ?? compact;
     return [centerAnsi(site, width), ...this.pinnedStatusRows(width, height)];
+  }
+
+  private lobbyStatusRows(width: number, height: number): string[] {
+    const message = "Every room gets a server and a clanker. Have fun!";
+    const contentWidth = Math.max(1, width - Math.min(8, Math.max(0, width - 1)));
+    const messageRows = wrap(message, contentWidth).map((line) => centerAnsi(`${ESC}1m${line}${ESC}22m${STATUS}`, width));
+    const padding = height >= 18 ? 2 : height >= 12 ? 1 : 0;
+    const banner = [...Array<string>(padding).fill(""), ...messageRows, ...Array<string>(padding).fill("")];
+    return [...banner, ...this.pinnedStatusRows(width, Math.max(3, height - banner.length))];
   }
 
   private pinnedStatusRows(width: number, height: number): string[] {
