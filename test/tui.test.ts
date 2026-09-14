@@ -193,6 +193,29 @@ test("empty-composer arrows select messages for replies and confirmed admin dele
   accounts.close();
 });
 
+test("Ctrl-N opens the permission-checked new-room form", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-ctrl-new-room-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
+  const directory = new RoomDirectory(accounts, data, "https://example.test");
+  directory.prepareAccount(owner);
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "lobby", undefined, undefined, undefined, directory);
+
+  stream.emit("data", Buffer.from("draft\x0e"));
+  expect((session as unknown as { creatingRoom: boolean; input: string }).creatingRoom).toBe(false);
+  expect((session as unknown as { input: string }).input).toBe("draft");
+  expect(stream.writes.at(-1)).toContain("send or clear the current draft");
+  stream.emit("data", Buffer.from("\x15\x0e"));
+  expect((session as unknown as { creatingRoom: boolean }).creatingRoom).toBe(true);
+  expect(stream.writes.at(-1)).toContain("Configure the room before entering it");
+  expect(stream.writes.at(-1)).toContain("Visibility");
+
+  stream.end();
+  accounts.close();
+});
+
 test("Escape returns message navigation to the composer, then opens and closes the room drawer", () => {
   const room = new Room("mine");
   room.chat("alice", "message to navigate");
@@ -688,7 +711,7 @@ test("the sidebar identity opens keyboard-driven account settings", () => {
   const stream = new FakeStream();
   new TuiSession(stream as unknown as ServerChannel, directory.rooms, owner, accounts, "mine", "https://example.test/?signin=1", undefined, undefined, directory);
 
-  stream.emit("data", Buffer.from("\t\x1b[B\r"));
+  stream.emit("data", Buffer.from("\t\x1b[B\x1b[B\r"));
   expect(stream.writes.at(-1)).toContain("ACCOUNT  @alice");
   expect(stream.writes.at(-1)).toContain("Change display name");
   expect(stream.writes.at(-1)).toContain("\x1b[38;5;110madmin");
@@ -804,8 +827,10 @@ test("room creation is a keyboard-only policy form", async () => {
 
   stream.emit("data", Buffer.from("\t"));
   await Bun.sleep(350);
-  expect(stream.writes.at(-1)).toContain("+ new room");
-  stream.emit("data", Buffer.from("\x1b[A"));
+  const drawerFrame = stream.writes.at(-1)!;
+  expect(drawerFrame).toContain("+ new room");
+  expect(drawerFrame.indexOf("# lobby")).toBeLessThan(drawerFrame.indexOf("+ new room"));
+  stream.emit("data", Buffer.from("\x1b[B"));
   const selectedFrame = stream.writes.at(-1)!;
   const selected = session as unknown as { input: string; createRoomFocused: boolean; creatingRoom: boolean; createRoomField: number };
   expect(selected.createRoomFocused).toBe(true);

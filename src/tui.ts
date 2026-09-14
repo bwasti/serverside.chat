@@ -228,6 +228,11 @@ export class TuiSession {
           this.stream.end();
           return;
         }
+        if (char === "\x0e" && !this.deletingRoomName && !this.onCreateRoomScreen()) {
+          this.openRoomCreationShortcut();
+          dirty = true;
+          continue;
+        }
         if (char === "\t" && this.deletingRoomName) {
           this.deletingRoomName = undefined;
           this.input = "";
@@ -415,12 +420,12 @@ export class TuiSession {
 
   private moveSidebar(offset: number): void {
     const hasCreate = this.roomCreationAvailable = this.computeRoomCreationAvailability();
-    const roomStart = hasCreate ? 1 : 0;
-    const accountIndex = roomStart + this.rooms.length;
+    const createIndex = this.rooms.length;
+    const accountIndex = createIndex + (hasCreate ? 1 : 0);
     const total = accountIndex + 1;
-    const current = this.accountFocused ? accountIndex : this.createRoomFocused ? 0 : this.roomIndex + roomStart;
+    const current = this.accountFocused ? accountIndex : this.createRoomFocused ? createIndex : this.roomIndex;
     const next = (current + offset + total) % total;
-    if (hasCreate && next === 0) {
+    if (hasCreate && next === createIndex) {
       if (!this.onCreateRoomScreen()) this.resetRoomCreationForm();
       this.createRoomFocused = true;
       this.accountFocused = false;
@@ -441,7 +446,7 @@ export class TuiSession {
     this.accountFocused = false;
     this.creatingRoom = false;
     if (leavingRoomCreation) this.resetRoomCreationForm();
-    const nextRoom = next - roomStart;
+    const nextRoom = next;
     if (nextRoom === this.roomIndex) { this.render(); return; }
     this.unsubscribe();
     this.unsubscribeService();
@@ -1721,22 +1726,24 @@ export class TuiSession {
   }
 
   private sidebarRow(index: number, width: number): string {
+    const itemIndex = index - 1;
     if (width <= 3) {
-      const roomIndex = index - 1;
-      const roomActive = !this.onCreateRoomScreen() && !this.accountFocused && roomIndex === this.roomIndex;
-      const marker = roomActive ? " ● " : roomIndex >= 0 && roomIndex < this.rooms.length ? " · " : "   ";
-      return `${roomActive ? SIDEBAR_ACTIVE : SIDEBAR}${pad(marker, width)}${RESET}`;
+      if (itemIndex >= 0 && itemIndex < this.rooms.length) {
+        const roomActive = !this.onCreateRoomScreen() && !this.accountFocused && itemIndex === this.roomIndex;
+        return `${roomActive ? SIDEBAR_ACTIVE : SIDEBAR}${pad(roomActive ? " ● " : " · ", width)}${RESET}`;
+      }
+      if (this.roomCreationAvailable && itemIndex === this.rooms.length) return `${this.createRoomFocused ? SIDEBAR_ACTIVE : SIDEBAR}${pad(" + ", width)}${RESET}`;
+      return `${SIDEBAR}${" ".repeat(width)}${RESET}`;
     }
-    if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS ⇧↑↓ ⇧↵" : "  ROOMS", width), width)}${RESET}`;
+    if (index === 0) return `${SIDEBAR_MUTED}${pad(truncate(this.sidebarFocused ? "  ROOMS  ^N new" : "  ROOMS", width), width)}${RESET}`;
     const hasCreate = this.roomCreationAvailable;
-    if (hasCreate && index === 1) {
+    if (hasCreate && itemIndex === this.rooms.length) {
       const style = this.createRoomFocused ? SIDEBAR_ACTIVE : SIDEBAR;
       return `${style}${pad(truncate("  + new room", width), width)}${RESET}`;
     }
-    const roomIndex = index - 1 - (hasCreate ? 1 : 0);
-    if (roomIndex < this.rooms.length) {
-      const style = !this.onCreateRoomScreen() && !this.accountFocused && roomIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
-      const room = this.rooms[roomIndex]!;
+    if (itemIndex >= 0 && itemIndex < this.rooms.length) {
+      const style = !this.onCreateRoomScreen() && !this.accountFocused && itemIndex === this.roomIndex ? SIDEBAR_ACTIVE : SIDEBAR;
+      const room = this.rooms[itemIndex]!;
       const detail = width >= 18 ? `${room.members.size} · ${room.policy.visibility}  ` : "";
       const labelWidth = Math.max(0, width - terminalWidth(detail));
       const label = pad(truncate(`  # ${room.name}`, labelWidth), labelWidth);
@@ -1900,6 +1907,36 @@ export class TuiSession {
     this.localNotice = "";
     this.messageCacheRoom = "";
     this.messageCache.clear();
+  }
+
+  private openRoomCreationShortcut(): void {
+    if (this.input) {
+      this.localNotice = "send or clear the current draft before creating a room";
+      return;
+    }
+    if (!this.principal.authenticated || this.principal.kind !== "user") {
+      this.localNotice = "sign in to create rooms";
+      return;
+    }
+    if (!this.accounts || !this.directory) {
+      this.localNotice = "room creation is unavailable";
+      return;
+    }
+    this.roomCreationAvailable = this.computeRoomCreationAvailability();
+    if (!this.roomCreationAvailable) {
+      const profile = this.accounts.accountProfile(this.principal);
+      this.localNotice = `room limit reached · ${profile.ownedRooms}/${profile.roomLimit}`;
+      return;
+    }
+    this.room.setTyping(this.username, false);
+    this.selectedMessageId = undefined;
+    this.replyToMessageId = undefined;
+    this.scrollOffset = 0;
+    this.sidebarFocused = false;
+    this.accountFocused = false;
+    this.resetRoomCreationForm();
+    this.beginRoomCreation();
+    this.animateSidebar();
   }
 
   private deleteRoomFormRows(): string[] {
