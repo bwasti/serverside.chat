@@ -13,8 +13,10 @@ test("hosted agent discovery points from a room URL to bounded machine workflows
   accounts.ensureRoom("carsilike", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   const room = new Room("carsilike", 250, "https://carsilike.serverside.chat", "alice", undefined, accounts);
   const guide = roomAgentGuide(room, "https://serverside.chat");
-  expect(guide).toContain("ssh -p 2222 serverside.chat \"api carsilike status\"");
-  expect(guide).toContain("sftp -P 2222 serverside.chat:/carsilike");
+  expect(guide).toContain("ssh -o BatchMode=yes -p 2222 serverside.chat \"api carsilike whoami\"");
+  expect(guide).toContain("ssh -o BatchMode=yes -p 2222 serverside.chat \"api carsilike status\"");
+  expect(guide).toContain("sftp -o BatchMode=yes -P 2222 serverside.chat:/carsilike");
+  expect(guide).toContain("never request, copy, or transmit private-key material");
   expect(guide).toContain("never invokes a system shell");
   expect(roomApiManifest(room, "https://serverside.chat")).toMatchObject({ version: 1, room: "carsilike", site_url: "https://carsilike.serverside.chat" });
   expect(llmsText("https://serverside.chat")).toContain("/room/example/llms.txt");

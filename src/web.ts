@@ -176,7 +176,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       const inviteRoute = url.pathname.match(/^\/invite\/([a-zA-Z0-9_-]{20,64})\/?$/);
       if (request.method === "GET" && (url.pathname === "/" || roomRoute || inviteRoute)) {
         if (roomRoute && (!directory.room(roomRoute[1]!) || (accounts && !accounts.canView(requestPrincipal, roomRoute[1]!)))) return new Response("room not found\n", { status: 404 });
-        if (roomRoute && request.headers.get("accept")?.includes("text/markdown")) return markdownResponse(roomAgentGuide(directory.room(roomRoute[1]!)!, directory.controlOrigin), "no-store");
+        if (roomRoute && shouldServeRoomGuide(request)) return markdownResponse(roomAgentGuide(directory.room(roomRoute[1]!)!, directory.controlOrigin), "no-store, private", true);
         const roomDocs = roomRoute ? `/room/${roomRoute[1]}/llms.txt` : "/llms.txt";
         const headers = new Headers({ "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
         headers.set("link", `<${roomDocs}>; rel="describedby"; type="text/markdown"${roomRoute ? `, </room/${roomRoute[1]}.md>; rel="alternate"; type="text/markdown"` : ""}`);
@@ -498,8 +498,21 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
   return typeof value === "number" && Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, Math.floor(value))) : fallback;
 }
 
-function markdownResponse(body: string, cacheControl = "public, max-age=300"): Response {
-  return new Response(body, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": cacheControl, "x-content-type-options": "nosniff" } });
+function markdownResponse(body: string, cacheControl = "public, max-age=300", negotiated = false): Response {
+  const headers = new Headers({ "content-type": "text/markdown; charset=utf-8", "cache-control": cacheControl, "x-content-type-options": "nosniff" });
+  if (negotiated) headers.set("vary", "Accept, Sec-Fetch-Mode, Sec-Fetch-Dest");
+  return new Response(body, { headers });
+}
+
+/** Select representation only; never use these spoofable hints for authorization. */
+export function shouldServeRoomGuide(request: Request): boolean {
+  const accept = (request.headers.get("accept") ?? "").toLowerCase();
+  if (accept.includes("text/markdown")) return true;
+  const mode = request.headers.get("sec-fetch-mode")?.toLowerCase();
+  const destination = request.headers.get("sec-fetch-dest")?.toLowerCase();
+  if (mode === "navigate" || destination === "document") return false;
+  if (accept.includes("text/html")) return false;
+  return true;
 }
 
 export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth = true, agentGuide = "/llms.txt"): string {

@@ -45,9 +45,10 @@ Inside a room, `/mount` also explains Finder's built-in WebDAV flow. Run `ssh -p
 External coding agents can start from any development-chat URL. Its response advertises a room-specific Markdown guide, and `https://serverside.chat/llms.txt` indexes all hosted documentation. Once an SSH key is linked, agents can use SFTP plus the non-interactive capability API:
 
 ```sh
-ssh -p 2222 serverside.chat "api hello-world status"
-ssh -p 2222 serverside.chat "api hello-world diff"
-ssh -p 2222 serverside.chat "api hello-world commit Describe the change"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api hello-world whoami"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api hello-world status"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api hello-world diff"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api hello-world commit Describe the change"
 ```
 
 Each command returns one JSON object. No command is passed to a host shell.

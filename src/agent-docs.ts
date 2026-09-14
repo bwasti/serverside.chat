@@ -33,7 +33,7 @@ export function llmsText(origin: string): string {
 
 > Collaborative chat rooms paired with constrained website servers, source history, and clankers.
 
-When given a room URL such as ${origin}/room/example, open that room's Markdown guide at ${origin}/room/example/llms.txt before attempting development. Development uses a linked SSH key, SFTP for bounded file transfer, and the non-interactive SSH room API for source and version operations. It never grants a host shell.
+When given a room URL such as ${origin}/room/example, open that room's Markdown guide at ${origin}/room/example/llms.txt before attempting development. Always try the machine's existing SSH identity first. Development uses that linked SSH key, SFTP for bounded file transfer, and the non-interactive SSH room API for source and version operations. Do not ask for OAuth tokens, cookies, passwords, or private-key material. The interface never grants a host shell.
 
 ## Documentation
 
@@ -56,45 +56,53 @@ export function roomAgentGuide(room: Room, controlOrigin: string): string {
 
 > Development guide for ${roomPath}. The live website is ${room.pageUrl}.
 
-This room contains a shared bounded working tree and linear Git history. Access is authorized by the canonical serverside.chat account associated with your SSH public key. If the key is not linked yet, run:
+This room contains a shared bounded working tree and linear Git history. Use SSH for all agent development interactions. OpenSSH automatically tries the keys and SSH agent already available on the machine; never request, copy, or transmit private-key material.
+
+First confirm which canonical serverside.chat account the existing key resolves to:
+
+\`\`\`sh
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} whoami"
+\`\`\`
+
+If that succeeds, continue through the SSH API and SFTP below. If it reports that the key is not linked, run this one-time pairing command without \`BatchMode\`:
 
 \`\`\`sh
 ssh -p 2222 ${sshHost} account
 \`\`\`
 
-Open the returned HTTPS URL, sign in, and attach the key. You still need a room invitation or a room policy that permits your account to contribute.
+Open the returned HTTPS URL, sign in, and attach the public key to the canonical account. Then retry \`whoami\`. You still need a room invitation or a room policy that permits your account to contribute. Do not substitute browser cookies, OAuth tokens, WebDAV passwords, or application secrets for SSH authentication.
 
 ## Machine interface
 
 The non-interactive SSH API returns one JSON object and never invokes a system shell:
 
 \`\`\`sh
-ssh -p 2222 ${sshHost} "api ${room.name} status"
-ssh -p 2222 ${sshHost} "api ${room.name} diff"
-ssh -p 2222 ${sshHost} "api ${room.name} files"
-ssh -p 2222 ${sshHost} "api ${room.name} cat worker.js"
-ssh -p 2222 ${sshHost} "api ${room.name} log"
-ssh -p 2222 ${sshHost} "api ${room.name} versions"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} status"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} diff"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} files"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} cat worker.js"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} log"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} versions"
 \`\`\`
 
 Use SFTP to download or upload files. Paths remain inside this room and normal contribution permissions apply:
 
 \`\`\`sh
-sftp -P 2222 ${sshHost}:/${room.name}
+sftp -o BatchMode=yes -P 2222 ${sshHost}:/${room.name}
 \`\`\`
 
 After editing, inspect and record the change:
 
 \`\`\`sh
-ssh -p 2222 ${sshHost} "api ${room.name} diff"
-ssh -p 2222 ${sshHost} "api ${room.name} commit Describe the change"
-ssh -p 2222 ${sshHost} "api ${room.name} preview Describe the preview"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} diff"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} commit Describe the change"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} preview Describe the preview"
 \`\`\`
 
 Only the room owner can publish a preview to the canonical site:
 
 \`\`\`sh
-ssh -p 2222 ${sshHost} "api ${room.name} publish PREVIEW_ID"
+ssh -o BatchMode=yes -p 2222 ${sshHost} "api ${room.name} publish PREVIEW_ID"
 \`\`\`
 
 History is rebase-only and must remain linear. Use \`api ${room.name} rebase\`, resolve reported conflicts through SFTP, then use \`rebase-continue\`. Do not attempt host paths, \`.git\`, arbitrary commands, or direct process execution; those capabilities intentionally do not exist.
@@ -115,10 +123,10 @@ export function roomApiManifest(room: Room, controlOrigin: string): object {
     room: room.name,
     chat_url: `${controlOrigin}/room/${room.name}`,
     site_url: room.pageUrl,
-    authentication: { canonical: "oauth-account", transport: "linked-ssh-public-key", link_command: `ssh -p 2222 ${host} account` },
+    authentication: { canonical: "oauth-account", preferred_transport: "linked-ssh-public-key", private_key_transfer: false, probe_command: `ssh -o BatchMode=yes -p 2222 ${host} "api ${room.name} whoami"`, link_command: `ssh -p 2222 ${host} account` },
     transports: {
-      command: { protocol: "ssh", template: `ssh -p 2222 ${host} \"api ${room.name} {command}\"`, response: "application/json" },
-      files: { protocol: "sftp", command: `sftp -P 2222 ${host}:/${room.name}` },
+      command: { protocol: "ssh", template: `ssh -o BatchMode=yes -p 2222 ${host} \"api ${room.name} {command}\"`, response: "application/json" },
+      files: { protocol: "sftp", command: `sftp -o BatchMode=yes -P 2222 ${host}:/${room.name}` },
     },
     commands: {
       read: ["whoami", "limits", "files [path]", "ls [-la] [path]", "tree [path]", "cat <path>", "head [-n N] <path>", "tail [-n N] <path>", "wc <path>", "stat <path>", "status", "diff", "log", "versions"],

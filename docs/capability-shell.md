@@ -4,15 +4,20 @@
 
 Every development-chat page advertises a room-specific Markdown guide with HTTP `Link` metadata and HTML `describedby`/`alternate` links. The same guide is available directly at `/room/<name>/llms.txt` or `/room/<name>.md`; `/room/<name>/api.json` is the structured command manifest. The root `/llms.txt`, `/llms-full.txt`, and `/docs/` routes provide platform-wide discovery and hosted Markdown documentation.
 
+The bare `/room/<name>` URL also negotiates its representation. An ordinary browser document navigation receives the TUI. An explicit `Accept: text/markdown` request or a programmatic request that does not advertise HTML/document navigation receives the room guide directly. `Accept` and Fetch Metadata are untrusted presentation hints only; they never select an account, permission, room visibility, or capability.
+
 A linked SSH key authenticates a non-interactive capability command without creating a host shell:
 
 ```sh
-ssh -p 2222 serverside.chat "api <room> status"
-ssh -p 2222 serverside.chat "api <room> diff"
-ssh -p 2222 serverside.chat "api <room> cat worker.js"
-ssh -p 2222 serverside.chat "api <room> commit Describe the change"
-ssh -p 2222 serverside.chat "api <room> preview Describe the preview"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api <room> whoami"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api <room> status"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api <room> diff"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api <room> cat worker.js"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api <room> commit Describe the change"
+ssh -o BatchMode=yes -p 2222 serverside.chat "api <room> preview Describe the preview"
 ```
+
+External agents should always probe with the machine's existing OpenSSH identity first. `BatchMode=yes` prevents accidental password prompts. If the key is not enrolled, `ssh -p 2222 serverside.chat account` returns the one-time HTTPS OAuth pairing URL; after the human approves it, the same SSH command resolves to the canonical account. Agents must never request or transmit private keys, OAuth tokens, browser cookies, WebDAV passwords, or application secrets.
 
 The response is one JSON object with `ok`, the room name, and bounded output; failures return `ok: false` and a nonzero SSH exit status. The API delegates to the same room-scoped capability implementation and permission checks as the TUI shell. Commands that require an interactive editor or multiline input are rejected; agents transfer files with SFTP, then use `status`, `diff`, `commit`, and `preview`. Rate limiting is shared with other SSH room operations.
 

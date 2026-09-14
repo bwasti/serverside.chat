@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { browserTuiHtml, guestRequestHeaders, permittedSocketOrigin, realtimeClient, secureGuestResponseHeaders, trustedClientAddress } from "../src/web";
+import { browserTuiHtml, guestRequestHeaders, permittedSocketOrigin, realtimeClient, secureGuestResponseHeaders, shouldServeRoomGuide, trustedClientAddress } from "../src/web";
 import type { Principal } from "../src/auth";
 
 test("browser terminal is self-hosted and connects to the constrained TUI socket", async () => {
@@ -58,6 +58,15 @@ test("browser terminal is self-hosted and connects to the constrained TUI socket
   expect(await Bun.file("node_modules/@xterm/xterm/lib/xterm.js.map").exists()).toBe(true);
   expect(await Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js").exists()).toBe(true);
   expect(await Bun.file("node_modules/@xterm/addon-fit/lib/addon-fit.js.map").exists()).toBe(true);
+});
+
+test("room URLs negotiate Markdown for agents without treating detection as identity", () => {
+  const url = "https://serverside.chat/room/carsilike";
+  expect(shouldServeRoomGuide(new Request(url))).toBe(true);
+  expect(shouldServeRoomGuide(new Request(url, { headers: { accept: "*/*" } }))).toBe(true);
+  expect(shouldServeRoomGuide(new Request(url, { headers: { accept: "text/markdown" } }))).toBe(true);
+  expect(shouldServeRoomGuide(new Request(url, { headers: { accept: "text/html,application/xhtml+xml", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" } }))).toBe(false);
+  expect(shouldServeRoomGuide(new Request(url, { headers: { accept: "text/html" } }))).toBe(false);
 });
 
 test("untrusted services receive only origin-appropriate credentials", () => {
