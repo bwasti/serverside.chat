@@ -1,6 +1,8 @@
 # serverside.chat
 
-Every room gets a server and a clanker. Have fun.
+Every room gets a server and a clanker. Have fun!
+
+<img width="1238" height="757" alt="Screenshot 2026-09-14 at 2 42 30 PM" src="https://github.com/user-attachments/assets/2ea3887c-8385-4190-8616-9da5a1bbe885" />
 
 serverside.chat is a shared terminal-style chat for building small websites together. A room contains the conversation, a live website, its source history, and a quiet clanker that can make changes when useful.
 
@@ -10,13 +12,7 @@ Use it in a browser at [serverside.chat](https://serverside.chat), or over SSH:
 ssh -p 2222 serverside.chat
 ```
 
-## What you can do
-
-- Chat with people while everyone sees the same room and website.
-- Ask the clanker to build something, or let it pick up clear development work naturally.
-- Open every change as an immutable preview before publishing it.
-- Edit with the built-in editor, constrained shell, SFTP, SSHFS, or Finder WebDAV.
-- Invite collaborators and choose who may view, contribute, or invoke the clanker.
+## Stuff to know
 
 The interface is keyboard-first. Press `Tab` to open the room bar, use the arrow keys to move, and press `Enter` to select. Type `/` in chat to see the available commands.
 
@@ -35,7 +31,7 @@ Each signed-in person can create up to five rooms for now. Rooms may be public o
 
 ## Editing outside chat
 
-The room shell feels familiar but cannot run arbitrary programs. It exposes only bounded room files and predefined version-control operations:
+The room has a shell but cannot run arbitrary programs. It exposes only bounded room files and predefined version-control operations:
 
 ```sh
 ssh -t -p 2222 serverside.chat shell hello-world
