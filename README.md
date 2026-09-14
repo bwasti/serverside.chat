@@ -1,12 +1,12 @@
-# serverside.chat
+# [serverside.chat](https://serverside.chat)
 
 Every room gets a server and a clanker. Have fun!
 
 <img width="1238" height="757" alt="Screenshot 2026-09-14 at 2 42 30 PM" src="https://github.com/user-attachments/assets/2ea3887c-8385-4190-8616-9da5a1bbe885" />
 
-serverside.chat is a shared terminal-style chat for building small websites together. A room contains the conversation, a live website, its source history, and a quiet clanker that can make changes when useful.
+serverside.chat is a shared terminal-style chat for building small websites together. A room contains the conversation, a live website, its source history, and a quiet clanker that can make changes when useful.  This is all backed by wasm (non-POSIX) VMs to be lightweight and fairly constrained.
 
-Use it in a browser at [serverside.chat](https://serverside.chat), or over SSH:
+Use it over SSH:
 
 ```sh
 ssh -p 2222 serverside.chat
