@@ -1,6 +1,7 @@
 import type { Message } from "./room";
 import type { RoomWorkspace } from "./workspace";
 import { providerOutputTokenUsage, type TokenBudget } from "./token-budget";
+import { readCanonicalSiteCss } from "./clanker-prompt";
 
 type ChatMessage = Record<string, unknown>;
 interface ToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
@@ -33,6 +34,7 @@ const pathProperty = { path: { type: "string", description: "Repository-relative
 const tools = [
   fn("set_message_pin", "Pin or unpin a room message in the host-owned chat UI. Only use for an explicit request from a room or site admin; message IDs are included in chat history.", { message_id: { type: "number", description: "Stable message ID from chat history" }, pinned: { type: "boolean", description: "True to pin, false to unpin" } }, ["message_id", "pinned"]),
   fn("list_tree", "List every file in the room repository with byte sizes.", {}),
+  fn("read_design_reference", "Read the canonical flat Zenburn stylesheet for new or visually underspecified sites. Use only for relevant visual work; preserve intentional existing designs.", {}),
   fn("read_file", "Read a bounded UTF-8 repository file.", pathProperty, ["path"]),
   fn("write_file", "Create or completely replace a bounded UTF-8 repository file.", { ...pathProperty, content: { type: "string", description: "Complete file content" } }, ["path", "content"]),
   fn("patch_file", "Safely make one localized edit by replacing exactly one unique text span. Prefer this over write_file for changes to an existing file.", { ...pathProperty, old_text: { type: "string", description: "Exact existing text including enough surrounding context to occur once" }, new_text: { type: "string", description: "Replacement text; may be empty" } }, ["path", "old_text", "new_text"]),
@@ -303,6 +305,7 @@ function execute(workspace: RoomWorkspace, pageUrl: string, call: ToolCall, canP
     switch (call.function.name) {
       case "set_message_pin": return executePin(call, setMessagePin);
       case "list_tree": value = workspace.listTree(); break;
+      case "read_design_reference": value = { path: "serverside.css", content: readCanonicalSiteCss() }; break;
       case "read_file": value = { path: str(a.path), content: workspace.readFile(str(a.path)) }; break;
       case "write_file": value = workspace.writeFile(str(a.path), str(a.content)); break;
       case "patch_file": value = workspace.patchFile(str(a.path), str(a.old_text), str(a.new_text)); break;

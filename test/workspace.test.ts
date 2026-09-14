@@ -35,6 +35,29 @@ test("repository paths cannot escape or inspect git internals", () => {
   expect(workspace.readPublishedAsset("index.html")).toContain("Hello world");
 });
 
+test("new rooms start from the canonical flat Zenburn site reference", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-design-"));
+  const workspace = new RoomWorkspace(data, "academic-room");
+  const page = workspace.readFile("index.html");
+  const css = workspace.readFile("serverside.css");
+  expect(page).toContain('href="/serverside.css"');
+  expect(page).toContain('class="site"');
+  expect(css).toContain("serverside.chat reference v1");
+  expect(css).toContain("--accent: #7f9f7f");
+  expect(css).toContain("border-radius: 0");
+  expect(workspace.status()).not.toContain("serverside.css");
+});
+
+test("opening an established room does not silently restore a removed design reference", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-established-design-"));
+  const workspace = new RoomWorkspace(data, "custom-room");
+  workspace.deleteFile("serverside.css");
+  workspace.commitAs("Use a custom design", "Remove the default design reference.", "alice", "alice@example.test");
+  const reopened = new RoomWorkspace(data, "custom-room");
+  expect(() => reopened.readFile("serverside.css")).toThrow("file not found");
+  expect(reopened.status()).not.toContain("serverside.css");
+});
+
 test("binary capability writes are atomic, quota-bounded, and optimistic", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-test-"));
   const workspace = new RoomWorkspace(data, "binary-room");

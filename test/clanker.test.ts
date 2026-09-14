@@ -6,6 +6,7 @@ import { FireworksClanker, hasPendingConcreteWork, isConcreteWorkRequest, isTriv
 import type { Message } from "../src/room";
 import { RoomWorkspace } from "../src/workspace";
 import { TokenBudget } from "../src/token-budget";
+import { loadRoomClankerPrompt, readCanonicalSiteCss } from "../src/clanker-prompt";
 
 test("social greetings are deterministically swallowed before model routing", () => {
   for (const message of ["hi", "Hi Alice", "@clanker hello", "hey everyone!", "thanks", "cool"]) {
@@ -39,6 +40,30 @@ test("room clanker runs reserve finalization time within bounded production budg
   expect(ROOM_CLANKER_PROVIDER_TIMEOUT_MS).toBe(5 * 60_000);
   expect(ROOM_CLANKER_FINALIZATION_WINDOW_MS).toBe(2 * 60_000);
   expect(ROOM_CLANKER_MAX_TURNS).toBe(256);
+});
+
+test("room clanker receives the canonical restrained site design and CSS reference", () => {
+  const prompt = loadRoomClankerPrompt();
+  expect(prompt).toContain("Hacker News' information-first restraint");
+  expect(prompt).toContain("read_design_reference");
+  expect(readCanonicalSiteCss()).toContain("--accent: #7f9f7f");
+  expect(readCanonicalSiteCss()).toContain("border-radius: 0");
+});
+
+test("clanker can read the canonical design without carrying its CSS in every prompt", async () => {
+  let calls = 0;
+  const clanker = new FireworksClanker("test", "test-model", loadRoomClankerPrompt(), {
+    attempts: 1,
+    fetcher: async (_input, init) => {
+      calls++;
+      if (calls === 1) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "design", type: "function", function: { name: "read_design_reference", arguments: "{}" } }] } }] });
+      const request = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content?: string }> };
+      expect(request.messages.at(-1)?.content).toContain("--accent: #7f9f7f");
+      return Response.json({ choices: [{ message: { role: "assistant", content: "The reference uses square controls." } }] });
+    },
+  });
+  expect(await clanker.respond("test", "https://test.example", [message("chat", "what visual baseline does this site use?")], workspace(), () => {}, "alice", "alice", false, () => [])).toBe("The reference uses square controls.");
+  expect(calls).toBe(2);
 });
 
 test("turn-limit failures are concise and confirm that work is preserved", async () => {

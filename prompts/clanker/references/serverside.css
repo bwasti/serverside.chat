@@ -1,0 +1,253 @@
+/* serverside.chat reference v1 — flat, compact, Zenburn */
+:root {
+  color-scheme: dark;
+  --canvas: #242424;
+  --surface: #3f3f3f;
+  --surface-alt: #383838;
+  --ink: #dcdccc;
+  --strong: #f0dfaf;
+  --muted: #9fafaf;
+  --faint: #7f8f8f;
+  --accent: #7f9f7f;
+  --accent-strong: #8fb28f;
+  --link: #8cd0d3;
+  --visited: #dc8cc3;
+  --danger: #cc9393;
+  --line: #5f5f5f;
+  --code: #2b2b2b;
+  font-family: Verdana, Geneva, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--canvas); }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+a:visited { color: var(--visited); }
+a:hover { text-decoration: underline; }
+
+:focus-visible {
+  outline: 2px solid var(--strong);
+  outline-offset: 2px;
+}
+
+.site {
+  width: min(92%, 1120px);
+  min-height: calc(100vh - 16px);
+  margin: 8px auto;
+  background: var(--surface);
+}
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 5px 8px;
+  background: var(--accent);
+  color: var(--canvas);
+}
+
+.masthead strong {
+  color: #202020;
+  font-size: 1rem;
+}
+
+.masthead nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.8rem;
+}
+
+.masthead a,
+.masthead a:visited { color: #202020; }
+
+main { padding: 18px 22px 28px; }
+
+article,
+.measure { max-width: 72ch; }
+
+h1,
+h2,
+h3 {
+  margin: 1.4em 0 0.45em;
+  color: var(--strong);
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  line-height: 1.18;
+}
+
+h1 {
+  margin-top: 0;
+  font-size: clamp(1.65rem, 4vw, 2.35rem);
+}
+
+h2 { font-size: 1.35rem; }
+h3 { font-size: 1.05rem; }
+
+p,
+ul,
+ol,
+dl,
+pre,
+table,
+blockquote { margin: 0 0 1rem; }
+
+.lede {
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.meta,
+small {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+hr {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+blockquote {
+  padding-left: 1rem;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+
+code,
+kbd,
+pre {
+  background: var(--code);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+code,
+kbd { padding: 0.08rem 0.28rem; }
+
+pre {
+  overflow: auto;
+  padding: 0.85rem 1rem;
+  border-left: 3px solid var(--line);
+}
+
+button,
+input,
+select,
+textarea {
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface-alt);
+  color: var(--ink);
+  font: inherit;
+}
+
+input,
+select,
+textarea { padding: 0.45rem 0.55rem; }
+
+button,
+.button {
+  display: inline-block;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--accent-strong);
+  border-radius: 0;
+  background: var(--accent);
+  color: #202020;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: none;
+}
+
+button:hover,
+.button:hover {
+  background: var(--accent-strong);
+  text-decoration: none;
+}
+
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+label { display: block; margin-bottom: 0.3rem; color: var(--muted); }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+th { color: var(--strong); font-weight: 600; }
+
+.item-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr);
+  gap: 0.2rem 0.55rem;
+  margin-bottom: 0.72rem;
+}
+
+.rank {
+  grid-row: 1 / span 2;
+  color: var(--faint);
+  text-align: right;
+}
+
+.item-title { color: var(--ink); }
+.item .meta { grid-column: 2; }
+
+.notice {
+  margin: 1rem 0;
+  padding: 0.65rem 0.8rem;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-alt);
+}
+
+.notice.danger { border-color: var(--danger); }
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+  gap: 1rem 1.5rem;
+}
+
+@media (max-width: 700px) {
+  .site {
+    width: 100%;
+    min-height: 100vh;
+    margin: 0;
+  }
+
+  .masthead { align-items: flex-start; flex-direction: column; gap: 0.25rem; }
+  main { padding: 14px 12px 24px; }
+}

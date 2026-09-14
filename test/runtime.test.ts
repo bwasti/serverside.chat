@@ -28,6 +28,7 @@ test("default static services return 404 for unknown and protected asset paths",
   const workspace = new RoomWorkspace(data, "static-room");
   const runtime = new ServiceRuntime(workspace, new Room("static-room"), data);
   const root = await runtime.fetch(new Request("http://service/"), "stable", "/");
+  const stylesheet = await runtime.fetch(new Request("http://service/serverside.css"), "stable", "/serverside.css");
   const missing = await runtime.fetch(new Request("http://service/actuator/configprops"), "stable", "/actuator/configprops");
   const protectedPath = await runtime.fetch(new Request("http://service/.git/config"), "stable", "/.git/config");
   const malformedPath = await runtime.fetch(new Request("http://service/"), "stable", "/%E0%A4%A");
@@ -36,6 +37,8 @@ test("default static services return 404 for unknown and protected asset paths",
   const postAsset = await runtime.fetch(new Request("http://service/", { method: "POST" }), "stable", "/");
   const invalidDeployment = await runtime.fetch(new Request("http://service/"), "deadbee", "/");
   expect(root.status).toBe(200);
+  expect(stylesheet).toMatchObject({ status: 200, headers: expect.objectContaining({ "content-type": "text/css; charset=utf-8" }) });
+  expect(stylesheet.body).toContain("--accent: #7f9f7f");
   expect(missing).toMatchObject({ status: 404, body: "Not found\n" });
   expect(protectedPath).toMatchObject({ status: 404, body: "Not found\n" });
   expect(malformedPath).toMatchObject({ status: 404, body: "Not found\n" });

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, relative, resolve, sep } from "node:path";
+import { readCanonicalSiteCss } from "./clanker-prompt";
 
 export const MAX_WORKSPACE_FILE_BYTES = 512 * 1024;
 export const MAX_WORKSPACE_BYTES = 5 * 1024 * 1024;
@@ -354,7 +355,10 @@ export class RoomWorkspace {
   }
 
   private seed(): void {
-    if (!existsSync(resolve(this.root, "index.html"))) writeFileSync(resolve(this.root, "index.html"), defaultPage(this.roomName));
+    if (!existsSync(resolve(this.root, "index.html"))) {
+      writeFileSync(resolve(this.root, "index.html"), defaultPage(this.roomName));
+      if (!existsSync(resolve(this.root, "serverside.css"))) writeFileSync(resolve(this.root, "serverside.css"), `${readCanonicalSiteCss()}\n`);
+    }
     if (!existsSync(resolve(this.root, "worker.js"))) writeFileSync(resolve(this.root, "worker.js"), `export default {\n  async fetch(request, env) {\n    env.log.info("request", { method: request.method, path: request.path });\n    return env.assets.fetch(request);\n  },\n};\n`);
     if (!existsSync(resolve(this.root, "README.md"))) writeFileSync(resolve(this.root, "README.md"), `# ${this.roomName}\n\nRoom service source.\n`);
   }
@@ -460,5 +464,23 @@ function validBranch(value: string): string {
 }
 
 function defaultPage(roomName: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>${roomName}</title><h1>Hello world</h1>\n`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${roomName}</title>
+  <link rel="stylesheet" href="/serverside.css">
+</head>
+<body>
+  <div class="site">
+    <header class="masthead"><strong>${roomName}</strong></header>
+    <main>
+      <h1>Hello world</h1>
+      <p class="lede">This room is ready to build.</p>
+    </main>
+  </div>
+</body>
+</html>
+`;
 }

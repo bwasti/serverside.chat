@@ -15,6 +15,7 @@ import { RoomCapabilitySession, RoomShellSession } from "./room-shell";
 import { attachRoomSftp } from "./room-sftp";
 import { AdaptiveRateLimiter, RATE_LIMITS } from "./rate-limit";
 import { DEFAULT_GLOBAL_CLANKER_TOKENS_PER_HOUR, DEFAULT_ROOM_CLANKER_TOKENS_PER_HOUR, TokenBudget } from "./token-budget";
+import { loadRoomClankerPrompt } from "./clanker-prompt";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -59,9 +60,7 @@ let guideClanker: FireworksGuideClanker | undefined;
 let anonymousLobbyGate: AnonymousLobbyGate | undefined;
 let reportModerationError = (error: unknown) => console.error("Lobby moderation error:", error instanceof Error ? error.message : "unknown provider failure");
 if (fireworksKey) {
-  const prompt = ["prompts/clanker/system.md", "prompts/clanker/context.md", "prompts/clanker/project.md"]
-    .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
-  clanker = new FireworksClanker(fireworksKey, fireworksModel, prompt, { tokenBudget });
+  clanker = new FireworksClanker(fireworksKey, fireworksModel, loadRoomClankerPrompt(), { tokenBudget });
   guideClanker = new FireworksGuideClanker(fireworksKey, fireworksModel, readFileSync("prompts/lobby-clanker/system.md", "utf8").trim(), undefined, tokenBudget);
   anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim(), undefined, undefined, tokenBudget), Date.now, (error) => reportModerationError(error));
 }

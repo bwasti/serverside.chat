@@ -82,6 +82,8 @@ Every authenticated account gets contributor access to the host-managed lobby an
 
 Fresh installations seed one public development room, `hello-world`, with member contributions and a passive clanker. The host-managed `lobby` remains separate.
 
+New room repositories include a local `serverside.css` design baseline: a flat, compact, responsive Zenburn adaptation of Hacker News' information-first visual language. The normal room clanker receives canonical design rules plus read-only, on-demand access to that exact stylesheet. It uses the baseline for new or visually underspecified work, preserves intentional existing designs, and follows explicit human art direction when supplied.
+
 ## Clanker
 
 Set `FIREWORKS_API_KEY` to enable the real room clanker. It uses `accounts/fireworks/models/deepseek-v4p1-flash` by default; override that with `FIREWORKS_MODEL`. Lightweight clanker classification, currently anonymous lobby moderation, defaults to `accounts/fireworks/models/glm-5p3-flash` with schema-constrained verdicts and can be overridden independently with `FIREWORKS_CLASSIFIER_MODEL`. Clanker requests are serialized per room and include the latest 40 non-system transcript messages.
