@@ -7,7 +7,7 @@ import type { ServerChannel } from "ssh2";
 import { AccountStore, anonymousPrincipal } from "../src/auth";
 import { Room } from "../src/room";
 import { RoomDirectory } from "../src/room-directory";
-import { layoutComposer, renderServiceLog, slashCommandMatches, TuiSession } from "../src/tui";
+import { layoutComposer, linkifyChatUrls, renderServiceLog, slashCommandMatches, TuiSession } from "../src/tui";
 import { AdaptiveRateLimiter } from "../src/rate-limit";
 
 class FakeStream extends EventEmitter {
@@ -284,6 +284,23 @@ test("consecutive messages share an author header and align under a fixed time g
   for (const line of frame.split("\r\n").filter((row) => /first message|second message|third message/.test(row))) {
     expect(line).not.toContain("\x1b[48;5;237m");
   }
+  tui.stream.end();
+});
+
+test("HTTP URLs in chat are clickable without swallowing sentence punctuation", () => {
+  const original = "See https://example.test/docs?q=1, then (http://localhost:3000/a_(b)).";
+  const linked = linkifyChatUrls(original);
+  expect(linked).toContain("\x1b]8;;https://example.test/docs?q=1\x1b\\https://example.test/docs?q=1\x1b]8;;\x1b\\");
+  expect(linked).toContain("\x1b]8;;http://localhost:3000/a_(b)\x1b\\http://localhost:3000/a_(b)\x1b]8;;\x1b\\");
+  expect(linked.replace(/\x1b\][^\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")).toBe(original);
+
+  const room = new Room("mine", 250, "https://example.test/mine", "alice");
+  const longUrl = "https://example.test/previews/0123456789abcdef/very-long-path";
+  room.chat("alice", `Preview: https://example.test/change. Long: ${longUrl}`);
+  const tui = open(room);
+  tui.session.resize(34, 30);
+  expect(tui.stream.writes.at(-1)).toContain("\x1b]8;;https://example.test/change\x1b\\https://example.test/change\x1b]8;;\x1b\\");
+  expect(tui.stream.writes.at(-1)).toContain(`\x1b]8;;${longUrl}\x1b\\`);
   tui.stream.end();
 });
 

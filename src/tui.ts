@@ -1674,7 +1674,7 @@ export class TuiSession {
     let truncated = false;
     for (const message of pins) {
       const content = `@${message.author}  ${message.text.replace(/\s+/g, " ")}`;
-      const wrapped = wrap(content, Math.max(1, width - 4));
+      const wrapped = wrapLinkedChatText(content, Math.max(1, width - 4), STATUS);
       const available = capacity - rows.length;
       for (let index = 0; index < wrapped.length && rows.length < capacity; index++) {
         const marker = index === 0 ? `${YELLOW}◆${STATUS}` : " ";
@@ -1795,24 +1795,24 @@ export class TuiSession {
     const displayAuthor = truncate(message.author, contentWidth);
     const styledName = `${ESC}1m${nameTone}${displayAuthor}${ESC}22m${baseTone}`;
     if (message.kind === "system" && message.author === "trunk") {
-      return wrap(message.text.replace(/\s+/g, " "), contentWidth)
+      return wrapLinkedChatText(message.text.replace(/\s+/g, " "), contentWidth, MUTED)
         .map((line, index) => `${CHAT}${index === 0 ? timestamp : continuation}${ESC}3m${MUTED}${line}${ESC}23m${CHAT_MUTED}`);
     }
     const authorRows = showAuthor ? [`${continuation}${styledName}`] : [];
     const replyRows = message.replyTo
-      ? wrap(`↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, contentWidth).map((line) => `${continuation}${MUTED}${line}${baseTone}`)
+      ? wrapLinkedChatText(`↳ @${message.replyTo.author}  ${message.replyTo.excerpt}`, contentWidth, MUTED).map((line) => `${continuation}${MUTED}${line}${baseTone}`)
       : [];
     if (message.kind === "commit" && message.url) {
       const [hash, ...title] = message.text.split(" ");
       const suffix = `${title.join(" ")}${message.detail ? ` — ${message.detail}` : ""}`;
-      const contentRows = wrap(`${hash} ${suffix}`, contentWidth).map((line, index) => {
+      const contentRows = wrapLinkedChatText(`${hash} ${suffix}`, contentWidth, baseTone).map((line, index) => {
         const prefix = index === 0 ? timestamp : continuation;
         if (index !== 0 || !line.startsWith(hash)) return `${prefix}${ESC}3m${line}${ESC}23m${baseTone}`;
         return `${prefix}${ESC}3m\x1b]8;;${message.url}\x1b\\${ESC}24m${hash}\x1b]8;;\x1b\\${line.slice(hash.length)}${ESC}23m${baseTone}`;
       });
       return [...authorRows, ...replyRows, ...contentRows];
     }
-    const contentRows = wrap(message.text.replace(/\s+/g, " "), contentWidth)
+    const contentRows = wrapLinkedChatText(message.text.replace(/\s+/g, " "), contentWidth, baseTone)
       .map((line, index) => `${index === 0 ? timestamp : continuation}${line}`);
     return [...authorRows, ...replyRows, ...contentRows];
   }
@@ -2301,6 +2301,73 @@ function linkText(value: string, label: string, url: string, tone: string, resto
   const start = value.indexOf(label);
   if (start < 0 || !/^https?:\/\//.test(url)) return value;
   return `${value.slice(0, start)}${tone}\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\${restoreTone}${value.slice(start + label.length)}`;
+}
+
+export function linkifyChatUrls(value: string, restoreTone = CHAT): string {
+  return renderChatUrlSpans(value, 0, chatUrlSpans(value), restoreTone);
+}
+
+function wrapLinkedChatText(value: string, width: number, restoreTone: string): string[] {
+  const spans = chatUrlSpans(value);
+  let cursor = 0;
+  return wrap(value, width).map((line) => {
+    const origin = value.indexOf(line, cursor);
+    if (origin < 0) return linkifyChatUrls(line, restoreTone);
+    cursor = origin + line.length;
+    return renderChatUrlSpans(line, origin, spans, restoreTone);
+  });
+}
+
+interface ChatUrlSpan { start: number; end: number; url: string }
+
+function chatUrlSpans(value: string): ChatUrlSpan[] {
+  const spans: ChatUrlSpan[] = [];
+  for (const match of value.matchAll(/https?:\/\/[^\s<>"'`\x00-\x1f\x7f]+/gi)) {
+    if (match.index === undefined) continue;
+    const url = trimUrlPunctuation(match[0]);
+    if (url && validChatUrl(url)) spans.push({ start: match.index, end: match.index + url.length, url });
+  }
+  return spans;
+}
+
+function renderChatUrlSpans(value: string, origin: number, spans: ChatUrlSpan[], restoreTone: string): string {
+  let output = "";
+  let cursor = 0;
+  const rowEnd = origin + value.length;
+  for (const span of spans) {
+    const start = Math.max(origin, span.start);
+    const end = Math.min(rowEnd, span.end);
+    if (start >= end) continue;
+    const localStart = start - origin;
+    const localEnd = end - origin;
+    output += value.slice(cursor, localStart);
+    output += `${CYAN}\x1b]8;;${span.url}\x1b\\${value.slice(localStart, localEnd)}\x1b]8;;\x1b\\${restoreTone}`;
+    cursor = localEnd;
+  }
+  return `${output}${value.slice(cursor)}`;
+}
+
+function trimUrlPunctuation(value: string): string {
+  let result = value.replace(/[.,!?;:]+$/g, "");
+  const pairs: Array<[string, string]> = [["(", ")"], ["[", "]"], ["{", "}"]];
+  let changed = true;
+  while (changed && result) {
+    changed = false;
+    for (const [open, close] of pairs) {
+      if (!result.endsWith(close)) continue;
+      const opens = result.split(open).length - 1;
+      const closes = result.split(close).length - 1;
+      if (closes > opens) { result = result.slice(0, -1); changed = true; }
+    }
+  }
+  return result;
+}
+
+function validChatUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+  } catch { return false; }
 }
 
 function padAnsi(value: string, width: number): string {
