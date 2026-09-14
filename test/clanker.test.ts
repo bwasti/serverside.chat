@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { FireworksClanker, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, ROOM_CLANKER_FINALIZATION_WINDOW_MS, ROOM_CLANKER_MAX_TURNS, ROOM_CLANKER_PROVIDER_TIMEOUT_MS, ROOM_CLANKER_RUN_TIMEOUT_MS, shouldGuideRespond } from "../src/clanker";
 import type { Message } from "../src/room";
 import { RoomWorkspace } from "../src/workspace";
+import { TokenBudget } from "../src/token-budget";
 
 test("social greetings are deterministically swallowed before model routing", () => {
   for (const message of ["hi", "Hi Alice", "@clanker hello", "hey everyone!", "thanks", "cool"]) {
@@ -155,6 +156,18 @@ test("clanker receives stable message IDs and can use the permission-checked pin
   expect(reply).toBe("[silent]");
   expect(pins).toEqual([[42, true]]);
   expect(requestBody).toContain("[message 42] alice: pin this guide");
+});
+
+test("every clanker provider turn is charged to its room token budget", async () => {
+  const root = mkdtempSync(join(tmpdir(), "serverside-chat-clanker-budget-"));
+  const tokenBudget = new TokenBudget(join(root, "usage.sqlite"), 50_000, 100_000);
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
+    attempts: 1,
+    tokenBudget,
+    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: "worker.js serves the room." } }], usage: { total_tokens: 321 } }),
+  });
+  await clanker.respond("metered", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => []);
+  expect(tokenBudget.snapshot("metered")).toMatchObject({ roomUsed: 321, globalUsed: 321 });
 });
 
 function workspace(): RoomWorkspace { return new RoomWorkspace(mkdtempSync(join(tmpdir(), "serverside-chat-clanker-")), "test"); }

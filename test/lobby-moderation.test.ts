@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { anonymousPrincipal } from "../src/auth";
 import { ANONYMOUS_LOBBY_LIMITS, AnonymousLobbyGate, FireworksLobbyModerator, type LobbyContentModerator } from "../src/lobby-moderation";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TokenBudget } from "../src/token-budget";
 
 test("anonymous lobby moderation is fail-closed and bounded per identity", async () => {
   let reviews = 0;
@@ -41,4 +45,13 @@ test("Fireworks moderation requests a schema-constrained verdict", async () => {
     max_tokens: 128,
     response_format: { type: "json_schema", json_schema: { schema: { required: ["decision"] } } },
   });
+});
+
+test("anonymous moderation is included in the lobby token budget", async () => {
+  const root = mkdtempSync(join(tmpdir(), "serverside-chat-moderation-budget-"));
+  const tokenBudget = new TokenBudget(join(root, "usage.sqlite"), 10_000, 20_000);
+  const fetcher = (async (_input: string | URL | Request, _init?: RequestInit) => Response.json({ choices: [{ message: { content: '{"decision":"ALLOW"}' } }], usage: { total_tokens: 77 } })) as typeof fetch;
+  const moderator = new FireworksLobbyModerator("test-key", "test-model", "classify", "https://example.test/v1", fetcher, tokenBudget);
+  expect(await moderator.allows("hello")).toBe(true);
+  expect(tokenBudget.snapshot("lobby")).toMatchObject({ roomUsed: 77, globalUsed: 77 });
 });

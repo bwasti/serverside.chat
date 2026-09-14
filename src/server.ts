@@ -14,6 +14,7 @@ import { AnonymousLobbyGate, FireworksLobbyModerator } from "./lobby-moderation"
 import { RoomCapabilitySession, RoomShellSession } from "./room-shell";
 import { attachRoomSftp } from "./room-sftp";
 import { AdaptiveRateLimiter, RATE_LIMITS } from "./rate-limit";
+import { DEFAULT_GLOBAL_CLANKER_TOKENS_PER_HOUR, DEFAULT_ROOM_CLANKER_TOKENS_PER_HOUR, TokenBudget } from "./token-budget";
 
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 2222);
@@ -48,6 +49,11 @@ accounts.ensureSystemRoom("lobby", ownerPrincipal, { visibility: "public", contr
 const fireworksKey = process.env.FIREWORKS_API_KEY;
 const fireworksModel = process.env.FIREWORKS_MODEL ?? "accounts/fireworks/models/deepseek-v4p1-flash";
 const fireworksClassifierModel = process.env.FIREWORKS_CLASSIFIER_MODEL ?? "accounts/fireworks/models/glm-5p3-flash";
+const tokenBudget = new TokenBudget(
+  join(dataDir, "clanker-token-usage.sqlite"),
+  positiveIntegerEnvironment("CLANKER_ROOM_TOKENS_PER_HOUR", DEFAULT_ROOM_CLANKER_TOKENS_PER_HOUR),
+  positiveIntegerEnvironment("CLANKER_GLOBAL_TOKENS_PER_HOUR", DEFAULT_GLOBAL_CLANKER_TOKENS_PER_HOUR),
+);
 let clanker: FireworksClanker | undefined;
 let guideClanker: FireworksGuideClanker | undefined;
 let anonymousLobbyGate: AnonymousLobbyGate | undefined;
@@ -55,13 +61,15 @@ let reportModerationError = (error: unknown) => console.error("Lobby moderation 
 if (fireworksKey) {
   const prompt = ["prompts/clanker/system.md", "prompts/clanker/context.md", "prompts/clanker/project.md"]
     .map((path) => readFileSync(path, "utf8").trim()).join("\n\n");
-  clanker = new FireworksClanker(fireworksKey, fireworksModel, prompt);
-  guideClanker = new FireworksGuideClanker(fireworksKey, fireworksModel, readFileSync("prompts/lobby-clanker/system.md", "utf8").trim());
-  anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim()), Date.now, (error) => reportModerationError(error));
+  clanker = new FireworksClanker(fireworksKey, fireworksModel, prompt, { tokenBudget });
+  guideClanker = new FireworksGuideClanker(fireworksKey, fireworksModel, readFileSync("prompts/lobby-clanker/system.md", "utf8").trim(), undefined, tokenBudget);
+  anonymousLobbyGate = new AnonymousLobbyGate(new FireworksLobbyModerator(fireworksKey, fireworksClassifierModel, readFileSync("prompts/lobby-moderator/system.md", "utf8").trim(), undefined, undefined, tokenBudget), Date.now, (error) => reportModerationError(error));
 }
 const reviewAnonymousLobby = anonymousLobbyGate ? (principal: Principal, text: string) => anonymousLobbyGate.review(principal, text) : undefined;
 const rateLimiter = new AdaptiveRateLimiter();
 const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, workspace) => {
+  const tokenUsage = tokenBudget.snapshot(room.name);
+  room.recordClankerTokenUsage(tokenUsage.roomUsed, tokenUsage.roomLimit);
   if (room.name === "lobby" && guideClanker) {
     room.setClankerResponder((history, activity, request) => guideClanker.respond(history, activity, (messageId, pinned) => room.setMessagePinned(request.principal, messageId, pinned)));
     return;
@@ -71,6 +79,12 @@ const directory = new RoomDirectory(accounts, dataDir, webBaseUrl, (room, worksp
     finally { room.setVersionGraph(workspace.versionGraph()); }
   });
 }, roomSiteDomain);
+tokenBudget.subscribe((roomName, usage) => directory.room(roomName)?.recordClankerTokenUsage(usage.roomUsed, usage.roomLimit));
+directory.subscribe((event) => {
+  if (event.kind === "rename" && event.previousName) tokenBudget.renameRoom(event.previousName, event.name);
+  const usage = tokenBudget.snapshot(event.name);
+  directory.room(event.name)?.recordClankerTokenUsage(usage.roomUsed, usage.roomLimit);
+});
 reportModerationError = (error) => {
   const detail = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 180) : "unknown provider failure";
   console.error("Lobby moderation error:", detail);
@@ -224,4 +238,12 @@ function oauthProviderConfig(name: "GOOGLE" | "GITHUB"): OAuthProviderConfig | u
   const clientId = process.env[`${name}_CLIENT_ID`];
   const clientSecret = process.env[`${name}_CLIENT_SECRET`];
   return clientId && clientSecret ? { clientId, clientSecret } : undefined;
+}
+
+function positiveIntegerEnvironment(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
+  return value;
 }

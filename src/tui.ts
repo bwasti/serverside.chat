@@ -1711,6 +1711,7 @@ export class TuiSession {
       denseUsageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String, width),
       denseUsageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatCompactBytes, width),
       denseUsageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatCompactBytes, width),
+      denseUsageBar("TOKENS/H", this.room.clankerTokensLastHour, this.room.clankerTokenLimit, formatCompactCount, width),
     ];
   }
 
@@ -2097,6 +2098,12 @@ function formatCompactBytes(bytes: number): string {
   if (bytes < 1_048_576) return `${Math.round(bytes / 1_024)}K`;
   const mib = bytes / 1_048_576;
   return `${Number.isInteger(mib) ? mib : mib.toFixed(1)}M`;
+}
+
+function formatCompactCount(value: number): string {
+  if (value < 1_000) return String(value);
+  if (value < 1_000_000) return `${Number((value / 1_000).toFixed(value < 10_000 ? 1 : 0))}K`;
+  return `${Number((value / 1_000_000).toFixed(value < 10_000_000 ? 1 : 0))}M`;
 }
 
 function denseUsageBar(label: string, used: number, limit: number, format: (value: number) => string, width: number): string {

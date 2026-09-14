@@ -1,4 +1,5 @@
 import type { Principal } from "./auth";
+import { estimateProviderTokens, providerTokenUsage, type TokenBudget } from "./token-budget";
 
 export interface LobbyModerationDecision {
   allowed: boolean;
@@ -67,7 +68,7 @@ export class AnonymousLobbyGate {
   }
 }
 
-interface ModerationResponse { choices?: Array<{ message?: { content?: string | null } }>; error?: { message?: string } }
+interface ModerationResponse { choices?: Array<{ message?: { content?: string | null } }>; error?: { message?: string }; usage?: { total_tokens?: number } }
 
 export class FireworksLobbyModerator implements LobbyContentModerator {
   constructor(
@@ -76,33 +77,42 @@ export class FireworksLobbyModerator implements LobbyContentModerator {
     private readonly systemPrompt: string,
     private readonly baseUrl = "https://api.fireworks.ai/inference/v1",
     private readonly fetcher: typeof fetch = fetch,
+    private readonly tokenBudget?: TokenBudget,
   ) {}
 
   async allows(text: string): Promise<boolean> {
-    const response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model: this.model,
-        messages: [{ role: "system", content: this.systemPrompt }, { role: "user", content: text }],
-        max_tokens: 128,
-        temperature: 0,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "lobby_moderation",
-            schema: {
-              type: "object",
-              properties: { decision: { type: "string", enum: ["ALLOW", "BLOCK"] } },
-              required: ["decision"],
-              additionalProperties: false,
-            },
+    const serializedRequest = JSON.stringify({
+      model: this.model,
+      messages: [{ role: "system", content: this.systemPrompt }, { role: "user", content: text }],
+      max_tokens: 128,
+      temperature: 0,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "lobby_moderation",
+          schema: {
+            type: "object",
+            properties: { decision: { type: "string", enum: ["ALLOW", "BLOCK"] } },
+            required: ["decision"],
+            additionalProperties: false,
           },
         },
-      }),
-      signal: AbortSignal.timeout(30_000),
+      },
     });
-    const body = (await response.json()) as ModerationResponse;
+    const reservation = this.tokenBudget?.reserve("lobby", estimateProviderTokens(serializedRequest, 128));
+    let body: ModerationResponse | undefined;
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+        body: serializedRequest,
+        signal: AbortSignal.timeout(30_000),
+      });
+      body = (await response.json()) as ModerationResponse;
+    } finally {
+      reservation?.commit(providerTokenUsage(body));
+    }
     if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
     const content = body.choices?.[0]?.message?.content?.trim();
     if (!content) throw new Error("Fireworks returned no moderation verdict");

@@ -1,10 +1,11 @@
 import type { Message } from "./room";
 import type { RoomWorkspace } from "./workspace";
+import { estimateProviderTokens, providerTokenUsage, type TokenBudget } from "./token-budget";
 
 type ChatMessage = Record<string, unknown>;
 interface ToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 interface ApiMessage { role: string; content?: string | null; tool_calls?: ToolCall[]; [key: string]: unknown }
-interface ApiResponse { choices?: Array<{ message?: ApiMessage }>; error?: { message?: string } }
+interface ApiResponse { choices?: Array<{ message?: ApiMessage }>; error?: { message?: string }; usage?: { total_tokens?: number } }
 type RoomIntent = "IGNORE" | "WORK" | "TECHNICAL";
 export type ClankerActivity = (status: string, detail: string, link?: { label: string; url: string; blurb?: string }) => void;
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -24,6 +25,7 @@ export interface FireworksClankerOptions {
   maxTurns?: number;
   retryDelayMs?: number;
   fetcher?: Fetcher;
+  tokenBudget?: TokenBudget;
 }
 
 const pathProperty = { path: { type: "string", description: "Repository-relative file path; .git and paths outside the repository are forbidden" } };
@@ -61,6 +63,7 @@ export class FireworksClanker {
   private readonly maxTurns: number;
   private readonly retryDelayMs: number;
   private readonly fetcher: Fetcher;
+  private readonly tokenBudget?: TokenBudget;
 
   constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, options: FireworksClankerOptions = {}) {
     this.baseUrl = options.baseUrl ?? "https://api.fireworks.ai/inference/v1";
@@ -71,6 +74,7 @@ export class FireworksClanker {
     this.maxTurns = Math.max(1, Math.min(128, Math.floor(options.maxTurns ?? ROOM_CLANKER_MAX_TURNS)));
     this.retryDelayMs = Math.max(0, Math.min(10_000, Math.floor(options.retryDelayMs ?? 1_000)));
     this.fetcher = options.fetcher ?? fetch;
+    this.tokenBudget = options.tokenBudget;
   }
 
   async respond(roomName: string, pageUrl: string, history: Message[], workspace: RoomWorkspace, activity: ClankerActivity, requester: string, owner: string, canPromote: boolean, serviceLogs: (limit?: number) => string[], setMessagePin: (messageId: number, pinned: boolean) => boolean = () => { throw new Error("message pinning is unavailable"); }): Promise<string> {
@@ -100,7 +104,7 @@ export class FireworksClanker {
       activity("thinking", turn ? "reviewing tool results" : "reading the room");
       let message: ApiMessage;
       try {
-        message = await this.complete(messages, activity, finalizing ? deadline : finalizationAt, deadline);
+        message = await this.complete(roomName, messages, activity, finalizing ? deadline : finalizationAt, deadline);
       } catch (error) {
         if (!(error instanceof CompletionDeadlineReached)) throw error;
         if (!finalizing) {
@@ -144,17 +148,21 @@ export class FireworksClanker {
     throw new Error(`${this.maxTurns}-turn limit reached · work preserved`);
   }
 
-  private async complete(messages: ChatMessage[], activity: ClankerActivity, completionDeadline: number, runDeadline: number): Promise<ApiMessage> {
+  private async complete(roomName: string, messages: ChatMessage[], activity: ClankerActivity, completionDeadline: number, runDeadline: number): Promise<ApiMessage> {
     let lastFailure = "provider request failed";
     for (let attempt = 1; attempt <= this.attempts; attempt++) {
       const remaining = completionDeadline - Date.now();
       if (remaining <= 0) throw new CompletionDeadlineReached();
       const requestBudget = Math.min(remaining, this.providerTimeoutMs);
       const boundedByCompletionDeadline = remaining <= this.providerTimeoutMs;
+      const serializedRequest = JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 });
+      const reservation = this.tokenBudget?.reserve(roomName, estimateProviderTokens(serializedRequest, 5000));
+      let actualUsage: number | undefined;
       activity("thinking", attempt === 1 ? `waiting for provider · ${formatDuration(Math.max(1, runDeadline - Date.now()))} run left` : `retrying provider · ${attempt}/${this.attempts}`);
       try {
-        const response = await this.fetcher(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 }), signal: AbortSignal.timeout(Math.max(1, requestBudget)) });
+        const response = await this.fetcher(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" }, body: serializedRequest, signal: AbortSignal.timeout(Math.max(1, requestBudget)) });
         const body = (await response.json()) as ApiResponse;
+        actualUsage = providerTokenUsage(body);
         if (response.ok) {
           const message = body.choices?.[0]?.message;
           if (!message) throw new Error("provider returned no message");
@@ -170,6 +178,10 @@ export class FireworksClanker {
         if (message.startsWith("provider unavailable:")) throw error;
         lastFailure = boundedProviderFailure(message);
         if (attempt === this.attempts) throw new Error(`provider unavailable: ${lastFailure}`);
+      } finally {
+        // A dispatched request may still be billable after a timeout or malformed response.
+        // Charge the conservative reservation whenever the provider omits usage.
+        reservation?.commit(actualUsage);
       }
       const retryWait = Math.min(this.retryDelayMs, Math.max(0, completionDeadline - Date.now() - 1));
       if (retryWait) await Bun.sleep(retryWait);
@@ -197,7 +209,7 @@ function formatDuration(milliseconds: number): string {
 }
 
 export class FireworksGuideClanker {
-  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1") {}
+  constructor(private readonly apiKey: string, readonly model: string, private readonly systemPrompt: string, private readonly baseUrl = "https://api.fireworks.ai/inference/v1", private readonly tokenBudget?: TokenBudget) {}
 
   async respond(history: Message[], activity: ClankerActivity, setMessagePin: (messageId: number, pinned: boolean) => boolean): Promise<string> {
     const latest = [...history].reverse().find((message) => message.kind === "chat");
@@ -213,16 +225,25 @@ export class FireworksGuideClanker {
     let usedPinTool = false;
     let reply = "";
     for (let turn = 0; turn < 3; turn++) {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: this.model, messages, tools: [tools[0]!], tool_choice: "auto", parallel_tool_calls: false, max_tokens: 240, temperature: 0.1 }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      const body = (await response.json()) as ApiResponse;
-      if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
-      const message = body.choices?.[0]?.message;
-      if (!message) throw new Error("Fireworks returned no message");
+      const serializedRequest = JSON.stringify({ model: this.model, messages, tools: [tools[0]!], tool_choice: "auto", parallel_tool_calls: false, max_tokens: 240, temperature: 0.1 });
+      const reservation = this.tokenBudget?.reserve("lobby", estimateProviderTokens(serializedRequest, 240));
+      let actualUsage: number | undefined;
+      let message: ApiMessage | undefined;
+      try {
+        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+          body: serializedRequest,
+          signal: AbortSignal.timeout(30_000),
+        });
+        const body = (await response.json()) as ApiResponse;
+        actualUsage = providerTokenUsage(body);
+        if (!response.ok) throw new Error(body.error?.message ?? `Fireworks returned HTTP ${response.status}`);
+        message = body.choices?.[0]?.message;
+        if (!message) throw new Error("Fireworks returned no message");
+      } finally {
+        reservation?.commit(actualUsage);
+      }
       messages.push(message);
       if (!message.tool_calls?.length) { reply = message.content?.trim().replace(/\s+/g, " ") ?? ""; break; }
       for (const call of message.tool_calls) {
