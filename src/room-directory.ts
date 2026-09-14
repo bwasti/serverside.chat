@@ -171,7 +171,7 @@ export class RoomDirectory {
 
   private materialize(policy: RoomPolicy): Room {
     const room = new Room(policy.name, 250, this.pageUrl(policy), policy.ownerHandle, `${this.dataDir}/rooms/${policy.name}/room-state.json`, this.accounts);
-    const workspace = new RoomWorkspace(this.dataDir, policy.name, undefined, (bytes) => room.recordSourceBytes(bytes));
+    const workspace = new RoomWorkspace(this.dataDir, policy.name, undefined, (bytes) => room.recordSourceBytes(bytes), () => room.limits.sourceBytes);
     this.workspaces.set(policy.name, workspace);
     room.setVersionGraph(workspace.versionGraph());
     room.addClankerLink("head", `${room.pageUrl}?__ref=head`);

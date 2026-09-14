@@ -1,4 +1,4 @@
-import type { AccountStore, Principal, RoomPolicy, RoomRole } from "./auth";
+import { DEFAULT_ROOM_LIMITS, type AccountStore, type Principal, type RoomLimits, type RoomPolicy, type RoomRole } from "./auth";
 
 export type MessageKind = "chat" | "system" | "clanker" | "commit";
 
@@ -30,15 +30,6 @@ export interface ClankerRequest {
   explicit: boolean;
 }
 
-export const ROOM_LIMITS = {
-  connections: 128,
-  concurrentRequests: 32,
-  egressBytesPerHour: 64 * 1024 * 1024,
-  databaseBytes: 5 * 1024 * 1024,
-  sourceBytes: 5 * 1024 * 1024,
-  scratchBytes: 5 * 1024 * 1024,
-  filesystemBytes: 10 * 1024 * 1024,
-} as const;
 const TELEMETRY_VERSION = 2;
 
 export class Room {
@@ -119,6 +110,8 @@ export class Room {
     return this.accounts?.roomPolicy(this.name) ?? { name: this.name, ownerId: "local:owner", ownerHandle: this.owner, visibility: "public", contributions: "members", clankerMode: "passive", system: false };
   }
 
+  get limits(): RoomLimits { return this.accounts?.roomLimits(this.name) ?? { ...DEFAULT_ROOM_LIMITS }; }
+
   roleFor(actor: Principal | string): RoomRole | undefined {
     const principal = this.resolvePrincipal(actor);
     return this.accounts?.roleFor(principal, this.name) ?? (principal.authenticated ? (principal.handle === this.owner ? "owner" : "contributor") : undefined);
@@ -144,6 +137,13 @@ export class Room {
     const policy = this.accounts.updateRoomPolicy(actor, this.name, changes);
     for (const listener of this.serviceListeners) listener();
     return policy;
+  }
+
+  updateLimits(actor: Principal, limits: RoomLimits): RoomLimits {
+    if (!this.accounts) throw new Error("room limit storage is not configured");
+    const updated = this.accounts.updateRoomLimits(actor, this.name, limits);
+    for (const listener of this.serviceListeners) listener();
+    return updated;
   }
 
   createInvite(actor: Principal, role: Exclude<RoomRole, "owner">): string {
@@ -187,14 +187,14 @@ export class Room {
   get connectionCount(): number { return [...this.memberConnections.values()].reduce((sum, count) => sum + count, 0) + this.webConnections; }
   get egressBytesLastHour(): number { this.pruneEgress(); return this.egressSamples.reduce((sum, sample) => sum + sample.bytes, 0); }
 
-  canSendResponse(bytes: number): boolean { return this.egressBytesLastHour + Math.max(0, bytes) <= ROOM_LIMITS.egressBytesPerHour; }
+  canSendResponse(bytes: number): boolean { return this.egressBytesLastHour + Math.max(0, bytes) <= this.limits.egressBytesPerHour; }
   tryBeginRequest(): boolean {
-    if (this.activeRequests >= ROOM_LIMITS.concurrentRequests) return false;
+    if (this.activeRequests >= this.limits.concurrentRequests) return false;
     this.activeRequests++;
     return true;
   }
   endRequest(): void { this.activeRequests = Math.max(0, this.activeRequests - 1); }
-  setWebConnections(count: number): void { this.webConnections = Math.max(0, Math.min(ROOM_LIMITS.connections, count)); for (const listener of this.serviceListeners) listener(); }
+  setWebConnections(count: number): void { this.webConnections = Math.max(0, Math.min(this.limits.connections, count)); for (const listener of this.serviceListeners) listener(); }
   recordResources(databaseBytes: number, filesystemBytes: number): void {
     const nextDatabaseBytes = Math.max(0, databaseBytes);
     const nextScratchBytes = Math.max(0, filesystemBytes);
@@ -254,7 +254,7 @@ export class Room {
   }
 
   join(username: string): boolean {
-    if (this.connectionCount >= ROOM_LIMITS.connections) return false;
+    if (this.connectionCount >= this.limits.connections) return false;
     this.memberConnections.set(username, (this.memberConnections.get(username) ?? 0) + 1);
     this.members.add(username);
     for (const listener of this.serviceListeners) listener();

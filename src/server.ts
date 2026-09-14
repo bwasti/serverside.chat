@@ -54,6 +54,8 @@ const tokenBudget = new TokenBudget(
   join(dataDir, "clanker-token-usage.sqlite"),
   positiveIntegerEnvironment("CLANKER_ROOM_TOKENS_PER_HOUR", DEFAULT_ROOM_CLANKER_TOKENS_PER_HOUR),
   positiveIntegerEnvironment("CLANKER_GLOBAL_TOKENS_PER_HOUR", DEFAULT_GLOBAL_CLANKER_TOKENS_PER_HOUR),
+  Date.now,
+  (roomName) => accounts.roomLimits(roomName).clankerOutputTokensPerHour,
 );
 let clanker: FireworksClanker | undefined;
 let guideClanker: FireworksGuideClanker | undefined;

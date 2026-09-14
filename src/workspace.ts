@@ -19,7 +19,7 @@ export class RoomWorkspace {
   private readonly publishedCache = new Map<string, string>();
   activeCommit!: string;
 
-  constructor(dataDir: string, readonly roomName: string, sourceRoot?: string, private readonly onUsageChange: (bytes: number) => void = () => {}) {
+  constructor(dataDir: string, readonly roomName: string, sourceRoot?: string, private readonly onUsageChange: (bytes: number) => void = () => {}, private readonly sourceByteLimit: () => number = () => MAX_WORKSPACE_BYTES) {
     this.root = resolve(dataDir, "rooms", roomName, "repo");
     this.metadataPath = resolve(dataDir, "rooms", roomName, "deployments.json");
     if (sourceRoot && !existsSync(this.root)) {
@@ -35,6 +35,8 @@ export class RoomWorkspace {
     this.updateStableTag();
     this.reportUsage();
   }
+
+  get byteLimit(): number { return this.sourceByteLimit(); }
 
   listTree(): Array<{ path: string; bytes: number }> {
     const output: Array<{ path: string; bytes: number }> = [];
@@ -99,7 +101,7 @@ export class RoomWorkspace {
     if (!existsSync(target)) this.assertEntryCapacityFor(target);
     const oldBytes = existsSync(target) ? statSync(target).size : 0;
     const total = this.listTree().reduce((sum, file) => sum + file.bytes, 0) - oldBytes + bytes;
-    if (total > MAX_WORKSPACE_BYTES) throw new Error("repository working tree exceeds 5 MiB limit");
+    if (total > this.byteLimit) throw new Error(`repository working tree exceeds ${formatMiB(this.byteLimit)} limit`);
     mkdirSync(dirname(target), { recursive: true });
     this.assertNoSymlinkParents(target);
     const temporary = resolve(dirname(target), `.${crypto.randomUUID()}.room-write`);
@@ -451,6 +453,8 @@ export class RoomWorkspace {
 function contentRevision(content: Buffer): string {
   return createHash("sha256").update(content).digest("base64url");
 }
+
+function formatMiB(bytes: number): string { return `${Math.round(bytes / (1024 * 1024) * 10) / 10} MiB`; }
 
 function runGit(cwd: string | undefined, args: string[], allowFailure = false): { ok: boolean; stdout: string } {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });

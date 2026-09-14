@@ -1,4 +1,4 @@
-import { ROOM_LIMITS, type Room } from "./room";
+import type { Room } from "./room";
 import type { ServerWebSocket } from "bun";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -16,7 +16,6 @@ interface ServiceSocketData { kind: "service"; room: string; principal: Principa
 interface TuiSocketData { kind: "tui"; principal: Principal; initialRoom?: string; cols: number; rows: number; windowStarted: number; messages: number }
 type SocketData = ServiceSocketData | TuiSocketData;
 const SOCKET_PATH = ".well-known/realtime";
-const MAX_ROOM_SOCKETS = 100;
 const MAX_SERVICE_SOCKETS = 4_096;
 const MAX_SERVICE_REQUESTS = 256;
 const MAX_BROWSER_TUIS = 128;
@@ -215,7 +214,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       if (serviceParts.join("/") === SOCKET_PATH) {
         if (!permittedSocketOrigin(request)) return new Response("cross-origin websocket rejected\n", { status: 403 });
         if (serviceSockets >= MAX_SERVICE_SOCKETS) return new Response("service socket capacity reached\n", { status: 503 });
-        if ((socketCounts.get(name) ?? 0) >= MAX_ROOM_SOCKETS || room.connectionCount >= ROOM_LIMITS.connections) return new Response("room socket limit reached\n", { status: 503 });
+        if ((socketCounts.get(name) ?? 0) >= room.limits.connections || room.connectionCount >= room.limits.connections) return new Response("room socket limit reached\n", { status: 503 });
         if (server.upgrade(request, { data: { kind: "service", room: name, principal, connectionId: crypto.randomUUID(), windowStarted: Date.now(), messages: 0 } })) return;
         return new Response("websocket upgrade required\n", { status: 426 });
       }

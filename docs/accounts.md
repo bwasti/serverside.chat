@@ -6,7 +6,7 @@ Accounts are host-owned records in `.data/accounts.sqlite`. Service JavaScript c
 
 Site roles and room roles are independent:
 
-- A site `admin` may view and moderate every room, and may create, rename, or delete rooms globally. The configured bootstrap owner receives this role.
+- A site `admin` may view, chat in, and moderate every room regardless of its visibility or contribution policy, and may create, rename, or delete rooms globally. The configured bootstrap owner receives this role. This host authority does not create a room-membership row or transfer room ownership.
 - A site `member` may create, rename, and delete rooms they own.
 - Every authenticated account can create rooms explicitly from the room bar; signing in does not create one automatically. Room names are globally unique URL slugs using 1–32 lowercase letters, numbers, and dashes.
 - `lobby` is a public, host-managed system room. It is the default landing room, every authenticated account receives contributor membership, and it does not consume an ownership slot. It cannot be renamed, deleted, or reconfigured through room commands.
@@ -30,7 +30,7 @@ OAuth identities from different providers are never merged by matching email or 
 
 The rooms sidebar treats the bottom `@handle` row as a selectable account destination. Anonymous sessions can open the canonical OAuth flow there. Authenticated sessions can inspect their site role, plan, room allowance, linked provider names, and active SSH-key count; they can also update their display name or create a short-lived account-bound link for attaching another Google or GitHub identity. These changes remain host-owned and are recorded in the account audit log.
 
-Room-bar ordering is a canonical-account preference, not shared room state. While the sidebar is focused, Shift-Up and Shift-Down move the selected room and persist the complete visible ordering for that account; new or newly visible rooms append without disturbing it. Anonymous sessions keep the default order. Shift-Enter opens the selected room's policy editor. The host rechecks room-admin authority when the editor opens and again when it saves visibility, contribution, and clanker settings.
+Room-bar ordering is a canonical-account preference, not shared room state. While the sidebar is focused, Shift-Up and Shift-Down move the selected room and persist the complete visible ordering for that account; new or newly visible rooms append without disturbing it. Anonymous sessions keep the default order. Shift-Enter opens the selected room's settings. Room admins may edit visibility, contribution, and clanker policy; site admins additionally edit per-room connection, concurrent-request, database, source, scratch, hourly egress, and hourly clanker-output limits. The host rechecks authority when settings open and save.
 
 Prototype owner accounts that existed before OAuth can run `ssh -p 2222 serverside.chat account`. The server returns a random, hashed-at-rest, single-use HTTPS link valid for ten minutes. Choosing Google or GitHub consumes that bootstrap token, binds the verified provider subject to the existing internal account, and issues the normal browser session. This is a migration path, not the routine browser sign-in flow.
 
@@ -49,6 +49,8 @@ Finder sends the credential through HTTP Basic authentication only over the exis
 | Clanker | `passive`, `explicit`, `disabled` | Passive reviews permitted chat; explicit runs only for `/clanker`; disabled rejects all clanker invocation. |
 
 Room `owner` and room `admin` can inspect or change these controls with `/permissions`. Only a room owner or site admin can rename or delete a room. Disabling contributions does not lock administrators out of the host policy commands.
+
+Per-room resource limits default to 128 connections, 32 concurrent requests, 5 MiB each of SQLite/source/scratch storage, 64 MiB of hourly response egress, and one million hourly clanker output tokens. Only a site admin can change these values, from the same Shift-Enter settings screen. Host-wide process limits and the fixed Wasm safety boundary remain outside room settings.
 
 Room owners, room admins, and site admins can moderate persisted chat messages. With an empty composer, Up selects a message; Enter creates a durable reply reference, P pins or unpins it, and Delete opens a keyboard confirmation before removal. Up to five non-system messages can remain pinned above each room transcript. Pin changes persist in host-owned room state and are audited; the clanker can request the same operation by stable message ID, but the host applies the triggering user's current admin authority. Deletion is also saved immediately and audited. Reply references retain a bounded author/excerpt snapshot so a discussion remains intelligible if its target is later removed.
 

@@ -36,6 +36,7 @@ export class TokenBudget {
     readonly roomLimit = DEFAULT_ROOM_CLANKER_TOKENS_PER_HOUR,
     readonly globalLimit = DEFAULT_GLOBAL_CLANKER_TOKENS_PER_HOUR,
     private readonly now: () => number = Date.now,
+    private readonly roomLimitFor: (room: string) => number = () => roomLimit,
   ) {
     if (!Number.isSafeInteger(roomLimit) || roomLimit < 1) throw new Error("room token limit must be a positive integer");
     if (!Number.isSafeInteger(globalLimit) || globalLimit < roomLimit) throw new Error("global token limit must be at least the room token limit");
@@ -82,8 +83,9 @@ export class TokenBudget {
       this.prune(now);
       const roomUsed = this.total(now, safeRoom);
       const globalUsed = this.total(now);
-      if (tokens > this.roomLimit) throw new TokenBudgetExceededError("clanker request exceeds the room token limit");
-      if (roomUsed + tokens > this.roomLimit) throw this.limitError("room", safeRoom, tokens, now);
+      const roomLimit = this.effectiveRoomLimit(safeRoom);
+      if (tokens > roomLimit) throw new TokenBudgetExceededError("clanker request exceeds the room token limit");
+      if (roomUsed + tokens > roomLimit) throw this.limitError("room", safeRoom, tokens, now);
       if (globalUsed + tokens > this.globalLimit) throw this.limitError("global", safeRoom, tokens, now);
       this.db.query("INSERT INTO clanker_token_reservations (id, room, tokens, expires_at, metric) VALUES (?, ?, ?, ?, 'output')").run(id, safeRoom, tokens, now + WINDOW_MS);
     }).immediate();
@@ -109,7 +111,7 @@ export class TokenBudget {
   snapshot(room: string): TokenBudgetSnapshot {
     const now = this.now();
     this.prune(now);
-    return { roomUsed: this.total(now, room), roomLimit: this.roomLimit, globalUsed: this.total(now), globalLimit: this.globalLimit };
+    return { roomUsed: this.total(now, room), roomLimit: this.effectiveRoomLimit(room), globalUsed: this.total(now), globalLimit: this.globalLimit };
   }
 
   renameRoom(previousName: string, name: string): void {
@@ -143,7 +145,7 @@ export class TokenBudget {
     const usageTimes = this.db.query(`SELECT tokens, recorded_at + ${WINDOW_MS} AS available_at FROM clanker_token_usage WHERE metric = 'output' AND ${roomFilter}recorded_at >= ? ORDER BY recorded_at`).all(...(scope === "room" ? params.slice(0, 2) : params.slice(0, 1))) as Array<{ tokens: number; available_at: number }>;
     const reservationTimes = this.db.query(`SELECT tokens, expires_at AS available_at FROM clanker_token_reservations WHERE metric = 'output' AND ${roomFilter}expires_at > ? ORDER BY expires_at`).all(...(scope === "room" ? params.slice(2) : params.slice(1))) as Array<{ tokens: number; available_at: number }>;
     const entries = usageTimes.concat(reservationTimes).sort((left, right) => left.available_at - right.available_at);
-    const limit = scope === "room" ? this.roomLimit : this.globalLimit;
+    const limit = scope === "room" ? this.effectiveRoomLimit(room) : this.globalLimit;
     let used = this.total(now, scope === "room" ? room : undefined);
     let next = now + WINDOW_MS;
     for (let index = 0; index < entries.length;) {
@@ -160,6 +162,11 @@ export class TokenBudget {
     if (!this.listeners.size) return;
     const snapshot = this.snapshot(room);
     for (const listener of this.listeners) listener(room, snapshot);
+  }
+
+  private effectiveRoomLimit(room: string): number {
+    const configured = this.roomLimitFor(room);
+    return Number.isSafeInteger(configured) && configured > 0 ? Math.min(configured, this.globalLimit) : Math.min(this.roomLimit, this.globalLimit);
   }
 
   private ensureMetricColumn(table: "clanker_token_usage" | "clanker_token_reservations"): void {

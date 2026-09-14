@@ -8,7 +8,6 @@ import { readBoundedText } from "./bounded-body";
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE = 512 * 1024;
-const MAX_DB = 5 * 1024 * 1024;
 const MAX_ROWS = 200;
 const MAX_PARAMS = 100;
 const MAX_LOGS = 20;
@@ -16,7 +15,6 @@ const MAX_LOG_BYTES = 4 * 1024;
 const MAX_REALTIME_EVENTS = 8;
 const MAX_REALTIME_EVENT_BYTES = 16 * 1024;
 const MAX_REALTIME_BYTES = 32 * 1024;
-const MAX_FS = 5 * 1024 * 1024;
 const MAX_FS_FILE = 512 * 1024;
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".svg": "image/svg+xml" };
 
@@ -42,7 +40,7 @@ export class ServiceRuntime {
     let realtimeEvents = 0;
     let realtimeBytes = 0;
     const db = new Database(this.databasePath, { create: true, strict: true });
-    db.exec("PRAGMA page_size=4096; PRAGMA max_page_count=1280; PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=1000; PRAGMA foreign_keys=ON");
+    db.exec(`PRAGMA page_size=4096; PRAGMA max_page_count=${Math.max(1, Math.floor(this.room.limits.databaseBytes / 4096))}; PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=1000; PRAGMA foreign_keys=ON`);
     const hostCall = (raw: string): string => {
       const call = JSON.parse(raw) as { op?: string; action?: string; sql?: string; params?: unknown[]; level?: string; event?: unknown; path?: string; method?: string; type?: string; data?: unknown; content?: string };
       if (call.op === "db") return JSON.stringify(this.databaseCall(db, String(call.sql ?? ""), call.params ?? []));
@@ -122,7 +120,7 @@ export class ServiceRuntime {
       return { rows };
     }
     const result = statement.run(...params as never[]);
-    if (databaseBytes(this.databasePath) > MAX_DB) throw new Error("database exceeds 5 MiB limit");
+    if (databaseBytes(this.databasePath) > this.room.limits.databaseBytes) throw new Error("database exceeds the room limit");
     return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
   }
 
@@ -156,7 +154,7 @@ export class ServiceRuntime {
       if (bytes > MAX_FS_FILE) throw new Error("scratch file exceeds 512 KiB limit");
       const old = existsSync(target) ? statSync(target).size : 0;
       const total = this.filesystemBytes - old + bytes;
-      if (total > MAX_FS) throw new Error("scratch filesystem exceeds 5 MiB limit");
+      if (total > this.room.limits.scratchBytes) throw new Error("scratch filesystem exceeds the room limit");
       mkdirSync(dirname(target), { recursive: true });
       const temporary = `${target}.tmp-${crypto.randomUUID()}`;
       writeFileSync(temporary, content, { mode: 0o600 });

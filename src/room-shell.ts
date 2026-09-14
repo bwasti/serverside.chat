@@ -1,7 +1,7 @@
 import type { AccountStore, Principal } from "./auth";
 import { posix } from "node:path";
 import type { Room } from "./room";
-import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_BYTES, type RoomWorkspace } from "./workspace";
+import { MAX_WORKSPACE_FILE_BYTES, type RoomWorkspace } from "./workspace";
 import { RoomEditor, type EditorSaveResult } from "./editor";
 import { retrySeconds, type RateLimitDecision } from "./rate-limit";
 
@@ -54,7 +54,7 @@ export class RoomCapabilitySession {
       case "pwd": return { output: this.workingDirectory };
       case "cd": return { output: this.changeDirectory(remainder) };
       case "whoami": return { output: `@${this.principal.handle} · ${this.accounts.roleFor(this.principal, this.room.name) ?? "viewer"} · ${this.room.name}` };
-      case "limits": return { output: `source ${formatBytes(this.workspace.listTree().reduce((sum, file) => sum + file.bytes, 0))}/${formatBytes(MAX_WORKSPACE_BYTES)} · file ${formatBytes(MAX_WORKSPACE_FILE_BYTES)} max · 1,000 entries` };
+      case "limits": return { output: `source ${formatBytes(this.workspace.listTree().reduce((sum, file) => sum + file.bytes, 0))}/${formatBytes(this.workspace.byteLimit)} · file ${formatBytes(MAX_WORKSPACE_FILE_BYTES)} max · 1,000 entries` };
       case "files": return { output: this.list(optionalArgument(remainder, "usage: files [path]"), true, true) };
       case "ls": return { output: this.ls(remainder, false) };
       case "ll": return { output: this.ls(remainder, true) };

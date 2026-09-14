@@ -531,6 +531,29 @@ test("Shift-Enter opens keyboard-only room permission settings for admins", () =
   accounts.close();
 });
 
+test("site admins see private rooms, can chat, and edit their resource limits", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-site-admin-"));
+  const accounts = new AccountStore(join(data, "accounts.sqlite"));
+  const owner = accounts.ensureLocalOwner("alice");
+  const siteAdmin = accounts.createDevelopmentAccount("operator").principal;
+  accounts.ensureSiteAdmin(siteAdmin);
+  accounts.ensureRoom("secret", owner, { visibility: "private", contributions: "disabled", clankerMode: "disabled" });
+  const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
+  const stream = new FakeStream();
+  const session = new TuiSession(stream as unknown as ServerChannel, directory.rooms, siteAdmin, accounts, "secret", undefined, undefined, undefined, directory);
+
+  expect((session as unknown as { rooms: Room[] }).rooms.map((room) => room.name)).toContain("secret");
+  stream.emit("data", Buffer.from("site owner note\r"));
+  expect(directory.room("secret")!.messages.at(-1)).toMatchObject({ author: "operator", text: "site owner note" });
+  stream.emit("data", Buffer.from("\t\x1b[13;2u"));
+  expect(stream.writes.at(-1)).toContain("Connections");
+  stream.emit("data", Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[C\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r"));
+  expect(directory.room("secret")!.limits.connections).toBe(256);
+  expect(stream.writes.at(-1)).toContain("room settings saved");
+  stream.end();
+  accounts.close();
+});
+
 test("wide HUD puts resource limits immediately above separate server and clanker logs", () => {
   const room = new Room("mine");
   room.versionGraph.push({ text: "* abcdef0  head", url: "https://example.test/mine?__ref=abcdef0" });
@@ -704,8 +727,10 @@ test("Delete on a sidebar room requires its full name and preserves a restorable
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-tui-room-archive-"));
   const accounts = new AccountStore(join(data, "accounts.sqlite"));
   const owner = accounts.ensureLocalOwner("alice");
+  accounts.ensureSiteAdmin(owner);
   accounts.ensureSystemRoom("lobby", owner, { visibility: "public", contributions: "members", clankerMode: "passive" });
   accounts.ensureRoom("project", owner, { visibility: "private", contributions: "members", clankerMode: "explicit" });
+  accounts.updateRoomLimits(owner, "project", { ...accounts.roomLimits("project"), sourceBytes: 10 * 1024 * 1024 });
   const directory = new RoomDirectory(accounts, data, "https://serverside.chat");
   directory.room("project")!.chat(owner, "keep this transcript");
   const stream = new FakeStream();
@@ -727,6 +752,7 @@ test("Delete on a sidebar room requires its full name and preserves a restorable
   stream.emit("data", Buffer.from("/room restore project\r"));
   expect((session as unknown as { room: Room }).room.name).toBe("project");
   expect(directory.room("project")!.messages.at(-1)?.text).toBe("keep this transcript");
+  expect(directory.room("project")!.limits.sourceBytes).toBe(10 * 1024 * 1024);
   stream.end();
   accounts.close();
 });

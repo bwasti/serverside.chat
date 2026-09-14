@@ -247,6 +247,20 @@ test("site admins and free account room limits are distinct from room roles", ()
   accounts.close();
 });
 
+test("site admins can see and contribute to every room and exclusively manage room limits", () => {
+  const { accounts, owner, member } = setup();
+  accounts.ensureSiteAdmin(member);
+  expect(accounts.roleFor(member, "private-room")).toBeUndefined();
+  expect(accounts.canView(member, "private-room")).toBe(true);
+  expect(accounts.canContribute(member, "private-room")).toBe(true);
+
+  const limits = { ...accounts.roomLimits("private-room"), connections: 256, databaseBytes: 10 * 1024 * 1024, clankerOutputTokensPerHour: 2_000_000 };
+  expect(accounts.updateRoomLimits(member, "private-room", limits)).toEqual(limits);
+  expect(() => accounts.updateRoomLimits(owner, "private-room", limits)).toThrow("site admin");
+  expect(accounts.roomLimits("private-room")).toEqual(limits);
+  accounts.close();
+});
+
 test("default room seeding happens once and does not resurrect deleted rooms", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-auth-seed-"));
   const path = join(data, "accounts.sqlite");

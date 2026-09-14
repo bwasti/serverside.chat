@@ -1,5 +1,5 @@
-import type { AccountStore, ClankerMode, ContributionPolicy, MountCredential, Principal, RoomDomain, RoomRole, RoomVisibility } from "./auth";
-import { ROOM_LIMITS, type Message, type MessageKind, type Room } from "./room";
+import type { AccountStore, ClankerMode, ContributionPolicy, MountCredential, Principal, RoomDomain, RoomLimits, RoomRole, RoomVisibility } from "./auth";
+import type { Message, MessageKind, Room } from "./room";
 import type { RoomDirectory, RoomDirectoryEvent } from "./room-directory";
 import { parseArguments, RoomCapabilitySession } from "./room-shell";
 import type { RoomEditor } from "./editor";
@@ -15,6 +15,18 @@ export interface TuiStream {
 }
 
 export type AnonymousLobbyReview = (principal: Principal, text: string) => Promise<{ allowed: boolean; reason?: string }>;
+
+type RoomSettingKey = "visibility" | "contributions" | "clankerMode" | keyof RoomLimits | "save";
+interface RoomSettingsState {
+  field: number;
+  fields: RoomSettingKey[];
+  visibility: RoomVisibility;
+  contributions: ContributionPolicy;
+  clankerMode: ClankerMode;
+  limits: RoomLimits;
+  policyEditable: boolean;
+  limitsEditable: boolean;
+}
 
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
@@ -87,7 +99,7 @@ export class TuiSession {
   private sidebarFocused = false;
   private accountFocused = false;
   private accountPanel?: { field: number; editing: boolean; linkUrl?: string };
-  private roomSettings?: { field: number; visibility: RoomVisibility; contributions: ContributionPolicy; clankerMode: ClankerMode };
+  private roomSettings?: RoomSettingsState;
   private createRoomFocused = false;
   private creatingRoom = false;
   private createRoomField = 0;
@@ -1024,11 +1036,18 @@ export class TuiSession {
       return;
     }
     const policy = this.room.policy;
-    if (policy.system) {
+    const limitsEditable = this.accounts.isSiteAdmin(this.principal);
+    if (policy.system && !limitsEditable) {
       this.localNotice = "system room policy is host-managed";
       return;
     }
-    this.roomSettings = { field: 0, visibility: policy.visibility, contributions: policy.contributions, clankerMode: policy.clankerMode };
+    const policyEditable = !policy.system;
+    const fields: RoomSettingKey[] = [
+      ...(policyEditable ? ["visibility", "contributions", "clankerMode"] as RoomSettingKey[] : []),
+      ...(limitsEditable ? ["connections", "concurrentRequests", "databaseBytes", "sourceBytes", "scratchBytes", "egressBytesPerHour", "clankerOutputTokensPerHour"] as RoomSettingKey[] : []),
+      "save",
+    ];
+    this.roomSettings = { field: 0, fields, visibility: policy.visibility, contributions: policy.contributions, clankerMode: policy.clankerMode, limits: { ...this.room.limits }, policyEditable, limitsEditable };
     this.sidebarFocused = false;
     this.input = "";
     this.cursorOffset = 0;
@@ -1057,7 +1076,7 @@ export class TuiSession {
         const arrow = token.match(/^\x1b\[(?:1;[2-8])?([ABCD])$/);
         if (!arrow) continue;
         const direction = arrow[1]!;
-        if (direction === "A" || direction === "B") settings.field = Math.max(0, Math.min(3, settings.field + (direction === "A" ? -1 : 1)));
+        if (direction === "A" || direction === "B") settings.field = Math.max(0, Math.min(settings.fields.length - 1, settings.field + (direction === "A" ? -1 : 1)));
         else this.cycleRoomSetting(direction === "C" ? 1 : -1);
         dirty = true;
         continue;
@@ -1069,17 +1088,18 @@ export class TuiSession {
         if (char !== "\r" && char !== "\n") continue;
         if (char === "\n" && this.lastWasCarriageReturn) { this.lastWasCarriageReturn = false; continue; }
         this.lastWasCarriageReturn = char === "\r";
-        if (settings.field < 3) {
+        if (settings.fields[settings.field] !== "save") {
           this.cycleRoomSetting(1);
           dirty = true;
           continue;
         }
         try {
-          this.room.updatePolicy(this.principal, {
-            visibility: settings.visibility,
-            contributions: settings.contributions,
-            clankerMode: settings.clankerMode,
-          });
+          if (settings.policyEditable) this.room.updatePolicy(this.principal, {
+              visibility: settings.visibility,
+              contributions: settings.contributions,
+              clankerMode: settings.clankerMode,
+            });
+          if (settings.limitsEditable) this.room.updateLimits(this.principal, settings.limits);
           this.roomSettings = undefined;
           this.localNotice = "room settings saved";
           this.lastFrame = "";
@@ -1095,10 +1115,17 @@ export class TuiSession {
   }
 
   private cycleRoomSetting(direction: -1 | 1): void {
-    if (!this.roomSettings) return;
-    if (this.roomSettings.field === 0) this.roomSettings.visibility = cycle(["public", "private"] as const, this.roomSettings.visibility, direction);
-    else if (this.roomSettings.field === 1) this.roomSettings.contributions = cycle(["members", "authenticated", "admins", "disabled"] as const, this.roomSettings.contributions, direction);
-    else if (this.roomSettings.field === 2) this.roomSettings.clankerMode = cycle(["passive", "explicit", "disabled"] as const, this.roomSettings.clankerMode, direction);
+    const settings = this.roomSettings;
+    if (!settings) return;
+    const key = settings.fields[settings.field];
+    if (key === "visibility") settings.visibility = cycle(["public", "private"] as const, settings.visibility, direction);
+    else if (key === "contributions") settings.contributions = cycle(["members", "authenticated", "admins", "disabled"] as const, settings.contributions, direction);
+    else if (key === "clankerMode") settings.clankerMode = cycle(["passive", "explicit", "disabled"] as const, settings.clankerMode, direction);
+    else if (key === "connections") settings.limits.connections = cycleNumeric([16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096], settings.limits.connections, direction);
+    else if (key === "concurrentRequests") settings.limits.concurrentRequests = cycleNumeric([4, 8, 16, 32, 64, 128, 256], settings.limits.concurrentRequests, direction);
+    else if (key === "databaseBytes" || key === "sourceBytes" || key === "scratchBytes") settings.limits[key] = cycleNumeric([1, 2, 5, 10, 20, 32, 64].map((value) => value * 1_048_576), settings.limits[key], direction);
+    else if (key === "egressBytesPerHour") settings.limits.egressBytesPerHour = cycleNumeric([8, 16, 32, 64, 128, 256, 512, 1_024].map((value) => value * 1_048_576), settings.limits.egressBytesPerHour, direction);
+    else if (key === "clankerOutputTokensPerHour") settings.limits.clankerOutputTokensPerHour = cycleNumeric([10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000, 2_000_000, 4_000_000, 8_000_000], settings.limits.clankerOutputTokensPerHour, direction);
   }
 
   private renderRoomSettings(): void {
@@ -1107,23 +1134,30 @@ export class TuiSession {
     const row = (index: number, label: string, value: string, detail: string) => {
       const focused = this.roomSettings?.field === index;
       const marker = focused ? `${CYAN}›${CHAT}` : `${MUTED}·${CHAT}`;
-      const setting = index === 3
+      const setting = this.roomSettings?.fields[index] === "save"
         ? `${focused ? `${CYAN}${ESC}1m` : MUTED}[ Save changes ]${ESC}22m${CHAT}`
         : `${MUTED}← ${CHAT}${focused ? `${ESC}1m` : ""}${value}${focused ? `${ESC}22m` : ""}${MUTED} →${CHAT}`;
       return padAnsi(`  ${marker} ${pad(label, 18)} ${setting}${detail ? `   ${MUTED}${detail}${CHAT}` : ""}`, width);
     };
-    const rows = [
-      "",
-      row(0, "Visibility", this.roomSettings.visibility, this.roomSettings.visibility === "public" ? "anyone can view" : "members only"),
-      row(1, "Contributions", this.roomSettings.contributions, this.roomSettings.contributions === "members" ? "invited contributors and admins" : this.roomSettings.contributions === "authenticated" ? `${RED}DANGEROUS · any signed-in account can edit and invoke the clanker${CHAT}` : this.roomSettings.contributions === "admins" ? "admins only" : "read only"),
-      row(2, "Clanker", this.roomSettings.clankerMode, this.roomSettings.clankerMode === "passive" ? "listens when useful" : this.roomSettings.clankerMode === "explicit" ? "/clanker only" : "disabled"),
-      "",
-      row(3, "", "save", ""),
-    ];
     const bodyHeight = Math.max(1, this.height - 2);
-    while (rows.length < bodyHeight) rows.push("");
+    const rows = this.roomSettings.fields.map((key, index) => {
+      if (key === "visibility") return row(index, "Visibility", this.roomSettings!.visibility, this.roomSettings!.visibility === "public" ? "anyone can view" : "members only");
+      if (key === "contributions") return row(index, "Contributions", this.roomSettings!.contributions, this.roomSettings!.contributions === "members" ? "invited contributors and admins" : this.roomSettings!.contributions === "authenticated" ? `${RED}DANGEROUS · any signed-in account can edit and invoke the clanker${CHAT}` : this.roomSettings!.contributions === "admins" ? "admins only" : "read only");
+      if (key === "clankerMode") return row(index, "Clanker", this.roomSettings!.clankerMode, this.roomSettings!.clankerMode === "passive" ? "listens when useful" : this.roomSettings!.clankerMode === "explicit" ? "/clanker only" : "disabled");
+      if (key === "connections") return row(index, "Connections", formatCompactCount(this.roomSettings!.limits.connections), "simultaneous clients");
+      if (key === "concurrentRequests") return row(index, "Concurrent req", formatCompactCount(this.roomSettings!.limits.concurrentRequests), "running service requests");
+      if (key === "databaseBytes") return row(index, "Database", formatCompactBytes(this.roomSettings!.limits.databaseBytes), "SQLite storage");
+      if (key === "sourceBytes") return row(index, "Source files", formatCompactBytes(this.roomSettings!.limits.sourceBytes), "versioned filesystem");
+      if (key === "scratchBytes") return row(index, "Scratch files", formatCompactBytes(this.roomSettings!.limits.scratchBytes), "runtime filesystem");
+      if (key === "egressBytesPerHour") return row(index, "Egress / hour", formatCompactBytes(this.roomSettings!.limits.egressBytesPerHour), "served response bytes");
+      if (key === "clankerOutputTokensPerHour") return row(index, "Output / hour", formatCompactCount(this.roomSettings!.limits.clankerOutputTokensPerHour), "clanker output tokens");
+      return row(index, "", "save", "");
+    });
+    const firstVisible = Math.max(0, Math.min(this.roomSettings.field - Math.floor(bodyHeight / 2), rows.length - bodyHeight));
+    const visibleRows = rows.slice(firstVisible, firstVisible + bodyHeight);
+    while (visibleRows.length < bodyHeight) visibleRows.push("");
     const header = `${HEADER}${pad(truncate(`  ROOM SETTINGS  #${this.room.name}`, width), width)}${RESET}`;
-    const body = rows.slice(0, bodyHeight).map((line) => `${CHAT}${padAnsi(line, width)}${RESET}`);
+    const body = visibleRows.map((line) => `${CHAT}${padAnsi(line, width)}${RESET}`);
     const footer = `${COMPOSER}${pad(truncate(this.localNotice ? `  ${this.localNotice}` : "  ↑↓ choose   ←→ or ENTER change   ENTER save   TAB rooms   Q close", width), width)}${RESET}`;
     const frame = `${[header, ...body, footer].join("\r\n")}${ESC}?25l`;
     if (frame === this.lastFrame) return;
@@ -1845,11 +1879,12 @@ export class TuiSession {
   }
 
   private resourceHudRows(width: number): string[] {
+    const limits = this.room.limits;
     return [
-      denseUsageBar("DB", this.room.databaseBytes, ROOM_LIMITS.databaseBytes, formatCompactBytes, width),
-      denseUsageBar("CONN", this.room.connectionCount, ROOM_LIMITS.connections, String, width),
-      denseUsageBar("FILES", this.room.filesystemBytes, ROOM_LIMITS.filesystemBytes, formatCompactBytes, width),
-      denseUsageBar("BYTES/H", this.room.egressBytesLastHour, ROOM_LIMITS.egressBytesPerHour, formatCompactBytes, width),
+      denseUsageBar("DB", this.room.databaseBytes, limits.databaseBytes, formatCompactBytes, width),
+      denseUsageBar("CONN", this.room.connectionCount, limits.connections, String, width),
+      denseUsageBar("FILES", this.room.filesystemBytes, limits.sourceBytes + limits.scratchBytes, formatCompactBytes, width),
+      denseUsageBar("BYTES/H", this.room.egressBytesLastHour, limits.egressBytesPerHour, formatCompactBytes, width),
       denseUsageBar("OUT/H", this.room.clankerOutputTokensLastHour, this.room.clankerOutputTokenLimit, formatCompactCount, width),
     ];
   }
@@ -2256,6 +2291,13 @@ export class TuiSession {
 function cycle<T>(values: readonly T[], current: T, direction: -1 | 1): T {
   const index = Math.max(0, values.indexOf(current));
   return values[(index + direction + values.length) % values.length]!;
+}
+
+function cycleNumeric(values: readonly number[], current: number, direction: -1 | 1): number {
+  const exact = values.indexOf(current);
+  if (exact >= 0) return values[Math.max(0, Math.min(values.length - 1, exact + direction))]!;
+  if (direction > 0) return values.find((value) => value > current) ?? values.at(-1)!;
+  return [...values].reverse().find((value) => value < current) ?? values[0]!;
 }
 
 function formatDuration(totalSeconds: number): string {

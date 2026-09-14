@@ -59,3 +59,14 @@ test("legacy total-token ledger rows do not count toward output budgets", () => 
   const migrated = new TokenBudget(path, 1_000, 2_000);
   expect(migrated.snapshot("mine")).toMatchObject({ roomUsed: 0, globalUsed: 0 });
 });
+
+test("room-specific output limits are read dynamically", () => {
+  const root = mkdtempSync(join(tmpdir(), "serverside-chat-token-limits-"));
+  const limits = new Map([["small", 25], ["large", 150]]);
+  const tokens = new TokenBudget(join(root, "usage.sqlite"), 100, 200, Date.now, (room) => limits.get(room) ?? 100);
+  expect(tokens.snapshot("small").roomLimit).toBe(25);
+  expect(() => tokens.reserve("small", 26)).toThrow("request exceeds the room token limit");
+  expect(tokens.reserve("large", 120)).toBeDefined();
+  limits.set("large", 100);
+  expect(tokens.snapshot("large").roomLimit).toBe(100);
+});

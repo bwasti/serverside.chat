@@ -35,10 +35,31 @@ export interface RoomPolicy {
   system: boolean;
 }
 
+export interface RoomLimits {
+  connections: number;
+  concurrentRequests: number;
+  databaseBytes: number;
+  sourceBytes: number;
+  scratchBytes: number;
+  egressBytesPerHour: number;
+  clankerOutputTokensPerHour: number;
+}
+
+export const DEFAULT_ROOM_LIMITS: Readonly<RoomLimits> = {
+  connections: 128,
+  concurrentRequests: 32,
+  databaseBytes: 5 * 1024 * 1024,
+  sourceBytes: 5 * 1024 * 1024,
+  scratchBytes: 5 * 1024 * 1024,
+  egressBytesPerHour: 64 * 1024 * 1024,
+  clankerOutputTokensPerHour: 1_000_000,
+};
+
 export interface ArchivedRoom extends RoomPolicy {
   archiveId: string;
   storageName: string;
   archivedAt: number;
+  limits: RoomLimits;
 }
 
 export interface AccountProfile {
@@ -112,7 +133,7 @@ export interface OAuthFlow {
 
 interface UserRow { id: string; handle: string; display_name: string; status: string }
 interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: Exclude<ContributionPolicy, "authenticated">; authenticated_contributions: number; clanker_mode: ClankerMode; system: number; created_at?: number }
-interface ArchivedRoomRow { id: string; original_name: string; owner_user_id: string; owner_handle: string; visibility: RoomVisibility; contribution_policy: Exclude<ContributionPolicy, "authenticated">; authenticated_contributions: number; clanker_mode: ClankerMode; room_created_at: number; storage_name: string; archived_at: number }
+interface ArchivedRoomRow { id: string; original_name: string; owner_user_id: string; owner_handle: string; visibility: RoomVisibility; contribution_policy: Exclude<ContributionPolicy, "authenticated">; authenticated_contributions: number; clanker_mode: ClankerMode; room_created_at: number; storage_name: string; archived_at: number; limits_json: string }
 interface InviteRow { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number }
 interface RoomDomainRow { hostname: string; room_name: string; verification_token: string; status: RoomDomainStatus; created_at: number; last_checked_at?: number; verified_at?: number }
 
@@ -182,6 +203,18 @@ export class AccountStore {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(user_id, room_name)
       );
+      CREATE TABLE IF NOT EXISTS room_limits (
+        room_name TEXT PRIMARY KEY REFERENCES rooms(name) ON DELETE CASCADE,
+        connections INTEGER NOT NULL,
+        concurrent_requests INTEGER NOT NULL,
+        database_bytes INTEGER NOT NULL,
+        source_bytes INTEGER NOT NULL,
+        scratch_bytes INTEGER NOT NULL,
+        egress_bytes_per_hour INTEGER NOT NULL,
+        clanker_output_tokens_per_hour INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        updated_by TEXT NOT NULL REFERENCES users(id)
+      );
       CREATE TABLE IF NOT EXISTS room_archives (
         id TEXT PRIMARY KEY,
         original_name TEXT NOT NULL,
@@ -192,6 +225,7 @@ export class AccountStore {
         clanker_mode TEXT NOT NULL CHECK(clanker_mode IN ('passive','explicit','disabled')),
         room_created_at INTEGER NOT NULL,
         storage_name TEXT NOT NULL UNIQUE,
+        limits_json TEXT NOT NULL DEFAULT '{}',
         archived_at INTEGER NOT NULL,
         archived_by_principal_id TEXT NOT NULL,
         restored_at INTEGER
@@ -331,6 +365,7 @@ export class AccountStore {
     if (!roomColumns.has("authenticated_contributions")) this.db.exec("ALTER TABLE rooms ADD COLUMN authenticated_contributions INTEGER NOT NULL DEFAULT 0 CHECK(authenticated_contributions IN (0,1))");
     const archiveColumns = new Set((this.db.query("PRAGMA table_info(room_archives)").all() as Array<{ name: string }>).map((column) => column.name));
     if (!archiveColumns.has("authenticated_contributions")) this.db.exec("ALTER TABLE room_archives ADD COLUMN authenticated_contributions INTEGER NOT NULL DEFAULT 0 CHECK(authenticated_contributions IN (0,1))");
+    if (!archiveColumns.has("limits_json")) this.db.exec("ALTER TABLE room_archives ADD COLUMN limits_json TEXT NOT NULL DEFAULT '{}'");
   }
 
   ensureLocalOwner(handle: string, displayName = handle): Principal {
@@ -468,6 +503,7 @@ export class AccountStore {
       this.db.query("UPDATE mount_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE room_domains SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE room_preferences SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("UPDATE room_limits SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE audit_events SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("DELETE FROM rooms WHERE name = ?").run(oldName);
     })();
@@ -496,20 +532,21 @@ export class AccountStore {
     const archiveCount = (this.db.query("SELECT COUNT(*) AS count FROM room_archives WHERE owner_user_id = ? AND restored_at IS NULL").get(current.owner_user_id) as { count: number }).count;
     if (archiveCount >= archiveLimit) throw new Error(`archive limit reached · restore an archived room before deleting another`);
     const archivedAt = Date.now();
+    const limits = this.roomLimits(name);
     this.db.transaction(() => {
-      this.db.query(`INSERT INTO room_archives(id, original_name, owner_user_id, visibility, contribution_policy, authenticated_contributions, clanker_mode, room_created_at, storage_name, archived_at, archived_by_principal_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(archiveId, name, current.owner_user_id, current.visibility, current.contribution_policy, current.authenticated_contributions, current.clanker_mode, current.created_at ?? archivedAt, storageName, archivedAt, actor.id);
+      this.db.query(`INSERT INTO room_archives(id, original_name, owner_user_id, visibility, contribution_policy, authenticated_contributions, clanker_mode, room_created_at, storage_name, limits_json, archived_at, archived_by_principal_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(archiveId, name, current.owner_user_id, current.visibility, current.contribution_policy, current.authenticated_contributions, current.clanker_mode, current.created_at ?? archivedAt, storageName, JSON.stringify(limits), archivedAt, actor.id);
       this.db.query(`INSERT INTO archived_room_memberships(archive_id, user_id, role, created_at, revoked_at)
         SELECT ?, user_id, role, created_at, revoked_at FROM room_memberships WHERE room_name = ?`).run(archiveId, name);
       this.audit(actor, name, "room.archive", archiveId);
       this.db.query("DELETE FROM rooms WHERE name = ?").run(name);
     })();
-    return this.archivedRoomFromRow({ id: archiveId, original_name: name, owner_user_id: current.owner_user_id, owner_handle: this.userHandle(current.owner_user_id), visibility: current.visibility, contribution_policy: current.contribution_policy, authenticated_contributions: current.authenticated_contributions, clanker_mode: current.clanker_mode, room_created_at: current.created_at ?? archivedAt, storage_name: storageName, archived_at: archivedAt });
+    return this.archivedRoomFromRow({ id: archiveId, original_name: name, owner_user_id: current.owner_user_id, owner_handle: this.userHandle(current.owner_user_id), visibility: current.visibility, contribution_policy: current.contribution_policy, authenticated_contributions: current.authenticated_contributions, clanker_mode: current.clanker_mode, room_created_at: current.created_at ?? archivedAt, storage_name: storageName, archived_at: archivedAt, limits_json: JSON.stringify(limits) });
   }
 
   archivedRooms(actor: Principal): ArchivedRoom[] {
     if (!actor.authenticated || actor.kind !== "user") return [];
-    const rows = this.db.query(`SELECT a.id, a.original_name, a.owner_user_id, u.handle AS owner_handle, a.visibility, a.contribution_policy, a.authenticated_contributions, a.clanker_mode, a.room_created_at, a.storage_name, a.archived_at
+    const rows = this.db.query(`SELECT a.id, a.original_name, a.owner_user_id, u.handle AS owner_handle, a.visibility, a.contribution_policy, a.authenticated_contributions, a.clanker_mode, a.room_created_at, a.storage_name, a.archived_at, a.limits_json
       FROM room_archives a JOIN users u ON u.id = a.owner_user_id
       WHERE a.restored_at IS NULL AND (? = 1 OR a.owner_user_id = ?)
       ORDER BY a.archived_at DESC`).all(this.isSiteAdmin(actor) ? 1 : 0, actor.id) as ArchivedRoomRow[];
@@ -531,6 +568,10 @@ export class AccountStore {
         .run(archive.name, archive.ownerId, archive.visibility, contribution.policy, contribution.authenticated, archive.clankerMode, this.archiveCreatedAt(archive.archiveId));
       this.db.query(`INSERT INTO room_memberships(room_name, user_id, role, created_at, revoked_at)
         SELECT ?, user_id, role, created_at, revoked_at FROM archived_room_memberships WHERE archive_id = ?`).run(archive.name, archive.archiveId);
+      this.db.query(`INSERT INTO room_limits(room_name, connections, concurrent_requests, database_bytes, source_bytes, scratch_bytes,
+        egress_bytes_per_hour, clanker_output_tokens_per_hour, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(archive.name, archive.limits.connections, archive.limits.concurrentRequests, archive.limits.databaseBytes, archive.limits.sourceBytes,
+          archive.limits.scratchBytes, archive.limits.egressBytesPerHour, archive.limits.clankerOutputTokensPerHour, Date.now(), actor.id);
       this.db.query("UPDATE room_archives SET restored_at = ? WHERE id = ? AND restored_at IS NULL").run(Date.now(), archive.archiveId);
       this.audit(actor, archive.name, "room.restore", archive.archiveId);
     })();
@@ -631,7 +672,7 @@ export class AccountStore {
   }
 
   private archivedRoomFromRow(row: ArchivedRoomRow): ArchivedRoom {
-    return { archiveId: row.id, storageName: row.storage_name, archivedAt: row.archived_at, name: row.original_name, ownerId: row.owner_user_id, ownerHandle: row.owner_handle, visibility: row.visibility, contributions: contributionFromRow(row), clankerMode: row.clanker_mode, system: false };
+    return { archiveId: row.id, storageName: row.storage_name, archivedAt: row.archived_at, name: row.original_name, ownerId: row.owner_user_id, ownerHandle: row.owner_handle, visibility: row.visibility, contributions: contributionFromRow(row), clankerMode: row.clanker_mode, system: false, limits: parseArchivedLimits(row.limits_json) };
   }
 
   private archiveCreatedAt(archiveId: string): number {
@@ -665,6 +706,39 @@ export class AccountStore {
     this.db.query("UPDATE rooms SET visibility = ?, contribution_policy = ?, authenticated_contributions = ?, clanker_mode = ? WHERE name = ?").run(visibility, contribution.policy, contribution.authenticated, clankerMode, roomName);
     this.audit(actor, roomName, "room.policy.update", JSON.stringify({ visibility, contributions, clankerMode }));
     return this.roomPolicy(roomName)!;
+  }
+
+  roomLimits(roomName: string): RoomLimits {
+    const row = this.db.query(`SELECT connections, concurrent_requests, database_bytes, source_bytes, scratch_bytes,
+      egress_bytes_per_hour, clanker_output_tokens_per_hour FROM room_limits WHERE room_name = ?`).get(roomName) as {
+        connections: number; concurrent_requests: number; database_bytes: number; source_bytes: number;
+        scratch_bytes: number; egress_bytes_per_hour: number; clanker_output_tokens_per_hour: number;
+      } | null;
+    return row ? {
+      connections: row.connections,
+      concurrentRequests: row.concurrent_requests,
+      databaseBytes: row.database_bytes,
+      sourceBytes: row.source_bytes,
+      scratchBytes: row.scratch_bytes,
+      egressBytesPerHour: row.egress_bytes_per_hour,
+      clankerOutputTokensPerHour: row.clanker_output_tokens_per_hour,
+    } : { ...DEFAULT_ROOM_LIMITS };
+  }
+
+  updateRoomLimits(actor: Principal, roomName: string, limits: RoomLimits): RoomLimits {
+    if (!this.isSiteAdmin(actor)) throw new Error("room limits require a site admin");
+    if (!this.roomPolicy(roomName)) throw new Error("room not found");
+    validateRoomLimits(limits);
+    this.db.query(`INSERT INTO room_limits(room_name, connections, concurrent_requests, database_bytes, source_bytes, scratch_bytes,
+      egress_bytes_per_hour, clanker_output_tokens_per_hour, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(room_name) DO UPDATE SET connections=excluded.connections, concurrent_requests=excluded.concurrent_requests,
+      database_bytes=excluded.database_bytes, source_bytes=excluded.source_bytes, scratch_bytes=excluded.scratch_bytes,
+      egress_bytes_per_hour=excluded.egress_bytes_per_hour, clanker_output_tokens_per_hour=excluded.clanker_output_tokens_per_hour,
+      updated_at=excluded.updated_at, updated_by=excluded.updated_by`)
+      .run(roomName, limits.connections, limits.concurrentRequests, limits.databaseBytes, limits.sourceBytes, limits.scratchBytes,
+        limits.egressBytesPerHour, limits.clankerOutputTokensPerHour, Date.now(), actor.id);
+    this.audit(actor, roomName, "room.limits.update", JSON.stringify(limits));
+    return this.roomLimits(roomName);
   }
 
   enrollSshKey(userId: string, algorithm: string, keyBlob: Buffer, label = ""): string {
@@ -859,6 +933,7 @@ export class AccountStore {
 
   canContribute(principal: Principal, roomName: string): boolean {
     const policy = this.roomPolicy(roomName);
+    if (policy && this.isSiteAdmin(principal)) return true;
     if (policy?.contributions === "authenticated") return principal.authenticated && principal.kind === "user" && this.canView(principal, roomName);
     const role = this.roleFor(principal, roomName);
     if (!policy || !role || policy.contributions === "disabled") return false;
@@ -1053,6 +1128,31 @@ function contributionFromRow(row: Pick<RoomRow, "contribution_policy" | "authent
 
 function validateRoomName(value: string): void {
   if (!ROOM_NAME.test(value)) throw new Error("room names use 1-32 lowercase letters, numbers, and dashes");
+}
+
+function validateRoomLimits(limits: RoomLimits): void {
+  const mib = 1024 * 1024;
+  const bounded = (name: string, value: number, minimum: number, maximum: number) => {
+    if (!Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(`${name} limit must be between ${minimum} and ${maximum}`);
+  };
+  bounded("connection", limits.connections, 1, 4_096);
+  bounded("concurrent request", limits.concurrentRequests, 1, 256);
+  bounded("database", limits.databaseBytes, mib, 64 * mib);
+  bounded("source", limits.sourceBytes, mib, 64 * mib);
+  bounded("scratch", limits.scratchBytes, mib, 64 * mib);
+  bounded("hourly egress", limits.egressBytesPerHour, mib, 1024 * mib);
+  bounded("hourly clanker output", limits.clankerOutputTokensPerHour, 10_000, 8_000_000);
+}
+
+function parseArchivedLimits(value: string): RoomLimits {
+  try {
+    const parsed = JSON.parse(value) as Partial<RoomLimits>;
+    const limits = { ...DEFAULT_ROOM_LIMITS, ...parsed };
+    validateRoomLimits(limits);
+    return limits;
+  } catch {
+    return { ...DEFAULT_ROOM_LIMITS };
+  }
 }
 
 export function normalizeDomain(value: string): string {
