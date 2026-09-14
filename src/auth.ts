@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { isIP } from "node:net";
+import { domainToASCII } from "node:url";
 import { Database } from "bun:sqlite";
 
 export type PrincipalKind = "user" | "anonymous" | "clanker" | "system";
@@ -66,6 +68,19 @@ export interface MountCredential {
   readOnly: boolean;
 }
 
+export type RoomDomainStatus = "pending" | "active";
+
+export interface RoomDomain {
+  hostname: string;
+  roomName: string;
+  status: RoomDomainStatus;
+  challengeName: string;
+  challengeValue: string;
+  createdAt: number;
+  lastCheckedAt?: number;
+  verifiedAt?: number;
+}
+
 export interface SshPairing {
   code: string;
   expiresAt: number;
@@ -99,11 +114,13 @@ interface UserRow { id: string; handle: string; display_name: string; status: st
 interface RoomRow { name: string; owner_user_id: string; visibility: RoomVisibility; contribution_policy: Exclude<ContributionPolicy, "authenticated">; authenticated_contributions: number; clanker_mode: ClankerMode; system: number; created_at?: number }
 interface ArchivedRoomRow { id: string; original_name: string; owner_user_id: string; owner_handle: string; visibility: RoomVisibility; contribution_policy: Exclude<ContributionPolicy, "authenticated">; authenticated_contributions: number; clanker_mode: ClankerMode; room_created_at: number; storage_name: string; archived_at: number }
 interface InviteRow { id: string; room_name: string; role: RoomRole; expires_at: number; max_uses: number; uses: number; revoked_at?: number }
+interface RoomDomainRow { hostname: string; room_name: string; verification_token: string; status: RoomDomainStatus; created_at: number; last_checked_at?: number; verified_at?: number }
 
 const ROLE_WEIGHT: Record<RoomRole, number> = { viewer: 0, contributor: 1, admin: 2, owner: 3 };
 export const ACCOUNT_ROOM_LIMITS = { free: 5, pro: 25, siteAdmin: 100 } as const;
 export const ACCOUNT_ROOM_ARCHIVE_LIMITS = { free: 10, pro: 50, siteAdmin: 200 } as const;
 const ROOM_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const ROOM_DOMAIN_LIMIT = 5;
 
 export class AccountStore {
   private readonly db: Database;
@@ -258,6 +275,18 @@ export class AccountStore {
         last_used_at INTEGER,
         revoked_at INTEGER
       );
+      CREATE TABLE IF NOT EXISTS room_domains (
+        hostname TEXT PRIMARY KEY,
+        room_name TEXT NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
+        verification_token TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','active')),
+        created_by TEXT NOT NULL REFERENCES users(id),
+        created_at INTEGER NOT NULL,
+        last_checked_at INTEGER,
+        verified_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS room_domains_room ON room_domains(room_name);
+      CREATE INDEX IF NOT EXISTS room_domains_active ON room_domains(hostname, status);
       CREATE TABLE IF NOT EXISTS audit_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room_name TEXT,
@@ -437,6 +466,7 @@ export class AccountStore {
       this.db.query("UPDATE invites SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE clanker_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE mount_credentials SET room_name = ? WHERE room_name = ?").run(newName, oldName);
+      this.db.query("UPDATE room_domains SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE room_preferences SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("UPDATE audit_events SET room_name = ? WHERE room_name = ?").run(newName, oldName);
       this.db.query("DELETE FROM rooms WHERE name = ?").run(oldName);
@@ -516,6 +546,72 @@ export class AccountStore {
 
   canManageRoom(principal: Principal, roomName: string): boolean {
     return this.isSiteAdmin(principal) || this.roleFor(principal, roomName) === "owner";
+  }
+
+  addRoomDomain(actor: Principal, roomName: string, hostname: string, reservedSuffix?: string): RoomDomain {
+    this.assertDomainManager(actor, roomName);
+    const normalized = normalizeDomain(hostname);
+    const reserved = reservedSuffix ? normalizeDomain(reservedSuffix) : undefined;
+    if (reserved && (normalized === reserved || normalized.endsWith(`.${reserved}`))) throw new Error("platform hostnames are assigned through room names");
+    const existing = this.domainRow(normalized);
+    if (existing) {
+      if (existing.room_name !== roomName) throw new Error("domain is already registered to another room");
+      return roomDomainFromRow(existing);
+    }
+    const count = (this.db.query("SELECT COUNT(*) AS count FROM room_domains WHERE room_name = ?").get(roomName) as { count: number }).count;
+    if (count >= ROOM_DOMAIN_LIMIT) throw new Error(`a room can have at most ${ROOM_DOMAIN_LIMIT} custom domains`);
+    const token = randomBytes(24).toString("base64url");
+    this.db.query(`INSERT INTO room_domains(hostname, room_name, verification_token, status, created_by, created_at)
+      VALUES (?, ?, ?, 'pending', ?, ?)`).run(normalized, roomName, token, actor.id, Date.now());
+    this.audit(actor, roomName, "domain.add", normalized);
+    return this.listRoomDomains(actor, roomName).find((domain) => domain.hostname === normalized)!;
+  }
+
+  listRoomDomains(actor: Principal, roomName: string): RoomDomain[] {
+    this.assertDomainManager(actor, roomName);
+    return (this.db.query(`SELECT hostname, room_name, verification_token, status, created_at, last_checked_at, verified_at
+      FROM room_domains WHERE room_name = ? ORDER BY created_at, hostname`).all(roomName) as RoomDomainRow[]).map(roomDomainFromRow);
+  }
+
+  verifyRoomDomain(actor: Principal, roomName: string, hostname: string, txtValues: readonly string[]): RoomDomain {
+    this.assertDomainManager(actor, roomName);
+    const normalized = normalizeDomain(hostname);
+    const row = this.domainRow(normalized);
+    if (!row || row.room_name !== roomName) throw new Error("domain is not registered to this room");
+    const now = Date.now();
+    if (row.last_checked_at && now - row.last_checked_at < 15_000) throw new Error("wait a few seconds before checking DNS again");
+    this.db.query("UPDATE room_domains SET last_checked_at = ? WHERE hostname = ?").run(now, normalized);
+    const expected = `serverside-chat-verification=${row.verification_token}`;
+    if (!txtValues.includes(expected)) throw new Error(`TXT record not found yet at _serverside-chat.${normalized}`);
+    this.db.query("UPDATE room_domains SET status = 'active', verified_at = ? WHERE hostname = ?").run(now, normalized);
+    this.audit(actor, roomName, "domain.verify", normalized);
+    return roomDomainFromRow({ ...row, status: "active", last_checked_at: now, verified_at: now });
+  }
+
+  removeRoomDomain(actor: Principal, roomName: string, hostname: string): boolean {
+    this.assertDomainManager(actor, roomName);
+    const normalized = normalizeDomain(hostname);
+    const result = this.db.query("DELETE FROM room_domains WHERE hostname = ? AND room_name = ?").run(normalized, roomName);
+    if (result.changes) this.audit(actor, roomName, "domain.remove", normalized);
+    return Boolean(result.changes);
+  }
+
+  roomForCustomDomain(hostname: string): string | undefined {
+    let normalized: string;
+    try { normalized = normalizeDomain(hostname); } catch { return undefined; }
+    return (this.db.query("SELECT room_name FROM room_domains WHERE hostname = ? AND status = 'active'").get(normalized) as { room_name: string } | null)?.room_name;
+  }
+
+  private assertDomainManager(actor: Principal, roomName: string): void {
+    const room = this.roomPolicy(roomName);
+    if (!room) throw new Error("room not found");
+    if (room.system) throw new Error("system rooms cannot have custom domains");
+    if (!this.canManageRoom(actor, roomName)) throw new Error("custom domains require the room owner or a site admin");
+  }
+
+  private domainRow(hostname: string): RoomDomainRow | null {
+    return this.db.query(`SELECT hostname, room_name, verification_token, status, created_at, last_checked_at, verified_at
+      FROM room_domains WHERE hostname = ?`).get(hostname) as RoomDomainRow | null;
   }
 
   roomOrder(principal: Principal): string[] {
@@ -957,6 +1053,27 @@ function contributionFromRow(row: Pick<RoomRow, "contribution_policy" | "authent
 
 function validateRoomName(value: string): void {
   if (!ROOM_NAME.test(value)) throw new Error("room names use 1-32 lowercase letters, numbers, and dashes");
+}
+
+export function normalizeDomain(value: string): string {
+  const hostname = domainToASCII(value.trim().replace(/\.$/, "").toLowerCase());
+  if (!hostname || hostname.length > 253 || isIP(hostname) || !hostname.includes(".")) throw new Error("enter a public DNS hostname, such as example.com");
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) throw new Error("local hostnames cannot be registered");
+  if (!hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) throw new Error("domain name is invalid");
+  return hostname;
+}
+
+function roomDomainFromRow(row: RoomDomainRow): RoomDomain {
+  return {
+    hostname: row.hostname,
+    roomName: row.room_name,
+    status: row.status,
+    challengeName: `_serverside-chat.${row.hostname}`,
+    challengeValue: `serverside-chat-verification=${row.verification_token}`,
+    createdAt: row.created_at,
+    lastCheckedAt: row.last_checked_at ?? undefined,
+    verifiedAt: row.verified_at ?? undefined,
+  };
 }
 
 function tokenHash(value: string): string { return createHash("sha256").update(value).digest("hex"); }

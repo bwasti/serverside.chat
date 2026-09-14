@@ -63,6 +63,24 @@ test("the lobby is a reserved quota-free room that signed-in accounts can use", 
   accounts.close();
 });
 
+test("room owners prove custom-domain control before the host routes traffic", () => {
+  const { accounts, owner, member } = setup();
+  const pending = accounts.addRoomDomain(owner, "public-room", "CarsILike.Site.", "serverside.chat");
+  expect(pending).toMatchObject({ hostname: "carsilike.site", roomName: "public-room", status: "pending" });
+  expect(pending.challengeName).toBe("_serverside-chat.carsilike.site");
+  expect(pending.challengeValue).toStartWith("serverside-chat-verification=");
+  expect(accounts.roomForCustomDomain("carsilike.site")).toBeUndefined();
+
+  const active = accounts.verifyRoomDomain(owner, "public-room", "carsilike.site", [pending.challengeValue]);
+  expect(active.status).toBe("active");
+  expect(accounts.roomForCustomDomain("CARSILIKE.SITE.")).toBe("public-room");
+  expect(() => accounts.addRoomDomain(member, "public-room", "unauthorized.example", "serverside.chat")).toThrow("room owner");
+  expect(() => accounts.addRoomDomain(owner, "public-room", "public-room.serverside.chat", "serverside.chat")).toThrow("platform hostnames");
+  expect(accounts.removeRoomDomain(owner, "public-room", "carsilike.site")).toBe(true);
+  expect(accounts.roomForCustomDomain("carsilike.site")).toBeUndefined();
+  accounts.close();
+});
+
 test("SSH keys resolve to accounts while unknown keys stay anonymous", () => {
   const { accounts, owner } = setup();
   const enrolled = Buffer.from("enrolled-public-key-blob");

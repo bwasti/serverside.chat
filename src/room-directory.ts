@@ -40,12 +40,16 @@ export class RoomDirectory {
   chatUrl(name: string): string { return `${this.controlOrigin}/room/${encodeURIComponent(name)}`; }
 
   roomNameForSiteHostname(hostname: string): string | undefined {
-    if (!this.roomSiteDomain) return undefined;
-    const suffix = `.${this.roomSiteDomain}`;
     const normalized = hostname.toLowerCase().replace(/\.$/, "");
-    if (!normalized.endsWith(suffix)) return undefined;
-    const label = normalized.slice(0, -suffix.length);
-    return /^[a-z0-9][a-z0-9-]{0,31}$/.test(label) && this.room(label) && !this.room(label)!.policy.system ? label : undefined;
+    if (this.roomSiteDomain) {
+      const suffix = `.${this.roomSiteDomain}`;
+      if (normalized.endsWith(suffix)) {
+        const label = normalized.slice(0, -suffix.length);
+        if (/^[a-z0-9][a-z0-9-]{0,31}$/.test(label) && this.room(label) && !this.room(label)!.policy.system) return label;
+      }
+    }
+    const custom = this.accounts.roomForCustomDomain(normalized);
+    return custom && this.room(custom) && !this.room(custom)!.policy.system ? custom : undefined;
   }
 
   isControlHostname(hostname: string): boolean { return hostname.toLowerCase().replace(/\.$/, "") === this.controlHostname; }

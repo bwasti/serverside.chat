@@ -22,6 +22,7 @@ Useful commands:
 /invite              create a contributor invite link
 /mount               show local filesystem mounting instructions
 /shell               show SSH shell instructions
+/domain              register and verify a custom site domain
 /edit <path>         edit a room file
 /permissions         inspect the room policy
 /clanker <request>   explicitly ask the clanker (this is required to ship commits to main)
@@ -67,6 +68,7 @@ This section is the compact implementation map. Detailed contracts live in:
 - [Guest service API](docs/service-api.md)
 - [Capability shell, editor, SFTP, and WebDAV](docs/capability-shell.md)
 - [Accounts and room policies](docs/accounts.md)
+- [Custom domains](docs/custom-domains.md)
 - [Security model](docs/security-model.md)
 - [Rate limits](docs/rate-limits.md)
 - [Deployment procedure](docs/deployment.md)
@@ -76,6 +78,7 @@ This section is the compact implementation map. Detailed contracts live in:
 
 - A room owns one chat, one complete Git repository, one canonical service, room-scoped SQLite and scratch storage, telemetry, and temporary previews.
 - `https://<room>.serverside.chat` is the guest site. `https://serverside.chat/room/<room>` is its trusted development chat.
+- Owners can bind up to five custom hostnames with `/domain add <hostname>` and a DNS TXT ownership challenge; only verified bindings are eligible for routing and automatic HTTPS.
 - Every path below a room origin belongs to its generic guest handler. The host reserves only `__ref` for deployment selection.
 - Guest `worker.js` runs in a fresh QuickJS WebAssembly isolate per request. It never binds a socket or receives Node.js, Bun, a shell, environment variables, host paths, raw SQLite paths, or arbitrary network access.
 - The supported guest surface is bounded `request`, `Response`, `env.assets`, `env.db`, `env.fs`, `env.log`, and `env.realtime`.

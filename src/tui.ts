@@ -1,9 +1,10 @@
-import type { AccountStore, ClankerMode, ContributionPolicy, MountCredential, Principal, RoomRole, RoomVisibility } from "./auth";
+import type { AccountStore, ClankerMode, ContributionPolicy, MountCredential, Principal, RoomDomain, RoomRole, RoomVisibility } from "./auth";
 import { ROOM_LIMITS, type Message, type MessageKind, type Room } from "./room";
 import type { RoomDirectory, RoomDirectoryEvent } from "./room-directory";
 import { parseArguments, RoomCapabilitySession } from "./room-shell";
 import type { RoomEditor } from "./editor";
 import { AdaptiveRateLimiter, RATE_LIMITS, retrySeconds } from "./rate-limit";
+import { readDomainChallenge } from "./custom-domain";
 
 export interface TuiStream {
   readonly destroyed: boolean;
@@ -53,6 +54,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "/invite", usage: "/invite [role]", description: "create a contributor invite link", requiresArgument: false },
   { name: "/mount", usage: "/mount [revoke]", description: "mount or revoke room files", requiresArgument: false },
   { name: "/shell", usage: "/shell", description: "show SSH access for the room shell", requiresArgument: false },
+  { name: "/domain", usage: "/domain [add|verify|remove] <host>", description: "manage a custom site domain", requiresArgument: false },
   { name: "/edit", usage: "/edit <path>", description: "edit a room file", requiresArgument: true },
   { name: "/permissions", usage: "/permissions [field value]", description: "inspect or change room policy", requiresArgument: false },
   { name: "/room", usage: "/room <action> <name>", description: "create, rename, archive, or restore a room", requiresArgument: true },
@@ -113,6 +115,7 @@ export class TuiSession {
   private editor?: RoomEditor;
   private mountPanel?: { credential: MountCredential; scroll: number };
   private shellPanel = false;
+  private domainPanel?: { title: string; rows: string[]; scroll: number };
   private selectedMessageId?: number;
   private replyToMessageId?: number;
   private deleteConfirmationId?: number;
@@ -195,6 +198,10 @@ export class TuiSession {
     }
     if (this.shellPanel) {
       this.handleShellPanelData(data);
+      return;
+    }
+    if (this.domainPanel) {
+      this.handleDomainPanelData(data);
       return;
     }
     if (this.editor) {
@@ -877,8 +884,29 @@ export class TuiSession {
     if (!this.accounts) return false;
     const trimmed = line.trim();
     const [command, field, value, ...extra] = trimmed.split(/\s+/);
-    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account" && command !== "/edit" && command !== "/mount" && command !== "/shell") return false;
+    if (command !== "/permissions" && command !== "/invite" && command !== "/redeem" && command !== "/room" && command !== "/account" && command !== "/edit" && command !== "/mount" && command !== "/shell" && command !== "/domain") return false;
     try {
+      if (command === "/domain") {
+        if (!this.directory) throw new Error("domain management is unavailable");
+        if (!field) {
+          if (value || extra.length) throw new Error("usage: /domain [add|verify|remove] <hostname>");
+          this.openDomainPanel(this.accounts.listRoomDomains(this.principal, this.room.name));
+          return true;
+        }
+        if (!value || extra.length || !["add", "verify", "remove"].includes(field)) throw new Error("usage: /domain add|verify|remove <hostname>");
+        if (field === "add") {
+          const domain = this.accounts.addRoomDomain(this.principal, this.room.name, value, this.directory.roomSiteDomain);
+          this.openDomainPanel([domain]);
+        } else if (field === "remove") {
+          this.localNotice = this.accounts.removeRoomDomain(this.principal, this.room.name, value) ? `removed ${value}` : "domain was not registered to this room";
+        } else {
+          const domain = this.accounts.listRoomDomains(this.principal, this.room.name).find((candidate) => candidate.hostname === value.toLowerCase().replace(/\.$/, ""));
+          if (!domain) throw new Error("domain is not registered to this room");
+          this.localNotice = `checking DNS for ${domain.hostname}…`;
+          void this.verifyDomain(domain);
+        }
+        return true;
+      }
       if (command === "/shell") {
         if (field) throw new Error("usage: /shell");
         this.shellPanel = true;
@@ -1363,6 +1391,90 @@ export class TuiSession {
     this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
   }
 
+  private async verifyDomain(domain: RoomDomain): Promise<void> {
+    try {
+      const values = await readDomainChallenge(domain);
+      if (this.closed) return;
+      const verified = this.accounts!.verifyRoomDomain(this.principal, this.room.name, domain.hostname, values);
+      this.openDomainPanel([verified]);
+    } catch (error) {
+      if (!this.closed) this.localNotice = error instanceof Error ? error.message : "domain verification failed";
+    }
+    if (!this.closed) this.render();
+  }
+
+  private openDomainPanel(domains: RoomDomain[]): void {
+    const canonical = new URL(this.room.pageUrl).hostname;
+    const rows = domains.length ? domains.flatMap((domain, index) => [
+      ...(index ? [""] : []),
+      `  ${domain.hostname} · ${domain.status}`,
+      ...(domain.status === "active" ? [
+        `  https://${domain.hostname}`,
+        `  routes to #${domain.roomName}`,
+      ] : [
+        "",
+        "  1. Prove ownership with a TXT record",
+        `     name:  ${domain.challengeName}`,
+        `     value: ${domain.challengeValue}`,
+        "",
+        "  2. Route traffic to the room site",
+        `     CNAME: ${domain.hostname} → ${canonical}`,
+        `     At an apex, use your DNS provider's ALIAS/ANAME flattening instead.`,
+        "",
+        `  3. Run /domain verify ${domain.hostname}`,
+      ]),
+    ]) : [
+      "",
+      "  No custom domains are registered for this room.",
+      "",
+      "  Start with: /domain add example.com",
+    ];
+    this.domainPanel = { title: `DOMAIN  #${this.room.name}`, rows, scroll: 0 };
+    this.localNotice = "";
+    this.lastFrame = "";
+    this.room.setTyping(this.username, false);
+  }
+
+  private handleDomainPanelData(data: Buffer): void {
+    const value = data.toString("utf8");
+    if (value.includes("\x03") || value.includes("\x04")) { this.stream.end(); return; }
+    if (value.includes("\r") || value.includes("\n") || value === "q" || value === "Q" || value === "\x1b") {
+      this.domainPanel = undefined;
+      this.lastFrame = "";
+      this.render();
+      return;
+    }
+    let movement = 0;
+    for (const match of value.matchAll(/\x1b\[([AB56])~?/g)) {
+      if (match[1] === "A") movement--;
+      else if (match[1] === "B") movement++;
+      else if (match[1] === "5") movement -= Math.max(1, this.height - 4);
+      else if (match[1] === "6") movement += Math.max(1, this.height - 4);
+    }
+    if (movement && this.domainPanel) {
+      this.domainPanel.scroll = Math.max(0, this.domainPanel.scroll + movement);
+      this.render();
+    }
+  }
+
+  private renderDomainPanel(): void {
+    if (!this.domainPanel) return;
+    const width = this.width;
+    const bodyHeight = Math.max(1, this.height - 2);
+    const rows = this.domainPanel.rows.flatMap((line) => line ? wrap(line, Math.max(12, width - 2)) : [""]);
+    const maximumScroll = Math.max(0, rows.length - bodyHeight);
+    this.domainPanel.scroll = Math.min(this.domainPanel.scroll, maximumScroll);
+    const visible = rows.slice(this.domainPanel.scroll, this.domainPanel.scroll + bodyHeight);
+    while (visible.length < bodyHeight) visible.push("");
+    const header = `${HEADER}${pad(truncate(`  ${this.domainPanel.title}`, width), width)}${RESET}`;
+    const body = visible.map((line) => `${line.includes("https://") || line.includes("CNAME:") ? CYAN : CHAT}${pad(truncate(line, width), width)}${RESET}`);
+    const footer = `${COMPOSER}${pad(truncate(maximumScroll ? "  ↑↓ scroll   ENTER/Q close" : "  ENTER/Q close", width), width)}${RESET}`;
+    const frame = `${[header, ...body, footer].join("\r\n")}${ESC}?25l`;
+    if (frame === this.lastFrame) return;
+    this.lastFrame = frame;
+    this.write(`${ESC}?25l${ESC}H${ESC}2J${frame}`);
+  }
+
   private mountInstructionRows(width: number): string[] {
     if (!this.mountPanel) return [];
     const credential = this.mountPanel.credential;
@@ -1424,6 +1536,10 @@ export class TuiSession {
     }
     if (this.shellPanel) {
       this.renderShellPanel();
+      return;
+    }
+    if (this.domainPanel) {
+      this.renderDomainPanel();
       return;
     }
     if (this.renderTimer) {

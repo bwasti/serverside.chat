@@ -82,6 +82,14 @@ test("normal rooms use isolated site origins while system rooms stay on the cont
   expect(directory.roomNameForSiteHostname("HELLO-WORLD.serverside.chat.")).toBe("hello-world");
   expect(directory.roomNameForSiteHostname("missing.serverside.chat")).toBeUndefined();
   expect(directory.roomNameForSiteHostname("lobby.serverside.chat")).toBeUndefined();
+  const custom = accounts.addRoomDomain(owner, "hello-world", "example.test", "serverside.chat");
+  expect(directory.roomNameForSiteHostname("example.test")).toBeUndefined();
+  accounts.verifyRoomDomain(owner, "hello-world", "example.test", [custom.challengeValue]);
+  expect(directory.roomNameForSiteHostname("EXAMPLE.TEST.")).toBe("hello-world");
+  directory.renameRoom(owner, "hello-world", "renamed");
+  expect(directory.roomNameForSiteHostname("example.test")).toBe("renamed");
+  directory.deleteRoom(owner, "renamed");
+  expect(directory.roomNameForSiteHostname("example.test")).toBeUndefined();
   accounts.close();
 });
 
