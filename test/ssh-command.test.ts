@@ -5,6 +5,8 @@ test("SSH entry commands parse only bounded room and invite targets", () => {
   expect(parseSshEntryCommand("account")).toEqual({ kind: "account" });
   expect(parseSshEntryCommand("room mine")).toEqual({ kind: "room", roomName: "mine" });
   expect(parseSshEntryCommand("shell mine")).toEqual({ kind: "shell", roomName: "mine" });
+  expect(parseSshEntryCommand("api mine status")).toEqual({ kind: "api", roomName: "mine", capability: "status" });
+  expect(parseSshEntryCommand("api mine commit Describe the change")).toEqual({ kind: "api", roomName: "mine", capability: "commit Describe the change" });
   expect(parseSshEntryCommand("invite abcdefghijklmnopqrstuvwx")).toEqual({ kind: "invite", token: "abcdefghijklmnopqrstuvwx" });
   expect(() => parseSshEntryCommand("room ../../etc")).toThrow("usage");
   expect(() => parseSshEntryCommand("invite short")).toThrow("usage");
@@ -12,4 +14,6 @@ test("SSH entry commands parse only bounded room and invite targets", () => {
   expect(() => parseSshEntryCommand("account extra")).toThrow("usage");
   expect(() => parseSshEntryCommand("sh -c whoami")).toThrow("usage");
   expect(() => parseSshEntryCommand("shell ../../etc")).toThrow("usage");
+  expect(() => parseSshEntryCommand("api ../../etc status")).toThrow("usage");
+  expect(() => parseSshEntryCommand(`api mine status\nroom mine`)).toThrow("usage");
 });

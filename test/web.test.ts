@@ -5,6 +5,7 @@ import type { Principal } from "../src/auth";
 test("browser terminal is self-hosted and connects to the constrained TUI socket", async () => {
   const page = browserTuiHtml(["google", "github"]);
   expect(page).toContain('<link rel="stylesheet" href="/_terminal/xterm.css">');
+  expect(page).toContain('<link rel="describedby" type="text/markdown" href="/llms.txt">');
   expect(page).toContain('<script src="/_terminal/xterm.js"></script>');
   expect(page).toContain('<script src="/_terminal/addon-fit.js"></script>');
   expect(page).toContain("attachCustomKeyEventHandler");

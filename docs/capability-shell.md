@@ -1,5 +1,21 @@
 # Room capability shell and filesystem
 
+## External agents and non-interactive access
+
+Every development-chat page advertises a room-specific Markdown guide with HTTP `Link` metadata and HTML `describedby`/`alternate` links. The same guide is available directly at `/room/<name>/llms.txt` or `/room/<name>.md`; `/room/<name>/api.json` is the structured command manifest. The root `/llms.txt`, `/llms-full.txt`, and `/docs/` routes provide platform-wide discovery and hosted Markdown documentation.
+
+A linked SSH key authenticates a non-interactive capability command without creating a host shell:
+
+```sh
+ssh -p 2222 serverside.chat "api <room> status"
+ssh -p 2222 serverside.chat "api <room> diff"
+ssh -p 2222 serverside.chat "api <room> cat worker.js"
+ssh -p 2222 serverside.chat "api <room> commit Describe the change"
+ssh -p 2222 serverside.chat "api <room> preview Describe the preview"
+```
+
+The response is one JSON object with `ok`, the room name, and bounded output; failures return `ok: false` and a nonzero SSH exit status. The API delegates to the same room-scoped capability implementation and permission checks as the TUI shell. Commands that require an interactive editor or multiline input are rejected; agents transfer files with SFTP, then use `status`, `diff`, `commit`, and `preview`. Rate limiting is shared with other SSH room operations.
+
 The room shell is not an operating-system shell. It is an SSH terminal adapter over host-owned filesystem and version-control capabilities. User text is parsed as data and is never passed to `/bin/sh`, `eval`, `spawn`, or the Git command line. The host selects the authenticated principal and room before constructing a capability session.
 
 ```sh

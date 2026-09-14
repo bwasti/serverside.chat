@@ -181,9 +181,36 @@ const server = new Server({ hostKeys: [readFileSync(keyPath)] }, (client: Connec
         try {
           const command = parseSshEntryCommand(info.command);
           if (command.kind === "account") {
-            const link = accounts.createAccountLink(principal!);
-            stream.end(`${new URL(webBaseUrl).origin}/?account=${encodeURIComponent(link.code)}\r\n`);
+            const origin = new URL(webBaseUrl).origin;
+            if (principal!.authenticated) {
+              const link = accounts.createAccountLink(principal!);
+              stream.end(`${origin}/?account=${encodeURIComponent(link.code)}\r\n`);
+            } else if (principal!.sshAlgorithm && principal!.sshKeyBlob) {
+              const pairing = accounts.createSshPairing(principal!, principal!.keyFingerprint ?? "", 10 * 60 * 1_000);
+              stream.end(`${origin}/?ssh=${encodeURIComponent(pairing.code)}\r\n`);
+            } else stream.end("SSH key pairing is unavailable for this session.\r\n");
           } else if (command.kind === "room") launch(stream, command.roomName, true);
+          else if (command.kind === "api") {
+            if (!principal!.authenticated || principal!.kind !== "user") { stream.exit(1); stream.end(JSON.stringify({ ok: false, error: "sign in and link this SSH key before using the room API" }) + "\n"); return; }
+            const operationLimit = rateLimiter.consume(`room-api:${principal!.id}`, RATE_LIMITS.sshOperation);
+            if (!operationLimit.allowed) { stream.exit(1); stream.end(JSON.stringify({ ok: false, error: `rate limited; retry in ${Math.max(1, Math.ceil(operationLimit.retryAfterMs / 1_000))}s` }) + "\n"); return; }
+            directory.prepareAccount(principal!);
+            const room = directory.room(command.roomName);
+            const workspace = directory.workspaces.get(command.roomName);
+            if (!room || !workspace || !accounts.canView(principal!, command.roomName)) { stream.exit(1); stream.end(JSON.stringify({ ok: false, error: "room not found or not visible" }) + "\n"); return; }
+            try {
+              const result = new RoomCapabilitySession(principal!, room, workspace, accounts).execute(command.capability);
+              if (result.editor || result.write || result.clear || result.close) throw new Error("interactive commands are unavailable through the API; use SFTP for file transfer or the room shell for editing");
+              const output = result.output ?? "";
+              if (Buffer.byteLength(output) > 256 * 1_024) throw new Error("command output exceeds 256 KiB; use a narrower command or SFTP");
+              accounts.audit(principal!, command.roomName, "api.execute", command.capability.split(/\s+/, 1)[0]);
+              stream.exit(0);
+              stream.end(JSON.stringify({ ok: true, room: room.name, output }) + "\n");
+            } catch (error) {
+              stream.exit(1);
+              stream.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "room API command failed" }) + "\n");
+            }
+          }
           else if (command.kind === "shell") {
             if (!hasPty) { stream.end("This command needs a terminal. Add -t to the ssh command.\r\n"); return; }
             if (!principal!.authenticated || principal!.kind !== "user") { stream.end("Sign in through the chat TUI and link this SSH key before opening a room shell.\r\n"); return; }

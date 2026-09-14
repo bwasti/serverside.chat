@@ -10,6 +10,7 @@ import type { RoomDirectory } from "./room-directory";
 import { handleWebDavRequest } from "./webdav";
 import { AdaptiveRateLimiter, RATE_LIMITS, retrySeconds } from "./rate-limit";
 import { readBoundedText, RequestBodyLimitError } from "./bounded-body";
+import { documentationIndex, hostedDocument, llmsFullText, llmsText, roomAgentGuide, roomApiManifest } from "./agent-docs";
 
 interface ServiceSocketData { kind: "service"; room: string; principal: Principal; connectionId: string; windowStarted: number; messages: number }
 interface TuiSocketData { kind: "tui"; principal: Principal; initialRoom?: string; cols: number; rows: number; windowStarted: number; messages: number }
@@ -63,6 +64,26 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       const httpLimit = rateLimiter.consume(`http:${requestPrincipal.authenticated ? requestPrincipal.id : clientAddress}`, httpPolicy);
       if (!httpLimit.allowed) return rateLimitedResponse(httpLimit.retryAfterMs);
       if (controlRequest) {
+      if (request.method === "GET") {
+        if (url.pathname === "/llms.txt") return markdownResponse(llmsText(directory.controlOrigin));
+        if (url.pathname === "/llms-full.txt") return markdownResponse(llmsFullText(directory.controlOrigin));
+        if (url.pathname === "/docs" || url.pathname === "/docs/") return markdownResponse(documentationIndex(directory.controlOrigin));
+        const documentRoute = url.pathname.match(/^\/docs\/([a-z0-9-]+\.md)$/);
+        if (documentRoute) {
+          const document = hostedDocument(documentRoute[1]!);
+          return document === undefined ? new Response("document not found\n", { status: 404 }) : markdownResponse(document);
+        }
+        const roomGuideRoute = url.pathname.match(/^\/room\/([a-z0-9][a-z0-9-]{0,31})(?:\/llms\.txt|\.md)$/);
+        const roomApiRoute = url.pathname.match(/^\/room\/([a-z0-9][a-z0-9-]{0,31})\/api\.json$/);
+        const documentedRoomName = roomGuideRoute?.[1] ?? roomApiRoute?.[1];
+        if (documentedRoomName) {
+          const documentedRoom = directory.room(documentedRoomName);
+          if (!documentedRoom || (accounts && !accounts.canView(requestPrincipal, documentedRoomName))) return new Response("room not found\n", { status: 404 });
+          return roomApiRoute
+            ? Response.json(roomApiManifest(documentedRoom, directory.controlOrigin), { headers: { "cache-control": "no-store" } })
+            : markdownResponse(roomAgentGuide(documentedRoom, directory.controlOrigin), "no-store");
+        }
+      }
       const oauthRoute = url.pathname.match(/^\/_auth\/(google|github)\/(start|callback)$/);
       if (oauthRoute && oauth) {
         const provider = oauthRoute[1] as OAuthProvider;
@@ -155,7 +176,11 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       const inviteRoute = url.pathname.match(/^\/invite\/([a-zA-Z0-9_-]{20,64})\/?$/);
       if (request.method === "GET" && (url.pathname === "/" || roomRoute || inviteRoute)) {
         if (roomRoute && (!directory.room(roomRoute[1]!) || (accounts && !accounts.canView(requestPrincipal, roomRoute[1]!)))) return new Response("room not found\n", { status: 404 });
-        return new Response(browserTuiHtml(oauth?.available() ?? [], developmentAuth), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        if (roomRoute && request.headers.get("accept")?.includes("text/markdown")) return markdownResponse(roomAgentGuide(directory.room(roomRoute[1]!)!, directory.controlOrigin), "no-store");
+        const roomDocs = roomRoute ? `/room/${roomRoute[1]}/llms.txt` : "/llms.txt";
+        const headers = new Headers({ "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        headers.set("link", `<${roomDocs}>; rel="describedby"; type="text/markdown"${roomRoute ? `, </room/${roomRoute[1]}.md>; rel="alternate"; type="text/markdown"` : ""}`);
+        return new Response(browserTuiHtml(oauth?.available() ?? [], developmentAuth, roomDocs), { headers });
       }
       const asset = terminalAssets.get(url.pathname);
       if (request.method === "GET" && asset) return new Response(asset.file, { headers: { "content-type": asset.type, "cache-control": "public, max-age=86400" } });
@@ -473,7 +498,11 @@ function boundedNumber(value: unknown, fallback: number, minimum: number, maximu
   return typeof value === "number" && Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, Math.floor(value))) : fallback;
 }
 
-export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth = true): string {
+function markdownResponse(body: string, cacheControl = "public, max-age=300"): Response {
+  return new Response(body, { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": cacheControl, "x-content-type-options": "nosniff" } });
+}
+
+export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth = true, agentGuide = "/llms.txt"): string {
   const providerButtons = providers.map((provider) => `<button class="provider" type="button" data-provider="${provider}">continue with ${provider === "github" ? "GitHub" : "Google"}</button>`).join("");
   const developmentForm = developmentAuth ? `<p id="devwarning">Temporary development access — choose a handle below until Google and GitHub are configured.</p><form id="accountform"><label>handle<input id="handle" name="handle" maxlength="32" pattern="[A-Za-z0-9_.-]+" autocomplete="username" required autofocus></label><button class="primary" type="submit">create temporary account</button></form>` : `<form id="accountform" hidden></form>`;
   return `<!doctype html>
@@ -482,6 +511,8 @@ export function browserTuiHtml(providers: OAuthProvider[] = [], developmentAuth 
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>serverside.chat</title>
+  <link rel="describedby" type="text/markdown" href="${agentGuide}">
+  <link rel="alternate" type="text/markdown" href="${agentGuide}">
   <link rel="stylesheet" href="/_terminal/xterm.css">
   <style>
     html{width:100%;height:100%;margin:0;background:#3f3f3f;overflow:hidden}
