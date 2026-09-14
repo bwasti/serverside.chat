@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { browserTuiHtml, guestRequestHeaders, secureGuestResponseHeaders, trustedClientAddress } from "../src/web";
+import { browserTuiHtml, guestRequestHeaders, permittedSocketOrigin, realtimeClient, secureGuestResponseHeaders, trustedClientAddress } from "../src/web";
+import type { Principal } from "../src/auth";
 
 test("browser terminal is self-hosted and connects to the constrained TUI socket", async () => {
   const page = browserTuiHtml(["google", "github"]);
@@ -70,15 +71,32 @@ test("untrusted services receive only origin-appropriate credentials", () => {
   expect(guestRequestHeaders(source, false)).toEqual({ "x-client": "safe" });
   expect(guestRequestHeaders(source, true)).toEqual({ authorization: "Bearer room-token", cookie: "room_session=abc", "x-client": "safe" });
 
-  const legacy = { "set-cookie": "central=stolen", "content-type": "text/plain" };
+  const legacy: Record<string, string> = { "set-cookie": "central=stolen", "content-type": "text/plain" };
   secureGuestResponseHeaders(legacy, false);
   expect(legacy["set-cookie"]).toBeUndefined();
+  expect(legacy["x-frame-options"]).toBe("DENY");
+  expect(legacy["permissions-policy"]).toContain("camera=()");
   const isolated = { "set-cookie": "room=ok; Path=/", "content-type": "text/plain" };
   secureGuestResponseHeaders(isolated, true);
   expect(isolated["set-cookie"]).toBe("room=ok; Path=/");
   const parentDomain = { "set-cookie": "room=bad; Domain=serverside.chat" };
   secureGuestResponseHeaders(parentDomain, true);
   expect(parentDomain["set-cookie"]).toBeUndefined();
+});
+
+test("realtime clients receive opaque host-derived identities", () => {
+  const anonymous: Principal = { id: "anonymous:web:203.0.113.4", kind: "anonymous", handle: "web-deadbe", displayName: "Anonymous", authenticated: false };
+  const account: Principal = { id: "user:secret-database-id", kind: "user", handle: "alice", displayName: "Alice", authenticated: true };
+  expect(realtimeClient(anonymous)).toEqual({ id: expect.any(String), authenticated: false });
+  expect(JSON.stringify(realtimeClient(anonymous))).not.toContain("203.0.113.4");
+  expect(realtimeClient(account)).toEqual({ id: expect.any(String), authenticated: true, handle: "alice" });
+  expect(JSON.stringify(realtimeClient(account))).not.toContain("secret-database-id");
+});
+
+test("browser websocket origins must match the public host across TLS termination", () => {
+  expect(permittedSocketOrigin(new Request("http://pentest.serverside.chat/.well-known/realtime", { headers: { origin: "https://pentest.serverside.chat" } }))).toBe(true);
+  expect(permittedSocketOrigin(new Request("http://pentest.serverside.chat/.well-known/realtime", { headers: { origin: "https://evil.example" } }))).toBe(false);
+  expect(permittedSocketOrigin(new Request("http://pentest.serverside.chat/.well-known/realtime"))).toBe(true);
 });
 
 test("forwarded client identity is trusted only from the local proxy", () => {

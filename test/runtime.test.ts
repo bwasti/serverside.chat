@@ -31,10 +31,18 @@ test("default static services return 404 for unknown and protected asset paths",
   const missing = await runtime.fetch(new Request("http://service/actuator/configprops"), "stable", "/actuator/configprops");
   const protectedPath = await runtime.fetch(new Request("http://service/.git/config"), "stable", "/.git/config");
   const malformedPath = await runtime.fetch(new Request("http://service/"), "stable", "/%E0%A4%A");
+  const source = await runtime.fetch(new Request("http://service/worker.js"), "stable", "/worker.js");
+  const readme = await runtime.fetch(new Request("http://service/README.md"), "stable", "/README.md");
+  const postAsset = await runtime.fetch(new Request("http://service/", { method: "POST" }), "stable", "/");
+  const invalidDeployment = await runtime.fetch(new Request("http://service/"), "deadbee", "/");
   expect(root.status).toBe(200);
   expect(missing).toMatchObject({ status: 404, body: "Not found\n" });
   expect(protectedPath).toMatchObject({ status: 404, body: "Not found\n" });
   expect(malformedPath).toMatchObject({ status: 404, body: "Not found\n" });
+  expect(source.status).toBe(404);
+  expect(readme.status).toBe(404);
+  expect(postAsset).toMatchObject({ status: 405, headers: expect.objectContaining({ allow: "GET, HEAD" }) });
+  expect(invalidDeployment).toMatchObject({ status: 404, body: "Deployment not found\n" });
 });
 
 test("database capability rejects cross-tenant and administrative SQL", async () => {
@@ -46,6 +54,15 @@ test("database capability rejects cross-tenant and administrative SQL", async ()
   await expect(runtime.fetch(new Request("http://service/mine"), "head", "/")).rejects.toThrow("SQL operation is not allowed");
 }, 20_000);
 
+test("database capability rejects recursive query amplification", async () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-sql-dos-"));
+  const workspace = new RoomWorkspace(data, "mine");
+  workspace.writeFile("worker.js", `export default { fetch(_request, env) { env.db.query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n) SELECT x FROM n"); return new Response("bad"); } };`);
+  workspace.commit("test recursive sql");
+  const runtime = new ServiceRuntime(workspace, new Room("mine"), data);
+  await expect(runtime.fetch(new Request("http://service/mine"), "head", "/")).rejects.toThrow("recursive SQL is not allowed");
+}, 20_000);
+
 test("guest realtime capability publishes a bounded room event", async () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-"));
   const workspace = new RoomWorkspace(data, "mine");
@@ -55,6 +72,17 @@ test("guest realtime capability publishes a bounded room event", async () => {
   const published: string[] = [];
   await runtime.fetch(new Request("http://service/mine"), "head", "/", (payload) => published.push(payload));
   expect(published.map((value) => JSON.parse(value))).toEqual([{ type: "changed", data: { id: 7 } }]);
+});
+
+test("guest realtime fanout is bounded per request", async () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-runtime-realtime-limit-"));
+  const workspace = new RoomWorkspace(data, "mine");
+  workspace.writeFile("worker.js", `export default { fetch(_request, env) { for(let i=0;i<9;i++) env.realtime.publish("changed", { i }); return new Response("bad"); } };`);
+  workspace.commit("test realtime limit");
+  const runtime = new ServiceRuntime(workspace, new Room("mine"), data);
+  const published: string[] = [];
+  await expect(runtime.fetch(new Request("http://service/mine"), "head", "/", (payload) => published.push(payload))).rejects.toThrow("realtime publish limit exceeded");
+  expect(published).toHaveLength(8);
 });
 
 test("guest scratch filesystem persists across isolates and rejects traversal", async () => {

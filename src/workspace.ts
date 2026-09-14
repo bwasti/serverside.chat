@@ -432,7 +432,7 @@ export class RoomWorkspace {
     }
     if (this.entryCount() + missing > MAX_WORKSPACE_ENTRIES) throw new Error("repository exceeds 1,000 entry limit");
   }
-  private resolveDeploymentRef(ref?: string): string | undefined {
+  resolveDeploymentRef(ref?: string): string | undefined {
     if (!ref || ref === "stable") return this.activeCommit;
     if (ref === "head") return this.head();
     const preview = this.previews.get(ref);

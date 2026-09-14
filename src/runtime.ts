@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import { getQuickJS } from "quickjs-emscripten";
 import type { Room } from "./room";
 import type { RoomWorkspace } from "./workspace";
+import { readBoundedText } from "./bounded-body";
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE = 512 * 1024;
@@ -12,6 +13,9 @@ const MAX_ROWS = 200;
 const MAX_PARAMS = 100;
 const MAX_LOGS = 20;
 const MAX_LOG_BYTES = 4 * 1024;
+const MAX_REALTIME_EVENTS = 8;
+const MAX_REALTIME_EVENT_BYTES = 16 * 1024;
+const MAX_REALTIME_BYTES = 32 * 1024;
 const MAX_FS = 5 * 1024 * 1024;
 const MAX_FS_FILE = 512 * 1024;
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".svg": "image/svg+xml" };
@@ -32,22 +36,30 @@ export class ServiceRuntime {
   }
 
   async fetch(request: Request, deploymentRef: string | undefined, servicePath: string, publish?: (payload: string) => void, requestHeaders?: Record<string, string>): Promise<GuestResponse> {
+    if (!this.workspace.resolveDeploymentRef(deploymentRef)) return { status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: "Deployment not found\n" };
     const body = await boundedBody(request);
     const logs: string[] = [];
+    let realtimeEvents = 0;
+    let realtimeBytes = 0;
     const db = new Database(this.databasePath, { create: true, strict: true });
     db.exec("PRAGMA page_size=4096; PRAGMA max_page_count=1280; PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=1000; PRAGMA foreign_keys=ON");
     const hostCall = (raw: string): string => {
-      const call = JSON.parse(raw) as { op?: string; action?: string; sql?: string; params?: unknown[]; level?: string; event?: unknown; path?: string; type?: string; data?: unknown; content?: string };
+      const call = JSON.parse(raw) as { op?: string; action?: string; sql?: string; params?: unknown[]; level?: string; event?: unknown; path?: string; method?: string; type?: string; data?: unknown; content?: string };
       if (call.op === "db") return JSON.stringify(this.databaseCall(db, String(call.sql ?? ""), call.params ?? []));
-      if (call.op === "asset") return JSON.stringify(this.assetCall(String(call.path ?? "/"), deploymentRef));
+      if (call.op === "asset") return JSON.stringify(this.assetCall(String(call.path ?? "/"), deploymentRef, String(call.method ?? "GET")));
       if (call.op === "fs") return JSON.stringify(this.filesystemCall(String(call.action ?? ""), String(call.path ?? ""), call.content));
       if (call.op === "log") {
         if (logs.length < MAX_LOGS) logs.push(`${String(call.level ?? "info").slice(0, 8)} ${boundedJson(call.event, MAX_LOG_BYTES)}`);
         return "null";
       }
       if (call.op === "realtime") {
+        if (realtimeEvents >= MAX_REALTIME_EVENTS) throw new Error("realtime publish limit exceeded");
         const type = String(call.type ?? "message").replace(/[^a-zA-Z0-9_.:-]/g, "").slice(0, 64) || "message";
-        const payload = boundedJson({ type, data: call.data }, 16 * 1024);
+        const payload = JSON.stringify({ type, data: call.data }) ?? "null";
+        const bytes = Buffer.byteLength(payload);
+        if (bytes > MAX_REALTIME_EVENT_BYTES || realtimeBytes + bytes > MAX_REALTIME_BYTES) throw new Error("realtime publish byte limit exceeded");
+        realtimeEvents++;
+        realtimeBytes += bytes;
         publish?.(payload);
         return JSON.stringify({ delivered: Boolean(publish) });
       }
@@ -101,7 +113,11 @@ export class ServiceRuntime {
     const kind = sql.trim().split(/\s+/, 1)[0]!.toUpperCase();
     const statement = db.query(sql);
     if (kind === "SELECT" || kind === "WITH") {
-      const rows = statement.all(...params as never[]).slice(0, MAX_ROWS);
+      const rows: unknown[] = [];
+      for (const row of statement.iterate(...params as never[])) {
+        rows.push(row);
+        if (rows.length >= MAX_ROWS) break;
+      }
       if (Buffer.byteLength(JSON.stringify(rows)) > 256 * 1024) throw new Error("database result exceeds 256 KiB limit");
       return { rows };
     }
@@ -110,10 +126,13 @@ export class ServiceRuntime {
     return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
   }
 
-  private assetCall(pathname: string, ref?: string): GuestResponse {
+  private assetCall(pathname: string, ref?: string, method = "GET"): GuestResponse {
+    if (method !== "GET" && method !== "HEAD") return { status: 405, headers: { "content-type": "text/plain; charset=utf-8", allow: "GET, HEAD" }, body: "Method not allowed\n" };
     let path: string;
     try { path = pathname === "/" ? "index.html" : decodeURIComponent(pathname.replace(/^\/+/, "")); }
     catch { return { status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: "Not found\n" }; }
+    const segments = path.split(/[\\/]/);
+    if (segments.some((segment) => segment.startsWith(".")) || /^(worker\.js|readme(?:\.[a-z0-9_-]+)?)$/i.test(path)) return { status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: "Not found\n" };
     const body = this.workspace.readPublishedAsset(path, ref);
     if (body === undefined) return { status: 404, headers: { "content-type": "text/plain; charset=utf-8" }, body: "Not found\n" };
     return { status: 200, headers: { "content-type": MIME[extname(path).toLowerCase()] ?? "application/octet-stream" }, body };
@@ -184,7 +203,7 @@ __log.error = (event, fields={}) => __call({op:"log",level:"error",event:{event,
 const env = Object.freeze({
   db: Object.freeze({ exec(sql, params=[]) { return __call({op:"db",sql,params}); }, query(sql, params=[]) { return __call({op:"db",sql,params}).rows; }, prepare(sql) { return Object.freeze({ all(...params){ return __call({op:"db",sql,params}).rows; }, get(...params){ return __call({op:"db",sql,params}).rows[0] ?? null; }, run(...params){ return __call({op:"db",sql,params}); } }); } }),
   fs: Object.freeze({ list(){return __call({op:"fs",action:"list"}).files}, readText(path){return __call({op:"fs",action:"readText",path}).content}, writeText(path,content){return __call({op:"fs",action:"writeText",path,content})}, delete(path){return __call({op:"fs",action:"delete",path})} }),
-  assets: Object.freeze({ fetch(request) { return Promise.resolve(new Response(...(() => { const r=__call({op:"asset",path:new URL(request.url).pathname}); return [r.body,{status:r.status,headers:r.headers}]; })())); } }),
+  assets: Object.freeze({ fetch(request) { return Promise.resolve(new Response(...(() => { const r=__call({op:"asset",path:new URL(request.url).pathname,method:request.method}); return [r.body,{status:r.status,headers:r.headers}]; })())); } }),
   log: Object.freeze(__log),
   realtime: Object.freeze({ publish(type, data) { return __call({op:"realtime",type,data}); } })
 });
@@ -192,11 +211,7 @@ async function __invoke(raw) { const request=new Request(JSON.parse(raw)); const
 `; }
 
 async function boundedBody(request: Request): Promise<string> {
-  const declared = Number(request.headers.get("content-length") ?? 0);
-  if (declared > MAX_BODY) throw new Error("request body exceeds 64 KiB limit");
-  const body = await request.text();
-  if (Buffer.byteLength(body) > MAX_BODY) throw new Error("request body exceeds 64 KiB limit");
-  return body;
+  return readBoundedText(request, MAX_BODY);
 }
 
 function validateSql(sql: string, params: unknown[]): void {
@@ -204,6 +219,7 @@ function validateSql(sql: string, params: unknown[]): void {
   if (sql.replace(/;\s*$/, "").includes(";")) throw new Error("multiple SQL statements are forbidden");
   if (!/^(SELECT|WITH|INSERT|UPDATE|DELETE|CREATE\s+(TABLE|INDEX))\b/i.test(sql.trim())) throw new Error("SQL operation is not allowed");
   if (/\b(ATTACH|DETACH|PRAGMA|VACUUM|LOAD_EXTENSION|ALTER|DROP|REINDEX)\b/i.test(sql)) throw new Error("SQL operation is not allowed");
+  if (/\bRECURSIVE\b/i.test(sql)) throw new Error("recursive SQL is not allowed");
   for (const value of params) if (value !== null && !["string", "number", "boolean"].includes(typeof value)) throw new Error("database parameters must be scalar");
 }
 

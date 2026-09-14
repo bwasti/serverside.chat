@@ -12,7 +12,7 @@ export default {
 
 ## Request
 
-`request.method`, `request.url`, `request.path`, `request.headers`, and the bounded body string are available. `await request.text()` returns the body and `await request.json()` parses it. Bodies are limited to 64 KiB. A request for `https://hello-world.serverside.chat/api/items` reaches that room's worker as `/api/items`. The host consumes only `__ref`; other paths and query parameters belong to the service. Room sites have isolated origins and may use their own host-only cookies or authorization headers. The host strips proxy identity headers, rejects parent-domain cookies, and never forwards serverside.chat control-plane credentials through the legacy path route.
+`request.method`, `request.url`, `request.path`, `request.headers`, and the bounded body string are available. `await request.text()` returns the body and `await request.json()` parses it. Bodies are streamed into a 64 KiB ceiling, including chunked requests; oversized input is cancelled and receives `413`. A request for `https://hello-world.serverside.chat/api/items` reaches that room's worker as `/api/items`. The host consumes only `__ref`; other paths and query parameters belong to the service. Unknown deployment selectors receive `404`, not a runtime `500`. Room sites have isolated origins and may use their own host-only cookies or authorization headers. The host strips proxy identity headers, rejects parent-domain cookies, and never forwards serverside.chat control-plane credentials through the legacy path route.
 
 ## Response
 
@@ -47,7 +47,7 @@ Paths are always relative to an opaque room root. Traversal, absolute paths, sym
 
 ## `env.assets`
 
-`await env.assets.fetch(request)` reads a file from the same immutable deployment. `/` maps to `index.html`. Paths remain repository-relative and inherit the repository's traversal, symlink, file-size, and commit-selection protections.
+`await env.assets.fetch(request)` reads a public file from the same immutable deployment. `/` maps to `index.html`; only `GET` and `HEAD` are accepted. The host never exposes `worker.js`, a root README, dotfiles, or dot-directories as assets. Other paths remain repository-relative and inherit traversal, symlink, file-size, and commit-selection protections. Treat every other committed asset as public.
 
 Missing files, directories, invalid deployment paths, and protected paths such as `.git` return a plain `404 Not found` response; they do not throw into the worker or become platform 500s. The host records 4xx traffic in the live request log but only 5xx responses increment the health-row error counter.
 
@@ -61,6 +61,8 @@ The host retains the most recent 50 combined request and guest-log entries per r
 
 Every HTML response receives a small host-owned client that connects to `/<room>/.well-known/realtime`, reconnects with bounded exponential backoff, exposes the browser WebSocket as `window.roomSocket`, and emits `roomopen`, `roommessage`, and `roomclose` window events.
 
+Browser socket upgrades require a matching `Origin`; non-browser clients without an `Origin` remain supported. Each connected/client envelope includes a host-derived opaque `client.id`, an `authenticated` flag, an optional authenticated handle, and a per-connection UUID. These top-level fields are authoritative; similarly named values inside `data` are untrusted application payload. Anonymous IDs are stable for the host-derived client address without disclosing that address.
+
 ```js
 window.addEventListener("roommessage", event => {
   console.log(event.detail);
@@ -73,6 +75,8 @@ HTTP handlers can publish to every connected browser in their room:
 ```js
 env.realtime.publish("messages.changed", { id: 42 });
 ```
+
+Guest fanout is capped at 8 events and 32 KiB total per HTTP execution, with a 16 KiB ceiling per event. Client-originated frames are separately bounded and rate-limited per host-derived identity.
 
 The browser receives `{ "type": "messages.changed", "data": { "id": 42 } }`. Client-originated messages are delivered as `{ "type": "client", "data": ... }`. Sockets are host-owned and never expose network handles to QuickJS. v0 permits 100 sockets per room, 16 KiB per message, and 20 client messages per second per socket. The bus is ephemeral; durable state belongs in `env.db`. Authentication and worker-validated inbound event handlers are not implemented yet, so do not use client events as authorization.
 
@@ -91,6 +95,7 @@ The browser receives `{ "type": "messages.changed", "data": { "id": 42 } }`. Cli
 - 100 live sockets per room, 16 KiB per event, 20 inbound events/second/socket
 - 128 aggregate live browser/SSH connections per room
 - 32 concurrent HTTP executions per room
+- 256 concurrent service executions and 4,096 service WebSockets per host process
 - 64 MiB response egress per rolling hour per room
 
 This Bun worker is the executable prototype of the API boundary. Production will run the same contract in QuickJS hosted by embedded Wasmtime and add outer worker-process isolation, Wasmtime store limits, and epoch interruption.

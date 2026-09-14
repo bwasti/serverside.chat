@@ -173,7 +173,9 @@ export class Room {
     this.egressSamples.push({ at: this.lastRequestAt, bytes: responseBytes });
     this.pruneEgress();
     const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-    this.serviceLogs.push(`${time} ${status} ${latencyMs.toFixed(1)}ms ${method} ${path}`);
+    const safeMethod = method.replace(/[^A-Z]/gi, "").slice(0, 12) || "REQUEST";
+    const safePath = path.replace(/[\r\n]/g, " ").slice(0, 240);
+    this.serviceLogs.push(`${time} ${status} ${latencyMs.toFixed(1)}ms ${safeMethod} ${safePath}`);
     if (this.serviceLogs.length > 50) this.serviceLogs.shift();
     this.saveState();
     for (const listener of this.serviceListeners) listener();

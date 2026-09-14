@@ -92,6 +92,8 @@ Each room has an isolated Git repository under `.data/rooms/<room>/repo`. The cl
 
 The canonical service is selected by the isolated origin `https://<room>.serverside.chat`; everything in its path belongs to its generic request handler. The corresponding development chat is `https://serverside.chat/room/<room>`. Human-facing deployment shorthand is `room`/`room#stable` for canonical, `room#head` for repository HEAD, and `room#commit` for a preview. Hyperlinks encode the selector using the host-reserved `__ref` query because fragments never reach HTTP servers. The repository's movable `stable` Git tag mirrors the activated commit. Promoting a preview requires an explicit human request in chat.
 
+The host-side disposition of the initial adversarial room review is recorded in [`docs/pentest-review.md`](docs/pentest-review.md), separating platform findings from application-author hazards and intentional preview behavior.
+
 Every canonical promotion is also recorded as a host-generated `trunk` system message in room chat with its commit and canonical URL.
 
 Canonical history is strictly linear: promotion must be a fast-forward from `stable`, and the candidate range cannot contain merge commits. Feature branches must rebase onto `stable`; the clanker has no merge operation.

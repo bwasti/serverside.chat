@@ -88,6 +88,14 @@ test("client 404s remain telemetry without marking the site unhealthy", () => {
   expect(room.serviceErrors).toBe(1);
 });
 
+test("request telemetry bounds and flattens attacker-controlled request targets", () => {
+  const room = new Room("mine");
+  room.recordRequest("GET\r\nFORGED", `/hello\nFORGED ${"x".repeat(500)}`, 200, 1, 0);
+  expect(room.serviceLogs[0]).not.toContain("\n");
+  expect(room.serviceLogs[0]).not.toContain("FORGEDGET");
+  expect(room.serviceLogs[0]!.length).toBeLessThan(300);
+});
+
 test("legacy cumulative client-error totals do not poison the new server-error counter", () => {
   const data = mkdtempSync(join(tmpdir(), "serverside-chat-legacy-telemetry-"));
   const statePath = join(data, "room-state.json");

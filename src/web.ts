@@ -9,12 +9,15 @@ import type { OAuthProvider, OAuthService } from "./oauth";
 import type { RoomDirectory } from "./room-directory";
 import { handleWebDavRequest } from "./webdav";
 import { AdaptiveRateLimiter, RATE_LIMITS, retrySeconds } from "./rate-limit";
+import { readBoundedText, RequestBodyLimitError } from "./bounded-body";
 
-interface ServiceSocketData { kind: "service"; room: string; principal: Principal; windowStarted: number; messages: number }
+interface ServiceSocketData { kind: "service"; room: string; principal: Principal; connectionId: string; windowStarted: number; messages: number }
 interface TuiSocketData { kind: "tui"; principal: Principal; initialRoom?: string; cols: number; rows: number; windowStarted: number; messages: number }
 type SocketData = ServiceSocketData | TuiSocketData;
 const SOCKET_PATH = ".well-known/realtime";
 const MAX_ROOM_SOCKETS = 100;
+const MAX_SERVICE_SOCKETS = 4_096;
+const MAX_SERVICE_REQUESTS = 256;
 const MAX_BROWSER_TUIS = 128;
 const SESSION_COOKIE = "__Host-serverside_session";
 const OAUTH_COOKIE = "__Host-serverside_oauth";
@@ -33,6 +36,8 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
   const socketCounts = new Map<string, number>();
   const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
   const browserTuis = new Map<ServerWebSocket<SocketData>, { stream: BrowserTuiStream; session: TuiSession }>();
+  let serviceSockets = 0;
+  let serviceRequests = 0;
   const authAttempts = new Map<string, { windowStarted: number; count: number }>();
   const signInUrl = `${directory.controlOrigin}/?signin=1`;
   const webServer = Bun.serve<SocketData>({
@@ -138,6 +143,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         return Response.json(requestPrincipal.authenticated ? { authenticated: true, handle: requestPrincipal.handle } : { authenticated: false }, { headers: { "cache-control": "no-store" } });
       }
       if (url.pathname === "/_auth/logout" && request.method === "POST") {
+        if (!sameOriginRequest(request)) return Response.json({ error: "cross-origin logout rejected" }, { status: 403 });
         if (accounts && sessionToken) accounts.revokeWebSession(sessionToken);
         return Response.json({ authenticated: false }, { headers: { "set-cookie": clearSessionCookie() } });
       }
@@ -154,6 +160,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
       const asset = terminalAssets.get(url.pathname);
       if (request.method === "GET" && asset) return new Response(asset.file, { headers: { "content-type": asset.type, "cache-control": "public, max-age=86400" } });
       if (url.pathname === "/_terminal/socket") {
+        if (!permittedSocketOrigin(request)) return new Response("cross-origin websocket rejected\n", { status: 403 });
         if (browserTuis.size >= MAX_BROWSER_TUIS) return new Response("browser terminal limit reached\n", { status: 503 });
         const principal = requestPrincipal;
         directory.prepareAccount(principal);
@@ -181,11 +188,15 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         return Response.redirect(target, 308);
       }
       if (serviceParts.join("/") === SOCKET_PATH) {
+        if (!permittedSocketOrigin(request)) return new Response("cross-origin websocket rejected\n", { status: 403 });
+        if (serviceSockets >= MAX_SERVICE_SOCKETS) return new Response("service socket capacity reached\n", { status: 503 });
         if ((socketCounts.get(name) ?? 0) >= MAX_ROOM_SOCKETS || room.connectionCount >= ROOM_LIMITS.connections) return new Response("room socket limit reached\n", { status: 503 });
-        if (server.upgrade(request, { data: { kind: "service", room: name, principal, windowStarted: Date.now(), messages: 0 } })) return;
+        if (server.upgrade(request, { data: { kind: "service", room: name, principal, connectionId: crypto.randomUUID(), windowStarted: Date.now(), messages: 0 } })) return;
         return new Response("websocket upgrade required\n", { status: 426 });
       }
+      if (serviceRequests >= MAX_SERVICE_REQUESTS) return new Response("service request capacity reached\n", { status: 503 });
       if (!room.tryBeginRequest()) { room.recordRequest(request.method, url.pathname, 503, performance.now() - started, 19); return new Response("room request limit\n", { status: 503 }); }
+      serviceRequests++;
       const workspace = workspaces.get(name)!;
       // Query metadata belongs to the host. The remaining pathname belongs to
       // the service and will be passed through unchanged by the Wasm gateway.
@@ -205,11 +216,15 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         room.recordRequest(request.method, url.pathname, result.status, performance.now() - started, bytes);
         return new Response(result.body, { status: result.status, headers: { ...result.headers, "cache-control": "no-store" } });
       } catch (error) {
+        if (error instanceof RequestBodyLimitError) {
+          room.recordRequest(request.method, url.pathname, 413, performance.now() - started, 23);
+          return new Response("request body too large\n", { status: 413 });
+        }
         const message = error instanceof Error ? error.message : "service failed";
         room.recordServiceLog(`runtime error ${message}`);
         room.recordRequest(request.method, url.pathname, 500, performance.now() - started, 23);
         return new Response("service execution failed\n", { status: 500 });
-      } finally { room.endRequest(); }
+      } finally { serviceRequests = Math.max(0, serviceRequests - 1); room.endRequest(); }
     },
     websocket: {
       maxPayloadLength: 16 * 1024,
@@ -225,10 +240,11 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         let roomSockets = sockets.get(ws.data.room);
         if (!roomSockets) { roomSockets = new Set(); sockets.set(ws.data.room, roomSockets); }
         roomSockets.add(ws);
+        serviceSockets++;
         socketCounts.set(ws.data.room, (socketCounts.get(ws.data.room) ?? 0) + 1);
         directory.room(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
         ws.subscribe(`room:${ws.data.room}`);
-        ws.send(JSON.stringify({ type: "connected", data: { room: ws.data.room } }));
+        ws.send(JSON.stringify({ type: "connected", client: realtimeClient(ws.data.principal), connection: ws.data.connectionId, data: { room: ws.data.room } }));
       },
       message(ws, raw) {
         const now = Date.now();
@@ -254,7 +270,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
         }
         let data: unknown;
         try { data = JSON.parse(text); } catch { data = text; }
-        const payload = JSON.stringify({ type: "client", data });
+        const payload = JSON.stringify({ type: "client", client: realtimeClient(ws.data.principal), connection: ws.data.connectionId, data });
         ws.publish(`room:${ws.data.room}`, payload);
       },
       close(ws) {
@@ -265,6 +281,7 @@ export function startWebServer(directory: RoomDirectory, host: string, port: num
           return;
         }
         sockets.get(ws.data.room)?.delete(ws);
+        serviceSockets = Math.max(0, serviceSockets - 1);
         socketCounts.set(ws.data.room, Math.max(0, (socketCounts.get(ws.data.room) ?? 1) - 1));
         directory.room(ws.data.room)?.setWebConnections(socketCounts.get(ws.data.room) ?? 0);
       },
@@ -312,6 +329,21 @@ function sameOriginRequest(request: Request): boolean {
   catch { return false; }
 }
 
+export function permittedSocketOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    return (parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.host === new URL(request.url).host;
+  }
+  catch { return false; }
+}
+
+export function realtimeClient(principal: Principal): { id: string; authenticated: boolean; handle?: string } {
+  const id = createHash("sha256").update(principal.id).digest("base64url").slice(0, 16);
+  return principal.authenticated ? { id, authenticated: true, handle: principal.handle } : { id, authenticated: false };
+}
+
 function allowAttempt(entries: Map<string, { windowStarted: number; count: number }>, key: string, windowMs: number, limit: number): boolean {
   const now = Date.now();
   const current = entries.get(key);
@@ -336,10 +368,9 @@ function rateLimitedResponse(retryAfterMs: number): Response {
 }
 
 async function boundedJson(request: Request): Promise<Record<string, unknown>> {
-  const declared = Number(request.headers.get("content-length") ?? 0);
-  if (declared > 4_096) throw new Error("request body is too large");
-  const text = await request.text();
-  if (text.length > 4_096) throw new Error("request body is too large");
+  let text: string;
+  try { text = await readBoundedText(request, 4_096); }
+  catch (error) { if (error instanceof RequestBodyLimitError) throw new Error("request body is too large"); throw error; }
   const value: unknown = JSON.parse(text || "{}");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request body must be an object");
   return value as Record<string, unknown>;
@@ -399,6 +430,9 @@ export function secureGuestResponseHeaders(headers: Record<string, string>, room
   if (cookie && (!roomOrigin || /(?:^|;)\s*domain\s*=/i.test(cookie))) delete headers["set-cookie"];
   delete headers["proxy-authenticate"];
   headers["x-content-type-options"] = "nosniff";
+  headers["x-frame-options"] = "DENY";
+  headers["referrer-policy"] = "same-origin";
+  headers["permissions-policy"] = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
 }
 
 class BrowserTuiStream extends EventEmitter implements TuiStream {
