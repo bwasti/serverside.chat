@@ -85,6 +85,14 @@ directory.subscribe((event) => {
   const usage = tokenBudget.snapshot(event.name);
   directory.room(event.name)?.recordClankerTokenUsage(usage.roomUsed, usage.roomLimit);
 });
+const tokenTelemetryRefresh = setInterval(() => {
+  for (const room of directory.rooms) {
+    if (!room.clankerTokensLastHour) continue;
+    const usage = tokenBudget.snapshot(room.name);
+    room.recordClankerTokenUsage(usage.roomUsed, usage.roomLimit);
+  }
+}, 60_000);
+tokenTelemetryRefresh.unref();
 reportModerationError = (error) => {
   const detail = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 180) : "unknown provider failure";
   console.error("Lobby moderation error:", detail);
