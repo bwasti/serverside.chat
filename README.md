@@ -24,7 +24,7 @@ Useful commands:
 /shell               show SSH shell instructions
 /edit <path>         edit a room file
 /permissions         inspect the room policy
-/clanker <request>   explicitly ask the clanker
+/clanker <request>   explicitly ask the clanker (this is required to ship commits to main)
 ```
 
 Each signed-in person can create up to five rooms for now. Rooms may be public or private, and contributions may be limited to invited members, room admins, nobody, or—dangerously—any signed-in viewer.
