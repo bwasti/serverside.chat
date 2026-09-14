@@ -2,8 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 
-export const DEFAULT_ROOM_CLANKER_TOKENS_PER_HOUR = 250_000;
-export const DEFAULT_GLOBAL_CLANKER_TOKENS_PER_HOUR = 2_000_000;
+export const DEFAULT_ROOM_CLANKER_TOKENS_PER_HOUR = 1_000_000;
+export const DEFAULT_GLOBAL_CLANKER_TOKENS_PER_HOUR = 8_000_000;
 const WINDOW_MS = 60 * 60_000;
 
 interface TotalRow { total: number }

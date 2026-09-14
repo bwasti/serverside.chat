@@ -14,8 +14,8 @@ The systemd unit is [`deploy/serverside-chat.service`](../deploy/serverside-chat
 FIREWORKS_API_KEY=...
 FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4p1-flash
 FIREWORKS_CLASSIFIER_MODEL=accounts/fireworks/models/glm-5p3-flash
-CLANKER_ROOM_TOKENS_PER_HOUR=250000
-CLANKER_GLOBAL_TOKENS_PER_HOUR=2000000
+CLANKER_ROOM_TOKENS_PER_HOUR=1000000
+CLANKER_GLOBAL_TOKENS_PER_HOUR=8000000
 WEB_BASE_URL=https://your-host
 ROOM_OWNER=your-handle
 SSH_BOOTSTRAP_KEYS=/etc/serverside-chat/owner.pub
