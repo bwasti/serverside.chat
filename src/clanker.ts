@@ -17,6 +17,8 @@ export const ROOM_CLANKER_FINALIZATION_WINDOW_MS = 2 * 60_000;
 export const ROOM_CLANKER_MAX_TURNS = 256;
 const ROOM_CLANKER_PROVIDER_ATTEMPTS = 2;
 const MAX_PROVIDER_REQUEST_BYTES = 512 * 1024;
+const MAX_PROTOCOL_FAILURES = 2;
+const FINISH_TOOL = "finish_clanker_turn";
 
 export interface FireworksClankerOptions {
   baseUrl?: string;
@@ -55,6 +57,10 @@ const tools = [
   fn("create_preview", "Create an immutable temporary service preview from clean HEAD. Supply a terse human-readable description of the change for the HUD.", { description: { type: "string", description: "At most 80 characters, e.g. red button change" } }, ["description"]),
   fn("archive_preview", "Remove an active feature-preview row from the chat's top deployment bar. This only hides its metadata; the commit remains addressable.", { preview_id: { type: "string", description: "Preview ID from deployment_status" } }, ["preview_id"]),
   fn("promote_preview", "Make an existing preview commit canonical. Only use after an explicit human publish request.", { preview_id: { type: "string" } }, ["preview_id"]),
+  fn(FINISH_TOOL, "Finish this turn without exposing reasoning or tool syntax. Use silent after completed work or when no response is useful, answer only for a deterministic technical answer, and blocked only for one unavoidable permission, capability, or ambiguity blocker.", {
+    outcome: { type: "string", enum: ["silent", "answer", "blocked"] },
+    message: { type: "string", description: "Empty for silent; otherwise one terse plain-text sentence without Markdown or tool syntax" },
+  }, ["outcome", "message"]),
 ];
 
 export class FireworksClanker {
@@ -86,6 +92,7 @@ export class FireworksClanker {
     const concreteWorkPending = hasPendingConcreteWork(history);
     let correctiveRetry = false;
     let committed = false;
+    let protocolFailures = 0;
     activity("thinking", "reading room activity");
     const intent: RoomIntent = looksLikeTechnicalQuestion(latest.text) && !isConcreteWorkRequest(latest.text) ? "TECHNICAL" : "WORK";
     const messages: ChatMessage[] = [
@@ -116,23 +123,46 @@ export class FireworksClanker {
         }
         throw new Error(`${formatDuration(this.runTimeoutMs)} run limit reached · work preserved`);
       }
-      messages.push(message);
+      message = recoverDsmlToolCalls(message);
       if (!message.tool_calls?.length) {
-        const reply = filterReply(intent, message.content);
-        const raw = message.content?.trim() || "[silent]";
-        if (concreteWorkPending && !committed && reply === "[silent]") {
-          if (!correctiveRetry) {
-            correctiveRetry = true;
-            activity("thinking", "work incomplete · continuing");
-            messages.push({ role: "system", content: "A concrete implementation request is still pending. Inspection alone is not completion. Continue with repository tools until you create a commit and preview, or return one terse sentence naming a genuine capability, permission, or ambiguity blocker. Do not return [silent]." });
+        if (++protocolFailures >= MAX_PROTOCOL_FAILURES) throw new Error("provider returned invalid clanker format · work preserved");
+        activity("thinking", "invalid provider format · retrying");
+        messages.push({ role: "system", content: "Your response was rejected because it was free-form text or malformed tool markup. Call exactly one provided function. Use finish_clanker_turn for silence, a terse deterministic answer, or a genuine blocker. Never print DSML, XML, JSON, reasoning, code, or tool calls as assistant text." });
+        continue;
+      }
+      const calls = message.tool_calls;
+      if (calls.length !== 1) {
+        if (++protocolFailures >= MAX_PROTOCOL_FAILURES) throw new Error("provider returned invalid clanker format · work preserved");
+        activity("thinking", "invalid provider format · retrying");
+        messages.push({ role: "system", content: "The previous response was rejected because it called more than one function. Call exactly one function per turn." });
+        continue;
+      }
+      message = { ...message, content: null, tool_calls: calls };
+      messages.push(message);
+      for (const call of calls) {
+        if (call.function.name === FINISH_TOOL) {
+          const final = structuredReply(call, intent);
+          if (!final.ok) {
+            if (++protocolFailures >= MAX_PROTOCOL_FAILURES) throw new Error("provider returned invalid clanker format · work preserved");
+            messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(final) });
             continue;
           }
-          throw new Error("clanker stopped without a commit or blocker");
+          if (committed) {
+            activity("working", "clanker chose silence");
+            return "[silent]";
+          }
+          if (concreteWorkPending && final.outcome !== "blocked") {
+            if (!correctiveRetry) {
+              correctiveRetry = true;
+              activity("thinking", "work incomplete · continuing");
+              messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: false, error: "concrete work is pending; continue to a commit or finish with one genuine blocker" }) });
+              continue;
+            }
+            throw new Error("clanker stopped without a commit or blocker");
+          }
+          activity("working", final.reply === "[silent]" ? "clanker chose silence" : "response admitted");
+          return final.reply;
         }
-        activity("working", reply === "[silent]" ? (raw === "[silent]" ? "clanker chose silence" : "response suppressed") : "response admitted");
-        return reply;
-      }
-      for (const call of message.tool_calls) {
         activity("working", call.function.name.replaceAll("_", " "));
         const result = execute(workspace, pageUrl, call, canPromote, serviceLogs, setMessagePin);
         if (call.function.name === "git_commit" && result.ok && typeof result.commit === "string") {
@@ -158,7 +188,7 @@ export class FireworksClanker {
       if (remaining <= 0) throw new CompletionDeadlineReached();
       const requestBudget = Math.min(remaining, this.providerTimeoutMs);
       const boundedByCompletionDeadline = remaining <= this.providerTimeoutMs;
-      const serializedRequest = JSON.stringify({ model: this.model, messages, tools, tool_choice: "auto", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 });
+      const serializedRequest = JSON.stringify({ model: this.model, messages, tools, tool_choice: "required", parallel_tool_calls: false, max_tokens: 5000, temperature: 0.2 });
       assertProviderRequestSize(serializedRequest);
       const reservation = this.tokenBudget?.reserve(roomName, 5000);
       let actualUsage: number | undefined;
@@ -229,7 +259,7 @@ export class FireworksGuideClanker {
     let usedPinTool = false;
     let reply = "";
     for (let turn = 0; turn < 3; turn++) {
-      const serializedRequest = JSON.stringify({ model: this.model, messages, tools: [tools[0]!], tool_choice: "auto", parallel_tool_calls: false, max_tokens: 240, temperature: 0.1 });
+      const serializedRequest = JSON.stringify({ model: this.model, messages, tools: [tools[0]!, tools.at(-1)!], tool_choice: "required", parallel_tool_calls: false, max_tokens: 240, temperature: 0.1 });
       assertProviderRequestSize(serializedRequest);
       const reservation = this.tokenBudget?.reserve("lobby", 240);
       let actualUsage: number | undefined;
@@ -249,13 +279,30 @@ export class FireworksGuideClanker {
       } finally {
         reservation?.commit(actualUsage);
       }
+      message = recoverDsmlToolCalls(message);
+      if (!message.tool_calls?.length) {
+        messages.push({ role: "system", content: "The previous response was rejected. Call exactly one provided function; use finish_clanker_turn for the final terse answer or silence. Never print tool syntax." });
+        continue;
+      }
+      const calls = message.tool_calls;
+      if (calls.length !== 1) {
+        messages.push({ role: "system", content: "The previous response was rejected because it called more than one function. Call exactly one function per turn." });
+        continue;
+      }
+      message = { ...message, content: null, tool_calls: calls };
       messages.push(message);
-      if (!message.tool_calls?.length) { reply = message.content?.trim().replace(/\s+/g, " ") ?? ""; break; }
-      for (const call of message.tool_calls) {
+      for (const call of calls) {
+        if (call.function.name === FINISH_TOOL) {
+          const final = structuredReply(call, "TECHNICAL", 420);
+          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: final.ok }) });
+          if (final.ok) reply = final.reply;
+          break;
+        }
         const result = executePin(call, setMessagePin);
         if (call.function.name === "set_message_pin" && result.ok) usedPinTool = true;
         messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
       }
+      if (reply) break;
     }
     activity("working", reply && reply !== "[silent]" ? "answer ready" : "listening");
     if (usedPinTool) return "[silent]";
@@ -287,12 +334,66 @@ function looksLikeTechnicalQuestion(value: string): boolean {
   return text.includes("?") || /^(what|why|when|where|which|who|how|does|do|is|are|can|could|should|would)\b/.test(text);
 }
 
-function filterReply(intent: RoomIntent, content?: string | null): string {
-  const reply = content?.trim().replace(/\s+/g, " ") ?? "";
-  if (!reply || reply === "[silent]") return "[silent]";
-  if (intent === "TECHNICAL") return reply.slice(0, 320);
-  return reply.slice(0, 300);
+function structuredReply(call: ToolCall, intent: RoomIntent, maximum?: number): { ok: true; outcome: "silent" | "answer" | "blocked"; reply: string } | { ok: false; error: string } {
+  try {
+    const args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
+    if (args.outcome !== "silent" && args.outcome !== "answer" && args.outcome !== "blocked") throw new Error("invalid finish outcome");
+    if (typeof args.message !== "string") throw new Error("finish message must be a string");
+    const message = args.message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+    if (containsModelControlSyntax(message)) throw new Error("finish message contains model control syntax");
+    if (args.outcome === "silent") {
+      if (message) throw new Error("silent finish message must be empty");
+      return { ok: true, outcome: "silent", reply: "[silent]" };
+    }
+    if (!message) throw new Error("answer and blocker finishes require a message");
+    const limit = maximum ?? (intent === "TECHNICAL" ? 320 : 300);
+    return { ok: true, outcome: args.outcome, reply: message.slice(0, limit) };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "invalid finish call" };
+  }
 }
+
+export function recoverDsmlToolCalls(message: ApiMessage): ApiMessage {
+  if (message.tool_calls?.length || typeof message.content !== "string" || !containsDsml(message.content)) return message;
+  const calls = parseDsmlToolCalls(message.content);
+  return calls.length ? { ...message, content: null, tool_calls: calls } : message;
+}
+
+function parseDsmlToolCalls(content: string): ToolCall[] {
+  const marker = "(?:｜|\\|)DSML(?:｜|\\|)";
+  const invokeSource = `<${marker}\\s*invoke\\s+name="([a-zA-Z0-9_-]+)"\\s*>([\\s\\S]*?)<\\/${marker}\\s*invoke\\s*>`;
+  const invoke = new RegExp(invokeSource, "g");
+  const parameter = new RegExp(`<${marker}\\s*parameter\\s+name="([a-zA-Z0-9_-]+)"(?:\\s+string="(true|false)")?\\s*>([\\s\\S]*?)<\\/${marker}\\s*parameter\\s*>`, "g");
+  const known = new Set(tools.map((tool) => tool.function.name));
+  const calls: ToolCall[] = [];
+  for (const match of content.matchAll(invoke)) {
+    const name = match[1]!;
+    if (!known.has(name)) return [];
+    const body = match[2]!;
+    const args: Record<string, unknown> = {};
+    let cursor = 0;
+    let remainder = "";
+    for (const item of body.matchAll(parameter)) {
+      remainder += body.slice(cursor, item.index);
+      cursor = (item.index ?? 0) + item[0].length;
+      const key = item[1]!;
+      const raw = item[3]!;
+      if (key in args) return [];
+      try { args[key] = item[2] === "false" ? JSON.parse(raw) : raw; }
+      catch { return []; }
+    }
+    remainder += body.slice(cursor);
+    if (remainder.trim()) return [];
+    calls.push({ id: `dsml-${crypto.randomUUID()}`, type: "function", function: { name, arguments: JSON.stringify(args) } });
+  }
+  const remainder = content
+    .replace(new RegExp(invokeSource, "g"), "")
+    .replace(new RegExp(`<\\/?${marker}\\s*(?:tool_calls|calls)\\s*>`, "g"), "");
+  return calls.length === 1 && !containsDsml(remainder) ? calls : [];
+}
+
+function containsDsml(value: string): boolean { return /DSML/i.test(value) && /[<＞](?:｜|\|)DSML/i.test(value); }
+function containsModelControlSyntax(value: string): boolean { return containsDsml(value) || /<\/?(?:think|tool_call|function_call)\b|(?:tool_calls|function_call)\s*[:=]/i.test(value); }
 
 function assertProviderRequestSize(serializedRequest: string): void {
   if (Buffer.byteLength(serializedRequest, "utf8") > MAX_PROVIDER_REQUEST_BYTES) throw new Error("clanker context is too large · start a fresh request after current work is committed");

@@ -437,6 +437,8 @@ export class Room {
         const kind: MessageKind = storedKind === "agent" ? "clanker" : storedKind as MessageKind;
         const at = new Date(String(item.at));
         if (Number.isNaN(at.getTime())) continue;
+        this.nextId = Math.max(this.nextId, item.id + 1);
+        if (kind === "clanker" && isLeakedClankerProtocol(item.text)) continue;
         const oldRoomUrl = `http://localhost:3000/${encodeURIComponent(this.name)}`;
         const rawReply = item.replyTo as Record<string, unknown> | undefined;
         const replyTo = rawReply && typeof rawReply.id === "number" && typeof rawReply.author === "string" && typeof rawReply.excerpt === "string"
@@ -445,7 +447,6 @@ export class Room {
         const legacyVisible = typeof item.agentVisible === "boolean" ? item.agentVisible : undefined;
         const pinnedAt = item.pinnedAt === undefined ? undefined : new Date(String(item.pinnedAt));
         this.messages.push({ id: item.id, kind, author: legacyClankerAuthor(item.author), text: legacyClankerMention(item.text.replaceAll(oldRoomUrl, this.pageUrl)), at, url: typeof item.url === "string" ? rebaseRoomUrl(item.url, this.pageUrl) : undefined, detail: typeof item.detail === "string" ? legacyClankerMention(item.detail) : undefined, authorId: typeof item.authorId === "string" ? item.authorId : undefined, authorRole: isRoomRole(item.authorRole) ? item.authorRole : undefined, clankerVisible: typeof item.clankerVisible === "boolean" ? item.clankerVisible : legacyVisible ?? kind !== "chat", replyTo, pinnedAt: pinnedAt && !Number.isNaN(pinnedAt.getTime()) ? pinnedAt : undefined, pinnedBy: typeof item.pinnedBy === "string" ? item.pinnedBy : undefined });
-        this.nextId = Math.max(this.nextId, item.id + 1);
       }
       this.serviceRequests = finiteNumber(state.serviceRequests);
       this.serviceErrors = state.telemetryVersion === TELEMETRY_VERSION ? finiteNumber(state.serviceErrors) : 0;
@@ -529,6 +530,7 @@ function rebaseRoomUrl(value: string, pageUrl: string): string {
 
 function legacyClankerAuthor(value: string): string { return value === "room-agent" ? "clanker" : value; }
 function legacyClankerMention(value: string): string { return value.replace(/@room-agent\b/g, "@clanker"); }
+function isLeakedClankerProtocol(value: string): boolean { return /[<＞](?:｜|\|)DSML(?:｜|\|)/i.test(value); }
 function legacyClankerTelemetry(value: string): string {
   return legacyClankerMention(value).replace(/\bAGENT\b/g, "CLANKER").replace(/\bagent\b/g, "clanker");
 }

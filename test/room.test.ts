@@ -135,6 +135,23 @@ test("legacy agent transcript state migrates to clanker terminology", () => {
   expect(room.clankerState.events).toContain("12:34:56 error · clanker stopped");
 });
 
+test("persisted DeepSeek tool protocol is omitted from chat history", () => {
+  const data = mkdtempSync(join(tmpdir(), "serverside-chat-clanker-protocol-migration-"));
+  const statePath = join(data, "room-state.json");
+  writeFileSync(statePath, JSON.stringify({
+    serviceStartedAt: new Date().toISOString(),
+    messages: [
+      { id: 1, kind: "chat", author: "alice", text: "build the page", at: new Date().toISOString(), clankerVisible: true },
+      { id: 2, kind: "clanker", author: "clanker", text: '<｜DSML｜ calls><｜DSML｜ invoke name="write_file">leaked code</｜DSML｜ invoke></｜DSML｜ calls>', at: new Date().toISOString() },
+      { id: 3, kind: "chat", author: "alice", text: "still here", at: new Date().toISOString(), clankerVisible: true },
+    ],
+  }));
+
+  const room = new Room("mine", 250, "http://localhost:3000/mine", "alice", statePath);
+  expect(room.messages.map((item) => item.id)).toEqual([1, 3]);
+  expect(room.messages.every((item) => !item.text.includes("DSML"))).toBe(true);
+});
+
 test("room bounds messages and input", () => {
   const room = new Room("mine", 2);
   room.chat("alice", "one");

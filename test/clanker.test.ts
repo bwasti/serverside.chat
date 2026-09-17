@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FireworksClanker, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, ROOM_CLANKER_FINALIZATION_WINDOW_MS, ROOM_CLANKER_MAX_TURNS, ROOM_CLANKER_PROVIDER_TIMEOUT_MS, ROOM_CLANKER_RUN_TIMEOUT_MS, shouldGuideRespond } from "../src/clanker";
+import { FireworksClanker, hasPendingConcreteWork, isConcreteWorkRequest, isTrivialSocialMessage, recoverDsmlToolCalls, ROOM_CLANKER_FINALIZATION_WINDOW_MS, ROOM_CLANKER_MAX_TURNS, ROOM_CLANKER_PROVIDER_TIMEOUT_MS, ROOM_CLANKER_RUN_TIMEOUT_MS, shouldGuideRespond } from "../src/clanker";
 import type { Message } from "../src/room";
 import { RoomWorkspace } from "../src/workspace";
 import { TokenBudget } from "../src/token-budget";
@@ -59,11 +59,48 @@ test("clanker can read the canonical design without carrying its CSS in every pr
       if (calls === 1) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "design", type: "function", function: { name: "read_design_reference", arguments: "{}" } }] } }] });
       const request = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content?: string }> };
       expect(request.messages.at(-1)?.content).toContain("--accent: #7f9f7f");
-      return Response.json({ choices: [{ message: { role: "assistant", content: "The reference uses square controls." } }] });
+      return Response.json({ choices: [{ message: finish("answer", "The reference uses square controls.") }] });
     },
   });
   expect(await clanker.respond("test", "https://test.example", [message("chat", "what visual baseline does this site use?")], workspace(), () => {}, "alice", "alice", false, () => [])).toBe("The reference uses square controls.");
   expect(calls).toBe(2);
+});
+
+test("complete DeepSeek DSML leakage is recovered as a native tool call", () => {
+  const leaked = `<｜DSML｜ calls> I will edit it.
+<｜DSML｜ invoke name="write_file">
+<｜DSML｜ parameter name="path" string="true">index.html</｜DSML｜ parameter>
+<｜DSML｜ parameter name="content" string="true"><!doctype html><button>scan</button></｜DSML｜ parameter>
+</｜DSML｜ invoke></｜DSML｜ calls>`;
+  const recovered = recoverDsmlToolCalls({ role: "assistant", content: leaked });
+  expect(recovered.content).toBeNull();
+  expect(recovered.tool_calls).toHaveLength(1);
+  expect(recovered.tool_calls?.[0]?.function.name).toBe("write_file");
+  expect(JSON.parse(recovered.tool_calls?.[0]?.function.arguments ?? "{}")).toEqual({ path: "index.html", content: "<!doctype html><button>scan</button>" });
+});
+
+test("malformed model markup and free-form replies are never admitted to chat", async () => {
+  let calls = 0;
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
+    attempts: 1,
+    fetcher: async (_input, init) => {
+      calls++;
+      const request = JSON.parse(String(init?.body)) as { tool_choice: string; tools: Array<{ function: { name: string } }>; messages: Array<{ content?: string }> };
+      expect(request.tool_choice).toBe("required");
+      expect(request.tools.some((tool) => tool.function.name === "finish_clanker_turn")).toBe(true);
+      if (calls === 1) return Response.json({ choices: [{ message: { role: "assistant", content: `<｜DSML｜ invoke name="write_file"><｜DSML｜ parameter name="path">broken` } }] });
+      expect(request.messages.at(-1)?.content).toContain("response was rejected");
+      return Response.json({ choices: [{ message: finish("answer", "worker.js serves the room.") }] });
+    },
+  });
+  expect(await clanker.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).toBe("worker.js serves the room.");
+  expect(calls).toBe(2);
+
+  const broken = new FireworksClanker("test", "test-model", "test prompt", {
+    attempts: 1,
+    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: "I changed the page." } }] }),
+  });
+  await expect(broken.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("invalid clanker format");
 });
 
 test("turn-limit failures are concise and confirm that work is preserved", async () => {
@@ -96,7 +133,7 @@ test("transient provider failures retry within the completion budget", async () 
       calls++;
       return calls === 1
         ? Response.json({ error: { message: "temporarily busy" } }, { status: 503 })
-        : Response.json({ choices: [{ message: { role: "assistant", content: "worker.js serves the room." } }] });
+        : Response.json({ choices: [{ message: finish("answer", "worker.js serves the room.") }] });
     },
   });
   const reply = await clanker.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), (status, detail) => activity.push(`${status}:${detail}`), "alice", "alice", false, () => []);
@@ -154,7 +191,7 @@ test("pending implementation work gets one corrective continuation instead of si
   const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     timeoutMs: 1_000,
     attempts: 1,
-    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: ++calls === 1 ? "[silent]" : "A required capability is unavailable." } }] }),
+    fetcher: async () => Response.json({ choices: [{ message: ++calls === 1 ? finish("silent") : finish("blocked", "A required capability is unavailable.") }] }),
   });
   const history = [message("chat", "create a notes app"), message("chat", "cmon clanker, do this")];
   const reply = await clanker.respond("test", "https://test.example", history, workspace(), () => {}, "alice", "alice", false, () => []);
@@ -173,7 +210,7 @@ test("clanker receives stable message IDs and can use the permission-checked pin
       calls++;
       return calls === 1
         ? Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "pin-1", type: "function", function: { name: "set_message_pin", arguments: '{"message_id":42,"pinned":true}' } }] } }] })
-        : Response.json({ choices: [{ message: { role: "assistant", content: "[silent]" } }] });
+        : Response.json({ choices: [{ message: finish("silent") }] });
     },
   });
   const history: Message[] = [{ id: 42, kind: "chat", author: "alice", text: "pin this guide", at: new Date(), clankerVisible: true }];
@@ -189,7 +226,7 @@ test("every clanker provider turn is charged to its room token budget", async ()
   const clanker = new FireworksClanker("test", "test-model", "test prompt", {
     attempts: 1,
     tokenBudget,
-    fetcher: async () => Response.json({ choices: [{ message: { role: "assistant", content: "worker.js serves the room." } }], usage: { completion_tokens: 321, total_tokens: 12_000 } }),
+    fetcher: async () => Response.json({ choices: [{ message: finish("answer", "worker.js serves the room.") }], usage: { completion_tokens: 321, total_tokens: 12_000 } }),
   });
   await clanker.respond("metered", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => []);
   expect(tokenBudget.snapshot("metered")).toMatchObject({ roomUsed: 321, globalUsed: 321 });
@@ -197,3 +234,6 @@ test("every clanker provider turn is charged to its room token budget", async ()
 
 function workspace(): RoomWorkspace { return new RoomWorkspace(mkdtempSync(join(tmpdir(), "serverside-chat-clanker-")), "test"); }
 function message(kind: Message["kind"], text: string): Message { return { id: Math.floor(Math.random() * 1_000_000), kind, author: kind === "clanker" ? "clanker" : "alice", text, at: new Date(), clankerVisible: true }; }
+function finish(outcome: "silent" | "answer" | "blocked", text = "") {
+  return { role: "assistant", tool_calls: [{ id: `finish-${Math.random()}`, type: "function", function: { name: "finish_clanker_turn", arguments: JSON.stringify({ outcome, message: text }) } }] };
+}
