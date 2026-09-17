@@ -93,12 +93,24 @@ export class FireworksClanker {
     let correctiveRetry = false;
     let committed = false;
     let protocolFailures = 0;
+    let protocolRecoveryStarted = false;
     activity("thinking", "reading room activity");
     const intent: RoomIntent = looksLikeTechnicalQuestion(latest.text) && !isConcreteWorkRequest(latest.text) ? "TECHNICAL" : "WORK";
     const messages: ChatMessage[] = [
       { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nAuthenticated user who triggered this run: ${requester}\nCanonical promotion capability for this run: ${canPromote ? "granted" : "not granted"}.` },
       ...history.filter((message) => message.kind !== "system").slice(-40).map((message) => ({ role: message.kind === "clanker" ? "assistant" : "user", content: `[message ${message.id}] ${message.author}${message.replyTo ? ` (replying to message ${message.replyTo.id} by ${message.replyTo.author}: ${message.replyTo.excerpt})` : ""}: ${message.text}` })),
     ];
+    const beginProtocolRecovery = () => {
+      if (protocolRecoveryStarted) return false;
+      protocolRecoveryStarted = true;
+      protocolFailures = 0;
+      messages.splice(0, messages.length,
+        { role: "system", content: `${this.systemPrompt}\n\nCurrent room: ${roomName}\nCanonical URL: ${pageUrl}\nRoom owner: ${owner}\nAuthenticated user who triggered this run: ${requester}\nCanonical promotion capability for this run: ${canPromote ? "granted" : "not granted"}.\n\nRECOVERY MODE: A previous clanker turn may have edited the repository but failed its response protocol. Do not rewrite or undo existing work. Inspect the preserved working tree with git_status and git_diff, then finish the requested change: call git_commit with a concise title and one-sentence blurb, call create_preview, and finish_clanker_turn with silent. If there are no changes left, finish silently. Call exactly one provided function per turn and never emit text, DSML, XML, or reasoning.` },
+        ...history.filter((message) => message.kind === "chat").slice(-8).map((message) => ({ role: "user", content: `[message ${message.id}] ${message.author}: ${message.text}` })),
+      );
+      activity("thinking", "recovering preserved edits");
+      return true;
+    };
     const deadline = Date.now() + this.runTimeoutMs;
     const finalizationAt = deadline - this.finalizationWindowMs;
     let finalizing = !concreteWorkPending;
@@ -116,7 +128,10 @@ export class FireworksClanker {
       try {
         message = await this.complete(roomName, messages, activity, finalizing ? deadline : finalizationAt, deadline);
       } catch (error) {
-        if (!(error instanceof CompletionDeadlineReached)) throw error;
+        if (!(error instanceof CompletionDeadlineReached)) {
+          if (concreteWorkPending && !committed && beginProtocolRecovery()) continue;
+          throw error;
+        }
         if (!finalizing) {
           beginFinalization();
           continue;
@@ -125,6 +140,8 @@ export class FireworksClanker {
       }
       message = recoverDsmlToolCalls(message);
       if (!message.tool_calls?.length) {
+        if (committed) return "[silent]";
+        if (concreteWorkPending && beginProtocolRecovery()) continue;
         if (++protocolFailures >= MAX_PROTOCOL_FAILURES) throw new Error("provider returned invalid clanker format · work preserved");
         activity("thinking", "invalid provider format · retrying");
         messages.push({ role: "system", content: "Your response was rejected because it was free-form text or malformed tool markup. Call exactly one provided function. Use finish_clanker_turn for silence, a terse deterministic answer, or a genuine blocker. Never print DSML, XML, JSON, reasoning, code, or tool calls as assistant text." });
@@ -132,6 +149,8 @@ export class FireworksClanker {
       }
       const calls = message.tool_calls;
       if (calls.length !== 1) {
+        if (committed) return "[silent]";
+        if (concreteWorkPending && beginProtocolRecovery()) continue;
         if (++protocolFailures >= MAX_PROTOCOL_FAILURES) throw new Error("provider returned invalid clanker format · work preserved");
         activity("thinking", "invalid provider format · retrying");
         messages.push({ role: "system", content: "The previous response was rejected because it called more than one function. Call exactly one function per turn." });
@@ -143,6 +162,8 @@ export class FireworksClanker {
         if (call.function.name === FINISH_TOOL) {
           const final = structuredReply(call, intent);
           if (!final.ok) {
+            if (committed) return "[silent]";
+            if (concreteWorkPending && beginProtocolRecovery()) continue;
             if (++protocolFailures >= MAX_PROTOCOL_FAILURES) throw new Error("provider returned invalid clanker format · work preserved");
             messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(final) });
             continue;

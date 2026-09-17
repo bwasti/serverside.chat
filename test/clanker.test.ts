@@ -103,6 +103,47 @@ test("malformed model markup and free-form replies are never admitted to chat", 
   await expect(broken.respond("test", "https://test.example", [message("chat", "what does worker.js do?")], workspace(), () => {}, "alice", "alice", false, () => [])).rejects.toThrow("invalid clanker format");
 });
 
+test("a protocol failure after real edits enters compact recovery and still publishes the result", async () => {
+  let calls = 0;
+  let sawRecovery = false;
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
+    attempts: 1,
+    fetcher: async (_input, init) => {
+      calls++;
+      const request = JSON.parse(String(init?.body)) as { messages: Array<{ content?: string }> };
+      if (calls === 1) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "write", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "index.html", content: "<h1>hello</h1>" }) } }] } }] });
+      if (calls === 2) return Response.json({ choices: [{ message: { role: "assistant", content: "I finished the edit." } }] });
+      if (calls === 3) {
+        sawRecovery = request.messages.some((item) => item.content?.includes("RECOVERY MODE"));
+        return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "status", type: "function", function: { name: "git_status", arguments: "{}" } }] } }] });
+      }
+      if (calls === 4) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "diff", type: "function", function: { name: "git_diff", arguments: "{}" } }] } }] });
+      if (calls === 5) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "commit", type: "function", function: { name: "git_commit", arguments: JSON.stringify({ title: "Add hello page", blurb: "Adds the requested hello page." }) } }] } }] });
+      if (calls === 6) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "preview", type: "function", function: { name: "create_preview", arguments: JSON.stringify({ description: "hello page" }) } }] } }] });
+      return Response.json({ choices: [{ message: finish("silent") }] });
+    },
+  });
+  const reply = await clanker.respond("test", "https://test.example", [message("chat", "build a hello page")], workspace(), () => {}, "alice", "alice", false, () => []);
+  expect(reply).toBe("[silent]");
+  expect(sawRecovery).toBe(true);
+  expect(calls).toBe(7);
+});
+
+test("a protocol failure after commit is treated as a completed silent turn", async () => {
+  let calls = 0;
+  const clanker = new FireworksClanker("test", "test-model", "test prompt", {
+    attempts: 1,
+    fetcher: async () => {
+      calls++;
+      if (calls === 1) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "write", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "index.html", content: "<h1>hello</h1>" }) } }] } }] });
+      if (calls === 2) return Response.json({ choices: [{ message: { role: "assistant", tool_calls: [{ id: "commit", type: "function", function: { name: "git_commit", arguments: JSON.stringify({ title: "Add hello page", blurb: "Adds the requested hello page." }) } }] } }] });
+      return Response.json({ choices: [{ message: { role: "assistant", content: "done" } }] });
+    },
+  });
+  expect(await clanker.respond("test", "https://test.example", [message("chat", "build a hello page")], workspace(), () => {}, "alice", "alice", false, () => [])).toBe("[silent]");
+  expect(calls).toBe(3);
+});
+
 test("turn-limit failures are concise and confirm that work is preserved", async () => {
   let calls = 0;
   const clanker = new FireworksClanker("test", "test-model", "test prompt", {
